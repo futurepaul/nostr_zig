@@ -20,4 +20,4 @@ samples/
 docs/
 
 # Build files
-build/
+build/deps/

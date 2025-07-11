@@ -23,7 +23,7 @@ pub fn main() !void {
     std.debug.print("Connected to {s}\n", .{relay_url});
 
     // Generate a private key and get public key
-    const private_key = crypto.generatePrivateKey();
+    const private_key = try crypto.generatePrivateKey();
     const public_key = try crypto.getPublicKey(private_key);
     const pubkey_hex = try crypto.bytesToHex(allocator, &public_key);
     defer allocator.free(pubkey_hex);

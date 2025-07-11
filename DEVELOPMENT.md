@@ -9,7 +9,8 @@ This project implements a Zig library for encoding and decoding Nostr events wit
 - Parse and validate Nostr events from JSON
 - Serialize Nostr events to JSON
 - Support for basic event kinds (notes, profiles, reactions, etc.)
-- Cryptographic signature verification using Zig's built-in crypto
+- **Production-grade BIP340 Schnorr signatures using bitcoin-core/secp256k1**
+- Real cryptographic operations verified by live Nostr relays
 - Future support for NIP-44 encrypted payloads
 - TDD development approach with comprehensive tests
 
@@ -93,12 +94,12 @@ Zig's standard library provides:
 - ECDSA signatures (`std.crypto.ecdsa.EcdsaSecp256k1Sha256`) ✅
 - Random number generation for key generation ✅
 
-What's missing for Nostr:
-- BIP340 Schnorr signatures (Nostr doesn't use ECDSA)
-- Solution: Use secp256k1-zig wrapper (https://github.com/Syndica/secp256k1-zig)
-  - Wraps bitcoin-core's libsecp256k1
-  - Includes BIP340 Schnorr signature support
-  - Provides proper Nostr event signing/verification
+**✅ COMPLETED: BIP340 Schnorr Integration**
+- Added bitcoin-core/secp256k1 as git submodule (deps/secp256k1/)
+- Created custom secp256k1 wrapper (src/secp256k1/secp256k1.zig)
+- Configured with all required modules (EXTRAKEYS, SCHNORRSIG, ECDH, RECOVERY)
+- Implemented production-grade signing and verification
+- Verified working with real Nostr relays
 
 ## Future Extensions
 
@@ -113,14 +114,18 @@ What's missing for Nostr:
 ```
 src/
 ├── main.zig           # CLI entry point
-├── nostr/
-│   ├── event.zig      # Core event types and parsing
-│   ├── kinds.zig      # Event kind definitions
-│   ├── crypto.zig     # Cryptographic operations
-│   └── json.zig       # JSON serialization helpers
-└── test/
-    ├── fixtures/      # JSON test fixtures
-    └── *.zig         # Test files
+├── root.zig           # Library exports
+├── nostr.zig          # Core Nostr types
+├── crypto.zig         # BIP340 cryptographic operations
+├── client.zig         # WebSocket relay client
+├── secp256k1/         # Custom secp256k1 wrapper
+│   ├── secp256k1.zig  # Zig bindings for bitcoin-core/secp256k1
+│   ├── callbacks.c    # External callback implementations
+│   └── libsecp256k1-config.h  # Build configuration
+├── test_events.zig    # Test event fixtures
+└── test_roundtrip.zig # Integration tests
+deps/
+└── secp256k1/         # bitcoin-core/secp256k1 git submodule
 ```
 
 ## Testing Strategy
@@ -230,4 +235,45 @@ src/
 - Relay responses include: EVENT, OK, EOSE, NOTICE, AUTH, COUNT
 - Filters support: ids, authors, kinds, since, until, limit, and tag filters
 - Always escape content when calculating event ID (quotes, newlines, etc.)
-- Test with realistic events but expect signature validation to fail without secp256k1
+- Relays validate BIP340 signatures - only real signatures are accepted
+
+## Bitcoin-core/secp256k1 Integration
+
+### Custom Wrapper Development
+- Created dedicated wrapper in `src/secp256k1/` for Zig bindings
+- Used git submodule approach for bitcoin-core/secp256k1 (most reliable)
+- Avoided third-party wrappers to ensure full module support
+- Built static library with all required modules enabled
+
+### Required secp256k1 Modules
+- `ENABLE_MODULE_EXTRAKEYS` - Essential for x-only public keys (Nostr format)
+- `ENABLE_MODULE_SCHNORRSIG` - Required for BIP340 Schnorr signatures
+- `ENABLE_MODULE_ECDH` and `ENABLE_MODULE_RECOVERY` - Additional functionality
+- Static precomputation tables for performance
+
+### Build System Integration
+- Added secp256k1 compilation to build.zig with proper C flags
+- Created external callback functions (callbacks.c) for error handling
+- Configured proper include paths and library linking
+- Used `@cImport` for C header integration in Zig
+
+### Cryptographic Implementation Best Practices
+- Always verify private keys with `secp256k1_ec_seckey_verify`
+- Use `secp256k1_keypair_create` for Schnorr operations (not ECDSA functions)
+- Extract x-only public keys with `secp256k1_keypair_xonly_pub` 
+- Convert hex event IDs to bytes before signing/verification
+- Handle all error cases from secp256k1 functions explicitly
+
+### Testing and Integration Verification
+- Test signature generation produces non-zero, unique signatures
+- Verify signatures locally before sending to relays
+- Test complete roundtrip: generate → sign → publish → relay validation
+- Use `zig build` approach for integration tests (better than `zig test`)
+- Always test with real relay (`nak serve --verbose`) for validation
+
+### Common Pitfalls Avoided
+- Don't use Syndica/secp256k1-zig (incomplete module support)
+- Don't rely on Zig's standard library crypto (no Schnorr support)
+- Don't use ECDSA functions for Schnorr signatures
+- Don't forget to link the static library and include paths
+- Don't ignore secp256k1 function return values (always check for == 1)

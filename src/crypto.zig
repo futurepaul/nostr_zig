@@ -1,21 +1,55 @@
 const std = @import("std");
 const nostr = @import("nostr.zig");
+const secp256k1 = @import("secp256k1");
 
-/// Generate a random 32-byte private key
-pub fn generatePrivateKey() [32]u8 {
+/// Generate a cryptographically secure random 32-byte private key
+pub fn generatePrivateKey() ![32]u8 {
     var key: [32]u8 = undefined;
     std.crypto.random.bytes(&key);
+    
+    // Verify the generated key is valid for secp256k1
+    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    defer secp256k1.secp256k1_context_destroy(ctx);
+    
+    if (secp256k1.secp256k1_ec_seckey_verify(ctx, &key) != 1) {
+        // If invalid, generate a new one (very rare case)
+        return generatePrivateKey();
+    }
+    
     return key;
 }
 
-/// Get public key from private key using secp256k1
+/// Get public key from private key using secp256k1 (x-only for Nostr)
 pub fn getPublicKey(private_key: [32]u8) ![32]u8 {
-    // For now, return a dummy public key
-    // TODO: Implement secp256k1 public key derivation
-    _ = private_key;
-    var pubkey: [32]u8 = undefined;
-    std.crypto.random.bytes(&pubkey);
-    return pubkey;
+    // Create secp256k1 context
+    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    defer secp256k1.secp256k1_context_destroy(ctx);
+    
+    // Verify the private key
+    if (secp256k1.secp256k1_ec_seckey_verify(ctx, &private_key) != 1) {
+        return error.InvalidPrivateKey;
+    }
+    
+    // Create keypair for Schnorr operations
+    var keypair: secp256k1.secp256k1_keypair = undefined;
+    if (secp256k1.secp256k1_keypair_create(ctx, &keypair, &private_key) != 1) {
+        return error.KeypairCreationFailed;
+    }
+    
+    // Extract x-only public key (32 bytes, no parity byte)
+    var xonly_pubkey: secp256k1.secp256k1_xonly_pubkey = undefined;
+    var pk_parity: c_int = undefined;
+    if (secp256k1.secp256k1_keypair_xonly_pub(ctx, &xonly_pubkey, &pk_parity, &keypair) != 1) {
+        return error.XOnlyPubkeyExtractionFailed;
+    }
+    
+    // Serialize x-only public key (32 bytes)
+    var result: [32]u8 = undefined;
+    if (secp256k1.secp256k1_xonly_pubkey_serialize(ctx, &result, &xonly_pubkey) != 1) {
+        return error.XOnlyPubkeySerializationFailed;
+    }
+    
+    return result;
 }
 
 /// Calculate event ID (SHA256 hash of serialized event)
@@ -76,14 +110,69 @@ pub fn calculateEventId(allocator: std.mem.Allocator, pubkey: []const u8, create
     return hex_id;
 }
 
-/// Sign an event (placeholder for now)
+/// Sign an event using BIP340 Schnorr signature
 pub fn signEvent(event_id: []const u8, private_key: [32]u8) ![64]u8 {
-    // TODO: Implement Schnorr signature
-    _ = event_id;
-    _ = private_key;
-    var sig: [64]u8 = undefined;
-    std.crypto.random.bytes(&sig);
-    return sig;
+    // Create secp256k1 context
+    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    defer secp256k1.secp256k1_context_destroy(ctx);
+    
+    // Verify the private key
+    if (secp256k1.secp256k1_ec_seckey_verify(ctx, &private_key) != 1) {
+        return error.InvalidPrivateKey;
+    }
+    
+    // Create keypair for Schnorr signing
+    var keypair: secp256k1.secp256k1_keypair = undefined;
+    if (secp256k1.secp256k1_keypair_create(ctx, &keypair, &private_key) != 1) {
+        return error.KeypairCreationFailed;
+    }
+    
+    // Convert hex event ID to bytes (32 bytes)
+    if (event_id.len != 64) {
+        return error.InvalidEventIdLength;
+    }
+    
+    var event_hash: [32]u8 = undefined;
+    for (0..32) |i| {
+        const hex_pair = event_id[i * 2 .. i * 2 + 2];
+        event_hash[i] = std.fmt.parseInt(u8, hex_pair, 16) catch return error.InvalidEventIdHex;
+    }
+    
+    // Create Schnorr signature (BIP340)
+    var signature: [64]u8 = undefined;
+    if (secp256k1.secp256k1_schnorrsig_sign32(ctx, &signature, &event_hash, &keypair, null) != 1) {
+        return error.SchnorrSigningFailed;
+    }
+    
+    return signature;
+}
+
+/// Verify a BIP340 Schnorr signature
+pub fn verifySignature(event_id: []const u8, signature: [64]u8, pubkey: [32]u8) !bool {
+    // Create secp256k1 context
+    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_VERIFY) orelse return error.ContextCreationFailed;
+    defer secp256k1.secp256k1_context_destroy(ctx);
+    
+    // Convert hex event ID to bytes (32 bytes)
+    if (event_id.len != 64) {
+        return error.InvalidEventIdLength;
+    }
+    
+    var event_hash: [32]u8 = undefined;
+    for (0..32) |i| {
+        const hex_pair = event_id[i * 2 .. i * 2 + 2];
+        event_hash[i] = std.fmt.parseInt(u8, hex_pair, 16) catch return error.InvalidEventIdHex;
+    }
+    
+    // Parse x-only public key
+    var xonly_pubkey: secp256k1.secp256k1_xonly_pubkey = undefined;
+    if (secp256k1.secp256k1_xonly_pubkey_parse(ctx, &xonly_pubkey, &pubkey) != 1) {
+        return error.InvalidPublicKey;
+    }
+    
+    // Verify Schnorr signature (BIP340)
+    const result = secp256k1.secp256k1_schnorrsig_verify(ctx, &signature, &event_hash, 32, &xonly_pubkey);
+    return result == 1;
 }
 
 /// Convert bytes to hex string
@@ -95,6 +184,66 @@ pub fn bytesToHex(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
         hex[i * 2 + 1] = hex_chars[byte & 0x0f];
     }
     return hex;
+}
+
+test "key generation and public key derivation" {
+    // Generate a private key
+    const private_key = try generatePrivateKey();
+    
+    // Derive public key
+    const public_key = try getPublicKey(private_key);
+    
+    // Public key should be 32 bytes (x-coordinate only for Nostr)
+    try std.testing.expectEqual(@as(usize, 32), public_key.len);
+    
+    // Generate another key pair and verify they're different
+    const private_key2 = try generatePrivateKey();
+    const public_key2 = try getPublicKey(private_key2);
+    
+    try std.testing.expect(!std.mem.eql(u8, &private_key, &private_key2));
+    try std.testing.expect(!std.mem.eql(u8, &public_key, &public_key2));
+}
+
+test "real Schnorr signature and verification" {
+    const allocator = std.testing.allocator;
+    
+    const private_key = try generatePrivateKey();
+    const public_key = try getPublicKey(private_key);
+    
+    // Create a real event ID by calculating it
+    const pubkey_hex = try bytesToHex(allocator, &public_key);
+    defer allocator.free(pubkey_hex);
+    
+    const created_at: i64 = 1234567890;
+    const kind: u32 = 1;
+    const tags = &[_][]const []const u8{};
+    const content = "Hello, Nostr with real signatures!";
+    
+    const event_id = try calculateEventId(allocator, pubkey_hex, created_at, kind, tags, content);
+    defer allocator.free(event_id);
+    
+    // Create real Schnorr signature
+    const signature = try signEvent(event_id, private_key);
+    
+    // Signature should not be all zeros (it's a real signature now)
+    var all_zeros = true;
+    for (signature) |byte| {
+        if (byte != 0) {
+            all_zeros = false;
+            break;
+        }
+    }
+    try std.testing.expect(!all_zeros);
+    
+    // Verify the real signature
+    const is_valid = try verifySignature(event_id, signature, public_key);
+    try std.testing.expect(is_valid);
+    
+    // Test that an invalid signature fails verification
+    var invalid_signature = signature;
+    invalid_signature[0] = invalid_signature[0] ^ 0xFF; // Flip some bits
+    const is_invalid = try verifySignature(event_id, invalid_signature, public_key);
+    try std.testing.expect(!is_invalid);
 }
 
 test "calculate event id" {

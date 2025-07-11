@@ -1,6 +1,7 @@
 const std = @import("std");
 const nostr = @import("nostr.zig");
 const client = @import("client.zig");
+const crypto = @import("crypto.zig");
 const test_events = @import("test_events.zig");
 
 const log = std.log.scoped(.test_roundtrip);
@@ -30,52 +31,47 @@ const TestState = struct {
     }
 };
 
-fn subscription_callback(state: *TestState) fn (message: client.RelayMessage) void {
-    return struct {
-        fn callback(message: client.RelayMessage) void {
-            state.mutex.lock();
-            defer state.mutex.unlock();
+// Global state pointer for callbacks (needed for function pointer approach)
+var global_test_state: *TestState = undefined;
+
+fn subscription_callback(message: client.RelayMessage) void {
+    global_test_state.mutex.lock();
+    defer global_test_state.mutex.unlock();
+    
+    switch (message) {
+        .event => |e| {
+            log.info("Received event: {s}", .{e.event.id});
+            global_test_state.received_events.append(e.event) catch |err| {
+                log.err("Failed to append event: {}", .{err});
+            };
             
-            switch (message) {
-                .event => |e| {
-                    log.info("Received event: {s}", .{e.event.id});
-                    state.received_events.append(e.event) catch |err| {
-                        log.err("Failed to append event: {}", .{err});
-                    };
-                    
-                    if (state.test_event_id) |id| {
-                        if (std.mem.eql(u8, e.event.id, id)) {
-                            state.received_our_event = true;
-                            log.info("Received our test event!", .{});
-                        }
-                    }
-                },
-                .eose => {
-                    log.info("Received EOSE", .{});
-                    state.eose_received = true;
-                },
-                else => {},
+            if (global_test_state.test_event_id) |id| {
+                if (std.mem.eql(u8, e.event.id, id)) {
+                    global_test_state.received_our_event = true;
+                    log.info("Received our test event!", .{});
+                }
             }
-        }
-    }.callback;
+        },
+        .eose => {
+            log.info("Received EOSE", .{});
+            global_test_state.eose_received = true;
+        },
+        else => {},
+    }
 }
 
-fn publish_callback(state: *TestState) fn (ok: bool, message: ?[]const u8) void {
-    return struct {
-        fn callback(ok: bool, message: ?[]const u8) void {
-            state.mutex.lock();
-            defer state.mutex.unlock();
-            
-            state.ok_received = true;
-            state.ok_accepted = ok;
-            
-            if (ok) {
-                log.info("Event accepted by relay", .{});
-            } else {
-                log.err("Event rejected by relay: {s}", .{message orelse "no reason given"});
-            }
-        }
-    }.callback;
+fn publish_callback(ok: bool, message: ?[]const u8) void {
+    global_test_state.mutex.lock();
+    defer global_test_state.mutex.unlock();
+    
+    global_test_state.ok_received = true;
+    global_test_state.ok_accepted = ok;
+    
+    if (ok) {
+        log.info("Event accepted by relay", .{});
+    } else {
+        log.err("Event rejected by relay: {s}", .{message orelse "no reason given"});
+    }
 }
 
 // Publisher thread function
@@ -93,18 +89,38 @@ fn publisherThread(allocator: std.mem.Allocator, state: *TestState) !void {
     try pub_client.connect();
     defer pub_client.disconnect();
     
-    // Create a test event
+    // Generate real keypair
+    const private_key = try crypto.generatePrivateKey();
+    const public_key = try crypto.getPublicKey(private_key);
+    const pubkey_hex = try crypto.bytesToHex(allocator, &public_key);
+    defer allocator.free(pubkey_hex);
+    
+    // Create event content
+    const created_at = std.time.timestamp();
+    const kind: u32 = 1;
+    const tags = &[_][]const []const u8{
+        &[_][]const u8{ "test", "roundtrip" },
+    };
+    const content = "Hello from Zig Nostr client! This is a roundtrip test with real signatures.";
+    
+    // Calculate real event ID
+    const event_id = try crypto.calculateEventId(allocator, pubkey_hex, created_at, kind, tags, content);
+    defer allocator.free(event_id);
+    
+    // Create real signature
+    const signature = try crypto.signEvent(event_id, private_key);
+    const sig_hex = try crypto.bytesToHex(allocator, &signature);
+    defer allocator.free(sig_hex);
+    
+    // Create the event with real cryptographic data
     const test_event = nostr.Event{
-        .id = "0000000000000000000000000000000000000000000000000000000000000001",
-        .pubkey = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-        .created_at = @intCast(std.time.timestamp()),
-        .kind = 1,
-        .tags = &[_][]const []const u8{
-            &[_][]const u8{ "test", "roundtrip" },
-        },
-        .content = "Hello from Zig Nostr client! This is a roundtrip test.",
-        .sig = "0000000000000000000000000000000000000000000000000000000000000000" ++
-              "0000000000000000000000000000000000000000000000000000000000000000",
+        .id = event_id,
+        .pubkey = pubkey_hex,
+        .created_at = created_at,
+        .kind = kind,
+        .tags = tags,
+        .content = content,
+        .sig = sig_hex,
     };
     
     // Store the event ID in shared state
@@ -117,7 +133,7 @@ fn publisherThread(allocator: std.mem.Allocator, state: *TestState) !void {
     log.info("Publishing test event...", .{});
     
     // Publish the event
-    try pub_client.publish_event(test_event, publish_callback(state));
+    try pub_client.publish_event(test_event, publish_callback);
     
     // Process messages to receive OK response
     var attempts: u32 = 0;
@@ -165,7 +181,7 @@ fn subscriberThread(allocator: std.mem.Allocator, state: *TestState) !void {
     log.info("Creating subscription...", .{});
     
     // Subscribe
-    try sub_client.subscribe("test-sub-1", &filters, subscription_callback(state));
+    try sub_client.subscribe("test-sub-1", &filters, subscription_callback);
     defer sub_client.unsubscribe("test-sub-1") catch {};
     
     // Process messages
@@ -204,6 +220,9 @@ test "roundtrip publish and subscribe" {
     // Initialize shared state
     var state = TestState.init(allocator);
     defer state.deinit();
+    
+    // Set global state for callbacks
+    global_test_state = &state;
     
     // Start subscriber thread
     const sub_thread = try std.Thread.spawn(.{}, subscriberThread, .{ allocator, &state });

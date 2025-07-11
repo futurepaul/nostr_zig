@@ -22,6 +22,70 @@ pub fn build(b: *std.Build) void {
     });
     const websocket_mod = websocket_dep.module("websocket");
 
+    // Build secp256k1 library
+    const secp256k1_lib = b.addStaticLibrary(.{
+        .name = "secp256k1",
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    // Add secp256k1 source files
+    secp256k1_lib.addCSourceFile(.{
+        .file = b.path("deps/secp256k1/src/secp256k1.c"),
+        .flags = &[_][]const u8{
+            "-DHAVE_CONFIG_H=1",
+            "-DECMULT_WINDOW_SIZE=15",
+            "-DECMULT_GEN_PREC_BITS=4",
+            "-DUSE_EXTERNAL_DEFAULT_CALLBACKS=1",
+            "-DENABLE_MODULE_ECDH=1",
+            "-DENABLE_MODULE_RECOVERY=1",
+            "-DENABLE_MODULE_EXTRAKEYS=1",
+            "-DENABLE_MODULE_SCHNORRSIG=1",
+            "-DUSE_SCALAR_4X64=1",
+            "-DUSE_FIELD_5X52=1",
+            "-DUSE_FIELD_INV_BUILTIN=1",
+            "-DUSE_SCALAR_INV_BUILTIN=1",
+            "-DUSE_ECMULT_STATIC_PRECOMPUTATION=1",
+            "-fvisibility=hidden",
+        },
+    });
+    
+    // Add precomputed tables
+    secp256k1_lib.addCSourceFile(.{
+        .file = b.path("deps/secp256k1/src/precomputed_ecmult.c"),
+        .flags = &[_][]const u8{"-DHAVE_CONFIG_H=1"},
+    });
+    secp256k1_lib.addCSourceFile(.{
+        .file = b.path("deps/secp256k1/src/precomputed_ecmult_gen.c"),
+        .flags = &[_][]const u8{"-DHAVE_CONFIG_H=1"},
+    });
+    
+    // Add external callbacks
+    secp256k1_lib.addCSourceFile(.{
+        .file = b.path("src/secp256k1/callbacks.c"),
+        .flags = &[_][]const u8{},
+    });
+    
+    // Add include directories
+    secp256k1_lib.addIncludePath(b.path("deps/secp256k1"));
+    secp256k1_lib.addIncludePath(b.path("deps/secp256k1/src"));
+    secp256k1_lib.addIncludePath(b.path("deps/secp256k1/include"));
+    secp256k1_lib.addIncludePath(b.path("src/secp256k1"));
+    
+    // Link with C library
+    secp256k1_lib.linkLibC();
+    
+    // Create secp256k1 module
+    const secp256k1_mod = b.createModule(.{
+        .root_source_file = b.path("src/secp256k1/secp256k1.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    secp256k1_mod.addIncludePath(b.path("deps/secp256k1/include"));
+    secp256k1_mod.addIncludePath(b.path("src/secp256k1"));
+    secp256k1_mod.linkLibrary(secp256k1_lib);
+
+
     // This creates a "module", which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Every executable or library we compile will be based on one or more modules.
@@ -46,9 +110,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Add websocket import to modules
+    // Add websocket and secp256k1 imports to modules
     lib_mod.addImport("websocket", websocket_mod);
+    lib_mod.addImport("secp256k1", secp256k1_mod);
     exe_mod.addImport("websocket", websocket_mod);
+    exe_mod.addImport("secp256k1", secp256k1_mod);
 
     // Modules can depend on one another using the `std.Build.Module.addImport` function.
     // This is what allows Zig source code to use `@import("foo")` where 'foo' is not a
@@ -132,6 +198,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     roundtrip_test.root_module.addImport("websocket", websocket_mod);
+    roundtrip_test.root_module.addImport("secp256k1", secp256k1_mod);
     roundtrip_test.root_module.addImport("nostr", lib_mod);
     const run_roundtrip_test = b.addRunArtifact(roundtrip_test);
     
@@ -163,4 +230,43 @@ pub fn build(b: *std.Build) void {
     const run_realistic_example = b.addRunArtifact(realistic_example);
     const realistic_step = b.step("example-realistic", "Run realistic client example");
     realistic_step.dependOn(&run_realistic_example.step);
+    
+    // Add signature demo
+    const sig_demo = b.addExecutable(.{
+        .name = "signature_demo",
+        .root_source_file = b.path("test_real_signatures.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sig_demo.root_module.addImport("nostr_zig", lib_mod);
+    
+    const run_sig_demo = b.addRunArtifact(sig_demo);
+    const sig_demo_step = b.step("sig-demo", "Run signature demonstration");
+    sig_demo_step.dependOn(&run_sig_demo.step);
+    
+    // Add roundtrip demo
+    const roundtrip_demo = b.addExecutable(.{
+        .name = "roundtrip_demo",
+        .root_source_file = b.path("test_roundtrip_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    roundtrip_demo.root_module.addImport("nostr_zig", lib_mod);
+    
+    const run_roundtrip_demo = b.addRunArtifact(roundtrip_demo);
+    const roundtrip_demo_step = b.step("roundtrip", "Run roundtrip demonstration");
+    roundtrip_demo_step.dependOn(&run_roundtrip_demo.step);
+    
+    // Add simple roundtrip test
+    const simple_roundtrip = b.addExecutable(.{
+        .name = "simple_roundtrip",
+        .root_source_file = b.path("test_simple_roundtrip.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    simple_roundtrip.root_module.addImport("nostr_zig", lib_mod);
+    
+    const run_simple_roundtrip = b.addRunArtifact(simple_roundtrip);
+    const simple_roundtrip_step = b.step("simple-roundtrip", "Run simple roundtrip test");
+    simple_roundtrip_step.dependOn(&run_simple_roundtrip.step);
 }
