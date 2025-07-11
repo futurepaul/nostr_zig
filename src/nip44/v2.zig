@@ -349,6 +349,98 @@ test "padding roundtrip" {
     }
 }
 
+/// Encrypt a message with a specific nonce (for testing)
+/// Returns raw bytes (not base64)
+pub fn encryptWithNonce(
+    allocator: std.mem.Allocator,
+    conversation_key: ConversationKey,
+    nonce: [32]u8,
+    content: []const u8,
+) Nip44Error![]u8 {
+    // Derive message keys
+    const message_keys = try conversation_key.deriveMessageKeys(nonce);
+    
+    // Pad message
+    const padded = try padMessage(allocator, content);
+    defer allocator.free(padded);
+    
+    // Encrypt with ChaCha20
+    const encrypted = try allocator.alloc(u8, padded.len);
+    defer allocator.free(encrypted);
+    
+    ChaCha20IETF.xor(encrypted, padded, 0, message_keys.chacha_key, message_keys.chacha_nonce);
+    
+    // Create payload: [version][nonce][encrypted][hmac]
+    const payload_len = 1 + 32 + encrypted.len + 32;
+    const payload = try allocator.alloc(u8, payload_len);
+    
+    // Version
+    payload[0] = VERSION;
+    
+    // Nonce
+    @memcpy(payload[1..33], &nonce);
+    
+    // Encrypted data
+    @memcpy(payload[33..33 + encrypted.len], encrypted);
+    
+    // HMAC-SHA256 over nonce + ciphertext
+    var hmac_ctx = crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).init(&message_keys.hmac_key);
+    hmac_ctx.update(&nonce);
+    hmac_ctx.update(encrypted);
+    var hmac: [32]u8 = undefined;
+    hmac_ctx.final(&hmac);
+    @memcpy(payload[33 + encrypted.len..], &hmac);
+    
+    return payload;
+}
+
+/// Decrypt with a conversation key (for testing invalid cases)
+/// Accepts base64-encoded payload
+pub fn decryptWithConversationKey(
+    allocator: std.mem.Allocator,
+    conversation_key: ConversationKey,
+    payload: []const u8,
+) Nip44Error![]u8 {
+    // Decode base64 payload
+    const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(payload) catch return Nip44Error.Base64DecodeError;
+    const payload_bytes = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(payload_bytes);
+    
+    _ = std.base64.standard.Decoder.decode(payload_bytes, payload) catch return Nip44Error.Base64DecodeError;
+    
+    if (payload_bytes.len < 1 + 32 + 32) return Nip44Error.InvalidLength;
+    
+    // Check version
+    if (payload_bytes[0] != VERSION) return Nip44Error.InvalidVersion;
+    
+    // Extract components
+    const nonce = payload_bytes[1..33];
+    const encrypted = payload_bytes[33..payload_bytes.len - 32];
+    const provided_hmac = payload_bytes[payload_bytes.len - 32..];
+    
+    // Derive message keys
+    const message_keys = try conversation_key.deriveMessageKeys(nonce.*);
+    
+    // Verify HMAC
+    var hmac_ctx = crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).init(&message_keys.hmac_key);
+    hmac_ctx.update(nonce);
+    hmac_ctx.update(encrypted);
+    var calculated_hmac: [32]u8 = undefined;
+    hmac_ctx.final(&calculated_hmac);
+    
+    if (!std.mem.eql(u8, &calculated_hmac, provided_hmac)) {
+        return Nip44Error.InvalidHmac;
+    }
+    
+    // Decrypt
+    const decrypted = try allocator.alloc(u8, encrypted.len);
+    defer allocator.free(decrypted);
+    ChaCha20IETF.xor(decrypted, encrypted, 0, message_keys.chacha_key, message_keys.chacha_nonce);
+    
+    // Unpad
+    return unpadMessage(allocator, decrypted);
+}
+
 test {
     std.testing.refAllDecls(@This());
 }

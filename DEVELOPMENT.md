@@ -118,14 +118,39 @@ src/
 ├── nostr.zig          # Core Nostr types
 ├── crypto.zig         # BIP340 cryptographic operations
 ├── client.zig         # WebSocket relay client
+├── bech32.zig         # NIP-19 bech32 encoding/decoding
+├── nostr/
+│   └── event.zig      # Event structure and parsing
+├── nip44/             # NIP-44 encrypted messages
+│   ├── hkdf.zig       # HKDF key derivation
+│   ├── padding.zig    # Message padding algorithm
+│   ├── test_vectors.zig # Test vector runner
+│   └── v2.zig         # Main NIP-44 implementation
+├── mls/               # MLS/NIP-EE group messaging
+│   ├── types.zig      # Core MLS types
+│   ├── provider.zig   # MLS crypto provider interface
+│   ├── operations.zig # MLS operations
+│   ├── events.zig     # NIP-EE event types
+│   ├── group.zig      # Group management
+│   ├── messages.zig   # Message handling
+│   ├── members.zig    # Member management
+│   ├── wire.zig       # Wire format serialization
+│   └── tests.zig      # MLS tests
 ├── secp256k1/         # Custom secp256k1 wrapper
 │   ├── secp256k1.zig  # Zig bindings for bitcoin-core/secp256k1
 │   ├── callbacks.c    # External callback implementations
 │   └── libsecp256k1-config.h  # Build configuration
 ├── test_events.zig    # Test event fixtures
 └── test_roundtrip.zig # Integration tests
+
 deps/
-└── secp256k1/         # bitcoin-core/secp256k1 git submodule
+├── secp256k1/         # bitcoin-core/secp256k1 git submodule
+└── bech32/            # sipa/bech32 reference implementation
+
+debug_scripts/         # Debug and test utilities (not for production)
+├── debug_*.zig       # Various debugging tools
+├── test_*.zig        # Standalone test scripts
+└── verify_*.zig      # Verification utilities
 ```
 
 ## Testing Strategy
@@ -371,3 +396,34 @@ When implementing NIP-44 cryptographic operations, use the reference implementat
 - Don't use ECDSA functions for Schnorr signatures
 - Don't forget to link the static library and include paths
 - Don't ignore secp256k1 function return values (always check for == 1)
+
+## Project Organization Best Practices
+
+### Debug Scripts Management
+- Keep debug and test utilities separate from production code
+- Use a dedicated `debug_scripts/` folder for:
+  - One-off debugging tools (`debug_*.zig`)
+  - Standalone test scripts (`test_*.zig`)
+  - Verification utilities (`verify_*.zig`)
+- Don't commit temporary planning documents to the main branch
+- Keep the root directory clean and focused on essential files
+
+### Documentation Structure
+- `README.md` - User-facing documentation and quick start
+- `DEVELOPMENT.md` - Developer guidelines and technical details
+- `PROGRESS.md` - Current status and todo tracking
+- `PROBLEMS.md` - Known issues and solutions
+- Avoid creating temporary markdown files for planning
+
+### Source Code Organization
+- `src/` - All production code
+- `src/nostr/` - Core Nostr protocol implementations
+- `src/nip*/` - Specific NIP implementations as modules
+- `src/mls/` - MLS/group messaging features
+- Keep related functionality together in modules
+
+### Build System
+- Use `zig build` for all build tasks
+- Define custom build steps for examples and tests
+- Keep build.zig clean and well-documented
+- Use git submodules for C dependencies

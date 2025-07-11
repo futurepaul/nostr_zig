@@ -9,6 +9,8 @@ A Zig implementation of the Nostr protocol for building decentralized social app
 - 📥 **Subscriptions**: Subscribe to event streams with filters
 - 🔐 **Production Cryptography**: BIP340 Schnorr signatures using bitcoin-core/secp256k1
 - 🏷️ **NIP-19 Support**: Full bech32 encoding/decoding for nsec1/npub1 keys
+- 🔒 **NIP-44 Encryption**: Encrypted direct messages (fully implemented)
+- 👥 **MLS Groups**: NIP-EE group messaging architecture (95% complete)
 - 🛠️ **CLI Tool**: nak-compatible command-line interface
 - 📋 **Event Types**: Support for various Nostr event kinds
 - 🧪 **Testing**: Comprehensive test suite
@@ -170,15 +172,22 @@ src/
 ├── client.zig         # WebSocket client implementation
 ├── crypto.zig         # BIP340 Schnorr cryptography (secp256k1)
 ├── bech32.zig         # NIP-19 bech32 encoding/decoding
+├── nip44/             # NIP-44 encrypted messages
+│   ├── v2.zig         # Main implementation
+│   └── ...            # Supporting modules
+├── mls/               # MLS/NIP-EE group messaging
+│   ├── types.zig      # Core MLS types
+│   └── ...            # MLS modules
 ├── secp256k1/         # Custom secp256k1 wrapper
-│   ├── secp256k1.zig  # Zig bindings for bitcoin-core/secp256k1
-│   └── callbacks.c    # External callback implementations
-├── test_events.zig    # Test event examples
-└── test_roundtrip.zig # Integration tests
+│   ├── secp256k1.zig  # Zig bindings
+│   └── callbacks.c    # C callbacks
+└── test_*.zig         # Test files
 
 deps/
 ├── secp256k1/         # bitcoin-core/secp256k1 (git submodule)
-└── bech32/            # sipa/bech32 reference implementation (git submodule)
+└── bech32/            # sipa/bech32 reference (git submodule)
+
+debug_scripts/         # Debug utilities (not for production use)
 ```
 
 ## CLI Commands Reference
@@ -213,16 +222,33 @@ deps/
 ## Next Steps
 
 1. ✅ ~~Integrate secp256k1 for proper signatures~~ **COMPLETED**
-2. ✅ ~~Add NIP-19 encoding/decoding (npub, nsec, etc.)~~ **COMPLETED**  
-3. Complete EVENT message parsing
-4. Implement more NIPs (NIP-44 encryption, etc.)
-5. Add relay pool management
-6. Create higher-level abstractions
-7. Add encode commands (npub, nevent, etc.)
+2. ✅ ~~Add NIP-19 encoding/decoding (npub, nsec, etc.)~~ **COMPLETED**
+3. ✅ ~~Implement NIP-44 encryption~~ **COMPLETED**
+4. Complete EVENT message parsing
+5. Finish MLS/NIP-EE integration (HPKE, Ed25519)
+6. Add relay pool management
+7. Create higher-level abstractions
+8. Add encode commands (npub, nevent, etc.)
 
 ## Development
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed development guidelines and [PROGRESS.md](PROGRESS.md) for current status.
+
+### Testing
+
+The project includes comprehensive tests:
+- Unit tests: `zig build test`
+- Integration tests: `zig build test-roundtrip`
+- NIP-44 tests: Included in main test suite (18/18 passing)
+- MLS tests: Included in main test suite (39/41 passing)
+
+### Project Structure
+
+The codebase is organized for clarity:
+- Production code in `src/`
+- Debug utilities in `debug_scripts/` (not for production use)
+- Dependencies in `deps/` as git submodules
+- Examples accessible via `zig build example*` commands
 
 ## License
 

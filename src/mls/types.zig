@@ -1,0 +1,426 @@
+const std = @import("std");
+
+/// MLS epoch counter
+pub const Epoch = u64;
+
+/// MLS group ID (32 bytes)
+pub const GroupId = [32]u8;
+
+/// MLS ciphersuite identifier
+pub const Ciphersuite = enum(u16) {
+    MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 = 0x0001,
+    MLS_128_DHKEMP256_AES128GCM_SHA256_P256 = 0x0002,
+    MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519 = 0x0003,
+    MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448 = 0x0004,
+    MLS_256_DHKEMP521_AES256GCM_SHA512_P521 = 0x0005,
+    MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448 = 0x0006,
+    MLS_256_DHKEMP384_AES256GCM_SHA384_P384 = 0x0007,
+};
+
+/// Group member role
+pub const MemberRole = enum {
+    member,
+    admin,
+};
+
+/// Group state
+pub const GroupState = enum {
+    pending,
+    active,
+    inactive,
+};
+
+/// MLS protocol version
+pub const ProtocolVersion = enum(u16) {
+    mls10 = 0x0100,
+};
+
+/// MLS wire format
+pub const WireFormat = enum(u16) {
+    reserved = 0,
+    mls_plaintext = 1,
+    mls_ciphertext = 2,
+    mls_welcome = 3,
+    mls_group_info = 4,
+    mls_key_package = 5,
+};
+
+/// MLS content type
+pub const ContentType = enum(u8) {
+    reserved = 0,
+    application = 1,
+    proposal = 2,
+    commit = 3,
+};
+
+/// MLS sender type
+pub const SenderType = enum(u8) {
+    reserved = 0,
+    member = 1,
+    external = 2,
+    new_member_proposal = 3,
+    new_member_commit = 4,
+};
+
+/// Proposal type
+pub const ProposalType = enum(u16) {
+    reserved = 0,
+    add = 1,
+    update = 2,
+    remove = 3,
+    psk = 4,
+    reinit = 5,
+    external_init = 6,
+    group_context_extensions = 7,
+};
+
+/// Extension type
+pub const ExtensionType = enum(u16) {
+    reserved = 0,
+    capabilities = 1,
+    lifetime = 2,
+    key_id = 3,
+    parent_hash = 4,
+    ratchet_tree = 5,
+    required_capabilities = 6,
+    external_pub = 7,
+    external_senders = 8,
+    last_resort = 9,
+    // Custom extension for Nostr group data
+    nostr_group_data = 0xFF00,
+};
+
+/// Credential type
+pub const CredentialType = enum(u16) {
+    reserved = 0,
+    basic = 1,
+    x509 = 2,
+};
+
+/// Basic credential
+pub const BasicCredential = struct {
+    identity: []const u8,
+};
+
+/// Credential
+pub const Credential = union(CredentialType) {
+    reserved: void,
+    basic: BasicCredential,
+    x509: []const u8,
+};
+
+/// HPKE public key
+pub const HPKEPublicKey = struct {
+    data: []const u8,
+};
+
+/// Signature public key
+pub const SignaturePublicKey = struct {
+    data: []const u8,
+};
+
+/// MLS capabilities
+pub const Capabilities = struct {
+    versions: []const ProtocolVersion,
+    ciphersuites: []const Ciphersuite,
+    extensions: []const ExtensionType,
+    proposals: []const ProposalType,
+    credentials: []const CredentialType,
+};
+
+/// Lifetime extension
+pub const Lifetime = struct {
+    not_before: u64,
+    not_after: u64,
+};
+
+/// Extension
+pub const Extension = struct {
+    extension_type: ExtensionType,
+    extension_data: []const u8,
+};
+
+/// Leaf node
+pub const LeafNode = struct {
+    encryption_key: HPKEPublicKey,
+    signature_key: SignaturePublicKey,
+    credential: Credential,
+    capabilities: Capabilities,
+    leaf_node_source: LeafNodeSource,
+    extensions: []const Extension,
+    signature: []const u8,
+};
+
+/// Leaf node source
+pub const LeafNodeSource = union(enum) {
+    reserved: void,
+    key_package: void,
+    update: void,
+    commit: []const u8,
+};
+
+/// Key package
+pub const KeyPackage = struct {
+    version: ProtocolVersion,
+    cipher_suite: Ciphersuite,
+    init_key: HPKEPublicKey,
+    leaf_node: LeafNode,
+    extensions: []const Extension,
+    signature: []const u8,
+};
+
+/// Group context
+pub const GroupContext = struct {
+    version: ProtocolVersion,
+    cipher_suite: Ciphersuite,
+    group_id: GroupId,
+    epoch: Epoch,
+    tree_hash: [32]u8,
+    confirmed_transcript_hash: [32]u8,
+    extensions: []const Extension,
+};
+
+/// Member info
+pub const MemberInfo = struct {
+    index: u32,
+    credential: Credential,
+    role: MemberRole,
+    joined_at_epoch: Epoch,
+};
+
+/// Group info
+pub const GroupInfo = struct {
+    group_context: GroupContext,
+    members: []const MemberInfo,
+    ratchet_tree: []const u8,
+};
+
+/// Welcome message
+pub const Welcome = struct {
+    cipher_suite: Ciphersuite,
+    secrets: []const EncryptedGroupSecrets,
+    encrypted_group_info: []const u8,
+};
+
+/// Encrypted group secrets
+pub const EncryptedGroupSecrets = struct {
+    new_member: []const u8,
+    encrypted_group_secrets: []const u8,
+};
+
+/// Proposal
+pub const Proposal = union(ProposalType) {
+    reserved: void,
+    add: Add,
+    update: Update,
+    remove: Remove,
+    psk: PreSharedKey,
+    reinit: ReInit,
+    external_init: ExternalInit,
+    group_context_extensions: GroupContextExtensions,
+};
+
+/// Add proposal
+pub const Add = struct {
+    key_package: KeyPackage,
+};
+
+/// Update proposal
+pub const Update = struct {
+    leaf_node: LeafNode,
+};
+
+/// Remove proposal
+pub const Remove = struct {
+    removed: u32,
+};
+
+/// Pre-shared key proposal
+pub const PreSharedKey = struct {
+    psk: PreSharedKeyID,
+};
+
+/// PSK ID
+pub const PreSharedKeyID = union(enum) {
+    reserved: void,
+    external: ExternalPSK,
+    resumption: ResumptionPSK,
+};
+
+/// External PSK
+pub const ExternalPSK = struct {
+    psk_id: []const u8,
+};
+
+/// Resumption PSK
+pub const ResumptionPSK = struct {
+    usage: ResumptionPSKUsage,
+    psk_group_id: GroupId,
+    psk_epoch: Epoch,
+};
+
+/// Resumption PSK usage
+pub const ResumptionPSKUsage = enum(u8) {
+    reserved = 0,
+    application = 1,
+    reinit = 2,
+    branch = 3,
+};
+
+/// ReInit proposal
+pub const ReInit = struct {
+    group_id: GroupId,
+    version: ProtocolVersion,
+    cipher_suite: Ciphersuite,
+    extensions: []const Extension,
+};
+
+/// External init proposal
+pub const ExternalInit = struct {
+    kem_output: []const u8,
+};
+
+/// Group context extensions proposal
+pub const GroupContextExtensions = struct {
+    extensions: []const Extension,
+};
+
+/// Commit
+pub const Commit = struct {
+    proposals: []const ProposalOrRef,
+    path: ?UpdatePath,
+};
+
+/// Proposal or reference
+pub const ProposalOrRef = union(enum) {
+    proposal: Proposal,
+    reference: ProposalRef,
+};
+
+/// Proposal reference
+pub const ProposalRef = [32]u8;
+
+/// Update path
+pub const UpdatePath = struct {
+    leaf_node: LeafNode,
+    nodes: []const UpdatePathNode,
+};
+
+/// Update path node
+pub const UpdatePathNode = struct {
+    public_key: HPKEPublicKey,
+    encrypted_path_secret: []const HPKECiphertext,
+};
+
+/// HPKE ciphertext
+pub const HPKECiphertext = struct {
+    kem_output: []const u8,
+    ciphertext: []const u8,
+};
+
+/// Sender
+pub const Sender = union(SenderType) {
+    reserved: void,
+    member: u32,
+    external: u32,
+    new_member_proposal: void,
+    new_member_commit: void,
+};
+
+/// Framed content
+pub const FramedContent = struct {
+    group_id: GroupId,
+    epoch: Epoch,
+    sender: Sender,
+    authenticated_data: []const u8,
+    content_type: ContentType,
+    content: Content,
+};
+
+/// Content
+pub const Content = union(ContentType) {
+    reserved: void,
+    application: []const u8,
+    proposal: Proposal,
+    commit: Commit,
+};
+
+/// MLS plaintext
+pub const MLSPlaintext = struct {
+    group_id: GroupId,
+    epoch: Epoch,
+    sender: Sender,
+    authenticated_data: []const u8,
+    content_type: ContentType,
+    content: Content,
+    signature: []const u8,
+    confirmation_tag: ?[]const u8,
+    membership_tag: ?[]const u8,
+};
+
+/// MLS ciphertext
+pub const MLSCiphertext = struct {
+    group_id: GroupId,
+    epoch: Epoch,
+    content_type: ContentType,
+    authenticated_data: []const u8,
+    encrypted_sender_data: []const u8,
+    ciphertext: []const u8,
+};
+
+/// MLS message
+pub const MLSMessage = union(WireFormat) {
+    reserved: void,
+    mls_plaintext: MLSPlaintext,
+    mls_ciphertext: MLSCiphertext,
+    mls_welcome: Welcome,
+    mls_group_info: GroupInfo,
+    mls_key_package: KeyPackage,
+};
+
+/// Errors
+pub const Error = error{
+    InvalidCiphersuite,
+    InvalidProtocolVersion,
+    InvalidWireFormat,
+    InvalidContentType,
+    InvalidProposalType,
+    InvalidExtensionType,
+    InvalidCredentialType,
+    UnsupportedVersion,
+    UnsupportedCiphersuite,
+    UnsupportedExtension,
+    UnsupportedProposal,
+    UnsupportedCredential,
+    InvalidSignature,
+    InvalidEpoch,
+    InvalidGroupId,
+    InvalidMember,
+    PermissionDenied,
+    GroupNotActive,
+    MemberNotFound,
+    ProposalNotFound,
+    PathRequired,
+    PathNotRequired,
+    InvalidPath,
+    InvalidKeyPackage,
+    InvalidLeafNode,
+    InvalidGroupInfo,
+    InvalidWelcome,
+    DecryptionFailed,
+    EncryptionFailed,
+};
+
+test "types sizes" {
+    try std.testing.expectEqual(@sizeOf(GroupId), 32);
+    try std.testing.expectEqual(@sizeOf(Epoch), 8);
+    try std.testing.expectEqual(@sizeOf(ProposalRef), 32);
+}
+
+test "enum values" {
+    try std.testing.expectEqual(@intFromEnum(Ciphersuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519), 0x0001);
+    try std.testing.expectEqual(@intFromEnum(WireFormat.mls_welcome), 3);
+    try std.testing.expectEqual(@intFromEnum(ContentType.application), 1);
+    try std.testing.expectEqual(@intFromEnum(ProposalType.add), 1);
+    try std.testing.expectEqual(@intFromEnum(ExtensionType.nostr_group_data), 0xFF00);
+}

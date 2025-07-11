@@ -8,6 +8,7 @@ pub const client = @import("client.zig");
 pub const crypto = @import("crypto.zig");
 pub const bech32 = @import("bech32.zig");
 pub const nip44 = @import("nip44/mod.zig");
+pub const mls = @import("mls/mls.zig");
 
 // Export main types for convenience
 pub const Event = nostr.Event;
