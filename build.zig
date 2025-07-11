@@ -392,4 +392,21 @@ pub fn build(b: *std.Build) void {
     const run_pubkey_debug = b.addRunArtifact(pubkey_debug);
     const pubkey_debug_step = b.step("debug-pubkey", "Debug public key derivation");
     pubkey_debug_step.dependOn(&run_pubkey_debug.step);
+    
+    // Add conversation key sec2 debug test
+    const conv_key_sec2_debug = b.addExecutable(.{
+        .name = "conv_key_sec2_debug",
+        .root_source_file = b.path("debug_conversation_key_sec2.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    conv_key_sec2_debug.root_module.addImport("secp256k1", secp256k1_mod);
+    conv_key_sec2_debug.linkLibrary(secp256k1_lib);
+    conv_key_sec2_debug.addIncludePath(b.path("deps/secp256k1/include"));
+    conv_key_sec2_debug.addIncludePath(b.path("src/secp256k1"));
+    conv_key_sec2_debug.linkLibC();
+    
+    const run_conv_key_sec2_debug = b.addRunArtifact(conv_key_sec2_debug);
+    const conv_key_sec2_debug_step = b.step("debug-conv-key-sec2", "Debug conversation key with sec2");
+    conv_key_sec2_debug_step.dependOn(&run_conv_key_sec2_debug.step);
 }

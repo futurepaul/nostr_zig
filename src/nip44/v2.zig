@@ -228,11 +228,14 @@ pub fn encrypt(
     // Encrypted data
     @memcpy(payload[33..33 + encrypted.len], encrypted);
     
-    // HMAC-SHA256 over everything except the HMAC itself
-    const hmac_input = payload[0..33 + encrypted.len];
+    // HMAC-SHA256 over nonce + ciphertext (matching NIP-44 spec)
+    var hmac_ctx = crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).init(&message_keys.hmac_key);
+    hmac_ctx.update(&nonce); // 32 bytes of nonce
+    hmac_ctx.update(encrypted); // ciphertext only
     var hmac: [32]u8 = undefined;
-    crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).create(&hmac, hmac_input, &message_keys.hmac_key);
+    hmac_ctx.final(&hmac);
     @memcpy(payload[33 + encrypted.len..], &hmac);
+    
     
     // Base64 encode result
     const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
@@ -249,6 +252,7 @@ pub fn decryptBytes(
     public_key: [32]u8,
     payload: []const u8,
 ) Nip44Error![]u8 {
+    
     if (payload.len < 65) return Nip44Error.InvalidLength; // 1 + 32 + 32 minimum
     if (payload[0] != VERSION) return Nip44Error.InvalidVersion;
     
@@ -266,9 +270,13 @@ pub fn decryptBytes(
     const message_keys = try conversation_key.deriveMessageKeys(nonce_array);
     
     // Verify HMAC
-    const hmac_input = payload[0..payload.len - 32];
+    // HMAC should be calculated over nonce + ciphertext (not including version or HMAC itself)
+    var hmac_ctx = crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).init(&message_keys.hmac_key);
+    hmac_ctx.update(nonce); // 32 bytes of nonce
+    hmac_ctx.update(encrypted); // ciphertext only
     var computed_hmac: [32]u8 = undefined;
-    crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).create(&computed_hmac, hmac_input, &message_keys.hmac_key);
+    hmac_ctx.final(&computed_hmac);
+    
     
     if (!crypto.utils.timingSafeEql([32]u8, computed_hmac, received_hmac[0..32].*)) {
         return Nip44Error.InvalidHmac;

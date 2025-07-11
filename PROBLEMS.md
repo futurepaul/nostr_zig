@@ -2,39 +2,34 @@
 
 ## Current Status (2025-01-11)
 
-**✅ Major Progress:** NIP-44 implementation is **15/17 tests passing** with critical ECDH fix!
+**✅ MAJOR BREAKTHROUGH:** NIP-44 HMAC issue is FIXED! **16/17 tests passing**!
 
 ### Test Results Summary
 ```
 test
-+- run test 15/17 passed, 2 failed
-Build Summary: 8/10 steps succeeded; 1 failed; 16/18 tests passed; 2 failed
++- run test 16/17 passed, 1 failed
+Build Summary: 8/10 steps succeeded; 1 failed; 17/18 tests passed; 1 failed
 ```
+
+The only remaining failure is the unrelated bech32 test.
 
 ---
 
-## 🚨 **Critical Issues to Fix**
+## 🎉 **Issues Fixed This Session**
 
-### 1. **HMAC Verification Failure** (HIGH PRIORITY)
+### 1. **HMAC Verification** (✅ FIXED!)
 
-**Problem:** HMAC verification fails during decryption even though conversation key is now correct.
+**Root Cause:** The HMAC was being calculated over incorrect data. The NIP-44 spec requires HMAC over `nonce + ciphertext` only, but we were including the version byte.
 
-**Test Failure:**
+**Fix Applied:**
+```zig
+// Correct HMAC calculation (matching Go/Rust/C implementations)
+var hmac_ctx = crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).init(&message_keys.hmac_key);
+hmac_ctx.update(nonce);      // 32 bytes of nonce
+hmac_ctx.update(encrypted);   // ciphertext only
 ```
-❌ Decrypt test 0 FAILED: error.InvalidHmac
-/Users/futurepaul/dev/heavy/nostr_zig/src/nip44/v2.zig:274:9
-```
 
-**Current Status:**
-- ✅ Conversation key generation is FIXED and matches test vectors perfectly
-- ✅ ECDH shared secret now uses correct x-coordinate-only approach
-- ❌ HMAC verification still failing
-
-**Investigation Needed:**
-- Verify HMAC calculation matches NIP-44 spec exactly
-- Check if there's an issue with salt/nonce handling in HMAC
-- Ensure payload parsing extracts HMAC bytes correctly
-- Compare HMAC input data ordering with reference implementations
+**Also Fixed:** The test runner was incorrectly passing `sec2` directly instead of deriving the public key from it.
 
 ### 2. **Bech32 Test Failure** (LOW PRIORITY - UNRELATED)
 
@@ -50,16 +45,17 @@ Build Summary: 8/10 steps succeeded; 1 failed; 16/18 tests passed; 2 failed
 
 ---
 
-## 🎯 **Next Session Action Plan**
+## 🎯 **What's Left**
 
-### Priority Order:
-1. **Debug HMAC verification** - Add logging to see what data is being HMACed
-2. **Compare with reference** - Check Go/Rust implementations for HMAC calculation
-3. **Fix bech32 issue** - Separate from NIP-44 work
+### Only One Issue Remaining:
+1. **Fix bech32 test** - This is unrelated to NIP-44 and appears to be a separate issue in the bech32 module
 
-### Key Files to Focus On:
-- `src/nip44/v2.zig` - decryptBytes function around line 274
-- Reference implementations in `samples/nip44/go` and `samples/nip44/rust`
+### NIP-44 is Essentially Complete!
+- All conversation key generation tests pass ✅
+- All HKDF message key derivation tests pass ✅
+- All padding algorithm tests pass ✅
+- All encryption/decryption tests pass ✅
+- Invalid test cases are properly handled ✅
 
 ---
 
@@ -111,11 +107,11 @@ fn nip44EcdhHashFunction(
 - Reference: Go implementation `hex.DecodeString("02" + pub2)`
 - Reference: Rust implementation `PublicKey::from_x_only_public_key(x_only_public_key_b, Parity::Even)`
 
-### Remaining HMAC Issue
-The HMAC verification is the last major hurdle. The conversation key is correct, so the issue must be in:
-1. How we compute the HMAC during decryption
-2. The order or format of data being HMACed
-3. How we extract the HMAC from the payload
+### HMAC Issue Resolution
+The HMAC issue was caused by including the version byte in the HMAC calculation. The correct approach (verified against Go, Rust, and C implementations) is:
+1. HMAC is calculated over `nonce + ciphertext` only
+2. Version byte (first byte) is NOT included
+3. HMAC bytes (last 32 bytes) are NOT included
 
 ### Test Environment
 - Zig 0.14.1
@@ -130,11 +126,17 @@ The HMAC verification is the last major hurdle. The conversation key is correct,
 1. **ECDH Custom Hash Function** - Implemented to return raw x-coordinate instead of SHA256 hash
 2. **X-Only Public Key Handling** - Fixed to always use even y-coordinate (0x02)
 3. **Test Vector Update** - Using paulmillr's comprehensive test suite
+4. **HMAC Calculation** - Fixed to match spec: HMAC over nonce + ciphertext only
+5. **Test Runner** - Fixed to derive public key from sec2 in test vectors
 
 ### Progress Summary:
 - Started: 13/17 tests passing
-- Current: 15/17 tests passing
-- Fixed: HKDF, padding, ECDH shared secret generation
-- Remaining: HMAC verification, unrelated bech32 test
+- After ECDH fix: 15/17 tests passing
+- **Current: 16/17 tests passing! 🎉**
+- Fixed: HKDF, padding, ECDH shared secret generation, HMAC verification
+- Remaining: Only unrelated bech32 test
 
-*Last updated: 2025-01-11 - After fixing ECDH shared secret generation*
+### Key Insight on Test Vectors
+The encrypt_decrypt test vectors provide `sec1` and `sec2` (both secret keys). The test runner must derive the public key from `sec2` before calling decrypt, matching how the reference implementations handle these test cases.
+
+*Last updated: 2025-01-11 - After fixing HMAC verification*
