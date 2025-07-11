@@ -76,8 +76,33 @@ pub fn encode(allocator: std.mem.Allocator, hrp: []const u8, data: []const u8) !
     const hrp_c = try allocator.dupeZ(u8, hrp);
     defer allocator.free(hrp_c);
     
-    // Encode using the C library (version 0 for standard bech32)
-    const result = c.segwit_addr_encode(&output, hrp_c.ptr, 0, data.ptr, data.len);
+    // First convert 8-bit data to 5-bit values
+    var data_5bit: [52]u8 = undefined; // Max needed for 32 bytes
+    var data_5bit_len: usize = 0;
+    
+    // Convert 8-bit bytes to 5-bit values
+    var acc: u32 = 0;
+    var bits: u8 = 0;
+    
+    for (data) |byte| {
+        acc = (acc << 8) | byte;
+        bits += 8;
+        
+        while (bits >= 5) {
+            bits -= 5;
+            data_5bit[data_5bit_len] = @truncate((acc >> @intCast(bits)) & 0x1F);
+            data_5bit_len += 1;
+        }
+    }
+    
+    // Handle remaining bits
+    if (bits > 0) {
+        data_5bit[data_5bit_len] = @truncate((acc << @intCast(5 - bits)) & 0x1F);
+        data_5bit_len += 1;
+    }
+    
+    // Encode using the C library with plain bech32 encoding
+    const result = c.bech32_encode(&output, hrp_c.ptr, data_5bit[0..data_5bit_len].ptr, data_5bit_len, c.BECH32_ENCODING_BECH32);
     
     if (result != 1) {
         return Bech32Error.EncodeFailed;
