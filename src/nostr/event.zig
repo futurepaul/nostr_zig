@@ -4,7 +4,7 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
 /// Nostr event kinds as defined in the protocol
-pub const Kind = enum(u16) {
+pub const Kind = enum(u32) {
     metadata = 0,          // User metadata (profile)
     text_note = 1,         // Short text note
     recommend_relay = 2,   // Recommend a relay
@@ -18,11 +18,11 @@ pub const Kind = enum(u16) {
     // Add more kinds as needed
     _,                    // Allow unknown kinds
 
-    pub fn fromInt(value: u16) Kind {
+    pub fn fromInt(value: u32) Kind {
         return @enumFromInt(value);
     }
 
-    pub fn toInt(self: Kind) u16 {
+    pub fn toInt(self: Kind) u32 {
         return @intFromEnum(self);
     }
 };
@@ -49,8 +49,8 @@ pub const Event = struct {
     id: []const u8,           // 32-byte hex-encoded event ID
     pubkey: []const u8,       // 32-byte hex-encoded public key
     created_at: i64,          // Unix timestamp in seconds
-    kind: Kind,               // Event kind
-    tags: Tags,              // Array of tag arrays
+    kind: u32,                // Event kind
+    tags: []const []const []const u8,  // Array of tag arrays
     content: []const u8,      // Event content
     sig: []const u8,          // 64-byte hex-encoded signature
 
@@ -82,7 +82,7 @@ pub const Event = struct {
         
         const kind_value = obj.get("kind") orelse return EventError.MissingField;
         if (kind_value != .integer) return EventError.InvalidFieldType;
-        const kind = Kind.fromInt(@as(u16, @intCast(kind_value.integer)));
+        const kind = @as(u32, @intCast(kind_value.integer));
         
         const content_value = obj.get("content") orelse return EventError.MissingField;
         if (content_value != .string) return EventError.InvalidFieldType;
@@ -96,7 +96,7 @@ pub const Event = struct {
         const tags_value = obj.get("tags") orelse return EventError.MissingField;
         if (tags_value != .array) return EventError.InvalidFieldType;
         const tags_array = tags_value.array;
-        const tags = try allocator.alloc(Tag, tags_array.items.len);
+        const tags = try allocator.alloc([]const []const u8, tags_array.items.len);
         
         for (tags_array.items, 0..) |tag_item, i| {
             if (tag_item != .array) return EventError.InvalidFieldType;
@@ -129,8 +129,8 @@ pub const Event = struct {
             id: []const u8,
             pubkey: []const u8,
             created_at: i64,
-            kind: u16,
-            tags: Tags,
+            kind: u32,
+            tags: []const []const []const u8,
             content: []const u8,
             sig: []const u8,
         };
@@ -139,7 +139,7 @@ pub const Event = struct {
             .id = self.id,
             .pubkey = self.pubkey,
             .created_at = self.created_at,
-            .kind = self.kind.toInt(),
+            .kind = self.kind,
             .tags = self.tags,
             .content = self.content,
             .sig = self.sig,
@@ -178,12 +178,12 @@ pub const Event = struct {
 
     /// Check if event is a text note
     pub fn isTextNote(self: Self) bool {
-        return self.kind == .text_note;
+        return self.kind == 1;
     }
 
     /// Check if event is metadata
     pub fn isMetadata(self: Self) bool {
-        return self.kind == .metadata;
+        return self.kind == 0;
     }
 };
 
@@ -210,7 +210,7 @@ test "parse text note event from JSON" {
     try testing.expectEqualStrings("b7b1fb52ad8461a03e949820ae29a9ea07e35bcd79c95c4b59b0254944f62805", event.id);
     try testing.expectEqualStrings("aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4", event.pubkey);
     try testing.expectEqual(@as(i64, 1704644581), event.created_at);
-    try testing.expectEqual(Kind.text_note, event.kind);
+    try testing.expectEqual(@as(u32, 1), event.kind);
     try testing.expectEqual(@as(usize, 0), event.tags.len);
     try testing.expectEqualStrings("Text note", event.content);
     try testing.expectEqualStrings("ed73a8a4e7c26cd797a7b875c634d9ecb6958c57733305fed23b978109d0411d21b3e182cb67c8ad750884e30ca383b509382ae6187b36e76ee76e6a142c4284", event.sig);
@@ -239,7 +239,7 @@ test "parse metadata event from JSON" {
     defer event.deinit(allocator);
     
     // Verify metadata-specific fields
-    try testing.expectEqual(Kind.metadata, event.kind);
+    try testing.expectEqual(@as(u32, 0), event.kind);
     try testing.expect(event.isMetadata());
     try testing.expect(!event.isTextNote());
     
@@ -285,14 +285,14 @@ test "serialize event to JSON" {
     const allocator = testing.allocator;
     
     // Create a simple event
-    const tags = try allocator.alloc(Tag, 0);
+    const tags = try allocator.alloc([]const []const u8, 0);
     defer allocator.free(tags);
     
     const event = Event{
         .id = "test_id",
         .pubkey = "test_pubkey",
         .created_at = 1234567890,
-        .kind = Kind.text_note,
+        .kind = 1,
         .tags = tags,
         .content = "Test content",
         .sig = "test_sig",
@@ -372,9 +372,9 @@ test "basic validation checks" {
 }
 
 test "kind enum functionality" {
-    try testing.expectEqual(@as(u16, 0), Kind.metadata.toInt());
-    try testing.expectEqual(@as(u16, 1), Kind.text_note.toInt());
-    try testing.expectEqual(@as(u16, 7), Kind.reaction.toInt());
+    try testing.expectEqual(@as(u32, 0), Kind.metadata.toInt());
+    try testing.expectEqual(@as(u32, 1), Kind.text_note.toInt());
+    try testing.expectEqual(@as(u32, 7), Kind.reaction.toInt());
     
     try testing.expectEqual(Kind.metadata, Kind.fromInt(0));
     try testing.expectEqual(Kind.text_note, Kind.fromInt(1));
@@ -382,5 +382,5 @@ test "kind enum functionality" {
     
     // Test unknown kind
     const unknown_kind = Kind.fromInt(9999);
-    try testing.expectEqual(@as(u16, 9999), unknown_kind.toInt());
+    try testing.expectEqual(@as(u32, 9999), unknown_kind.toInt());
 }

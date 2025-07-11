@@ -15,6 +15,13 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    // Add websocket dependency
+    const websocket_dep = b.dependency("websocket", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const websocket_mod = websocket_dep.module("websocket");
+
     // This creates a "module", which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Every executable or library we compile will be based on one or more modules.
@@ -38,6 +45,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    // Add websocket import to modules
+    lib_mod.addImport("websocket", websocket_mod);
+    exe_mod.addImport("websocket", websocket_mod);
 
     // Modules can depend on one another using the `std.Build.Module.addImport` function.
     // This is what allows Zig source code to use `@import("foo")` where 'foo' is not a
@@ -113,4 +124,43 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    // Add test for roundtrip
+    const roundtrip_test = b.addTest(.{
+        .root_source_file = b.path("src/test_roundtrip.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    roundtrip_test.root_module.addImport("websocket", websocket_mod);
+    roundtrip_test.root_module.addImport("nostr", lib_mod);
+    const run_roundtrip_test = b.addRunArtifact(roundtrip_test);
+    
+    const roundtrip_step = b.step("test-roundtrip", "Run roundtrip test");
+    roundtrip_step.dependOn(&run_roundtrip_test.step);
+
+    // Add basic client example
+    const basic_example = b.addExecutable(.{
+        .name = "basic_client",
+        .root_source_file = b.path("examples/basic_client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    basic_example.root_module.addImport("nostr_zig", lib_mod);
+    
+    const run_basic_example = b.addRunArtifact(basic_example);
+    const example_step = b.step("example", "Run basic client example");
+    example_step.dependOn(&run_basic_example.step);
+    
+    // Add realistic client example
+    const realistic_example = b.addExecutable(.{
+        .name = "realistic_client",
+        .root_source_file = b.path("examples/realistic_client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    realistic_example.root_module.addImport("nostr_zig", lib_mod);
+    
+    const run_realistic_example = b.addRunArtifact(realistic_example);
+    const realistic_step = b.step("example-realistic", "Run realistic client example");
+    realistic_step.dependOn(&run_realistic_example.step);
 }

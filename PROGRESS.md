@@ -1,5 +1,26 @@
 # Development Progress
 
+## Summary
+
+We've successfully implemented a working Nostr client library in Zig that can:
+- ✅ Parse and serialize Nostr events
+- ✅ Connect to Nostr relays via WebSocket
+- ✅ Publish events and receive responses
+- ✅ Subscribe to event streams with filters
+- ✅ Calculate proper event IDs using SHA256
+- ⚠️  Generate signatures (placeholder - needs BIP340 Schnorr)
+
+The client successfully connects to relays, publishes events, and manages subscriptions. Event signatures are currently placeholders since Zig's standard library provides ECDSA but not the Schnorr signatures that Nostr requires.
+
+### Next Steps
+
+1. Add secp256k1-zig dependency for proper BIP340 signatures
+2. Implement proper key generation and event signing
+3. Add signature verification for incoming events
+4. Complete the message parsing for EVENT messages
+5. Add reconnection logic and error recovery
+6. Implement NIP-19 encoding (npub, nsec, nevent, etc.)
+
 ## Completed ✅
 
 ### Initial Setup and Research
@@ -38,13 +59,28 @@
 
 ## In Progress 🔄
 
-None - ready for next phase!
+### WebSocket Client Implementation ✅
+- [x] Added websocket.zig dependency to build.zig.zon
+- [x] Implemented basic WebSocket client for relay communication
+- [x] Created subscription management with filters
+- [x] Implemented event publishing with callbacks
+- [x] Added message processing for relay responses (EVENT, OK, EOSE, NOTICE)
+- [x] Fixed WebSocket handshake issues (Host header required)
+- [x] Created working examples demonstrating client usage
+- [x] Added basic crypto module with event ID calculation
+- [x] Created comprehensive test events covering various NIPs
+- [x] Implemented roundtrip test showing concurrent publish/subscribe
 
 ## Todo 📋
 
 ### Phase 4: Cryptographic Validation
-- [ ] Add event ID validation (SHA256 verification)
-- [ ] Add signature verification (BIP340/Schnorr)
+- [x] Add event ID calculation (SHA256)
+- [ ] Add event ID validation (verify calculated matches provided)
+- [ ] Implement BIP340 Schnorr signatures using secp256k1-zig
+  - Use https://github.com/Syndica/secp256k1-zig wrapper
+  - Provides bitcoin-core's libsecp256k1 with BIP340 support
+  - Add as dependency and integrate for signing/verification
+- [ ] Add signature verification
 - [ ] Add timestamp validation
 - [ ] Add pubkey format validation (hex and length)
 - [ ] Add comprehensive crypto tests

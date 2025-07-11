@@ -88,9 +88,17 @@ A Nostr event contains these fields:
 ## Cryptographic Requirements
 
 Zig's standard library provides:
-- SHA256 hashing (`std.crypto.hash.sha2.Sha256`)
-- Secp256k1 for signature verification
-- Random number generation for key generation
+- SHA256 hashing (`std.crypto.hash.sha2.Sha256`) ✅
+- Secp256k1 curve operations (`std.crypto.pcurves.secp256k1`) ✅
+- ECDSA signatures (`std.crypto.ecdsa.EcdsaSecp256k1Sha256`) ✅
+- Random number generation for key generation ✅
+
+What's missing for Nostr:
+- BIP340 Schnorr signatures (Nostr doesn't use ECDSA)
+- Solution: Use secp256k1-zig wrapper (https://github.com/Syndica/secp256k1-zig)
+  - Wraps bitcoin-core's libsecp256k1
+  - Includes BIP340 Schnorr signature support
+  - Provides proper Nostr event signing/verification
 
 ## Future Extensions
 
@@ -167,3 +175,59 @@ src/
 - Make invalid states unrepresentable (Kind enum with integer backing)
 - Use comptime where possible (will add for crypto operations)
 - Keep allocations visible and controllable by the caller
+
+## WebSocket Client Development
+
+### Dependency Management
+- Use `zig fetch --save <url>` to add dependencies to build.zig.zon
+- Dependencies are added to the `.dependencies` field in build.zig.zon
+- In build.zig, use `b.dependency()` to fetch the dependency module
+- Add imports to modules with `module.addImport("name", dep_module)`
+
+### WebSocket Connection Issues
+- The websocket.zig library requires a Host header in the handshake
+- Parse WebSocket URLs carefully - Uri.Component is a union type
+- Handle both ws:// (port 80) and wss:// (port 443) default ports
+- Always check if path is empty and default to "/" for WebSocket handshake
+
+### Client Architecture Patterns
+- Store WebSocket client as optional (`?websocket.Client`)
+- Use HashMaps for managing subscriptions and callbacks
+- Process messages in a loop with error handling for WouldBlock
+- Remember to call `client.done(msg)` after processing each message
+- Close and deinit the WebSocket client on disconnect
+
+### Event Publishing Flow
+1. Serialize event to JSON
+2. Wrap in ["EVENT", <event>] array
+3. Send as text frame via WebSocket
+4. Store callback in HashMap keyed by event ID
+5. Process OK response and invoke callback
+
+### Subscription Management
+1. Generate unique subscription ID
+2. Create REQ message: ["REQ", <sub_id>, <filter1>, ...]
+3. Store subscription with optional callback
+4. Process EVENT and EOSE messages for the subscription
+5. Send CLOSE message when unsubscribing
+
+### Testing WebSocket Applications
+- Use `nak serve --verbose` for a local test relay
+- Test with curl to verify WebSocket upgrade works
+- Add debug logging to track message flow
+- Create both unit tests and integration tests
+- Use threads for testing concurrent publish/subscribe
+
+### Common WebSocket Pitfalls
+- Not including required headers (especially Host)
+- Forgetting to handle WouldBlock errors in read loops
+- Not properly closing WebSocket connections
+- Memory leaks from not calling deinit on client
+- Race conditions in multi-threaded tests
+
+### Nostr-Specific Lessons
+- Event IDs are SHA256 of canonical JSON: [0, pubkey, created_at, kind, tags, content]
+- Relay responses include: EVENT, OK, EOSE, NOTICE, AUTH, COUNT
+- Filters support: ids, authors, kinds, since, until, limit, and tag filters
+- Always escape content when calculating event ID (quotes, newlines, etc.)
+- Test with realistic events but expect signature validation to fail without secp256k1
