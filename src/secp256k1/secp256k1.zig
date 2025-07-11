@@ -5,6 +5,7 @@ pub const c = @cImport({
     @cInclude("secp256k1.h");
     @cInclude("secp256k1_extrakeys.h");
     @cInclude("secp256k1_schnorrsig.h");
+    @cInclude("secp256k1_ecdh.h");
 });
 
 // Re-export commonly used constants
@@ -28,6 +29,10 @@ pub const secp256k1_context_randomize = c.secp256k1_context_randomize;
 pub const secp256k1_ec_seckey_verify = c.secp256k1_ec_seckey_verify;
 pub const secp256k1_ec_pubkey_create = c.secp256k1_ec_pubkey_create;
 pub const secp256k1_ec_pubkey_serialize = c.secp256k1_ec_pubkey_serialize;
+pub const secp256k1_ec_pubkey_parse = c.secp256k1_ec_pubkey_parse;
+
+// ECDH operations
+pub const secp256k1_ecdh = c.secp256k1_ecdh;
 
 // Keypair operations (for Schnorr)
 pub const secp256k1_keypair_create = c.secp256k1_keypair_create;

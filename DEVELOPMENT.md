@@ -237,6 +237,100 @@ deps/
 - Always escape content when calculating event ID (quotes, newlines, etc.)
 - Relays validate BIP340 signatures - only real signatures are accepted
 
+## NIP-44 Implementation
+
+### Development Approach
+When implementing NIP-44 cryptographic operations, use the reference implementations in `samples/nip44/` to understand the spec and debug issues. Multiple implementations are available, each with different strengths.
+
+### Reference Implementations
+
+#### Go Implementation (`samples/nip44/go/`)
+- **Strengths**: Very readable, clear structure, good for understanding the flow
+- **Key files**:
+  - `nip44.go` - Main implementation with clear function names
+  - `nip44_test.go` - Comprehensive test cases
+- **Key insights**:
+  - Public keys are always prefixed with "02" for even y-coordinate
+  - Uses `secp256k1.ParsePubKey()` for public key parsing
+  - ECDH uses `secp256k1.GenerateSharedSecret()` followed by HKDF
+
+#### Rust Implementation (`samples/nip44/rust/`)
+- **Strengths**: Type-safe, shows proper error handling patterns
+- **Key files**:
+  - `src/lib.rs` - Core implementation
+  - `src/tests.rs` - Test suite
+- **Key insights**:
+  - Uses `PublicKey::from_x_only_public_key(x_only_public_key_b, Parity::Even)`
+  - ECDH returns raw x-coordinate: `ssp.resize(32, 0); // toss the Y part`
+  - Clear separation of concerns with `get_shared_point()` and `get_conversation_key()`
+
+#### C Implementation (`samples/nip44/c/`)
+- **Strengths**: Most detailed, shows low-level operations, canonical reference
+- **Key files**:
+  - `src/noscrypt.c` - Core NIP-44 encryption/decryption
+  - `src/crypto/nc-crypto.c` - Cryptographic primitives
+  - `src/hkdf.c` - HKDF key derivation
+- **Key insights**:
+  - Custom ECDH callback `_edhHashFuncInternal` returns x-coordinate only
+  - No hashing in ECDH - just copies 32-byte x-coordinate
+  - Detailed comments explain NIP-44 spec requirements
+
+### Test Vectors
+- **Location**: `samples/nip44/nip44.vectors.json`
+- **Alternative**: Use paulmillr's test vectors from `https://github.com/paulmillr/nip44`
+- **Structure**:
+  - `conversation_key` - Tests for ECDH shared secret generation
+  - `get_message_keys` - Tests for HKDF key derivation
+  - `calc_padded_len` - Tests for padding algorithm
+  - `encrypt_decrypt` - End-to-end encryption/decryption tests
+- **Usage**: Parse JSON and run each test case to verify implementation
+
+### Common Implementation Pitfalls
+
+1. **ECDH Hash Function**:
+   - Default `secp256k1_ecdh` applies SHA256 to shared point
+   - NIP-44 requires raw x-coordinate (no hashing)
+   - Must provide custom callback function
+
+2. **X-Only Public Keys**:
+   - Always use even y-coordinate (0x02) when converting to compressed
+   - This is a Nostr/NIP-44 convention, not a secp256k1 requirement
+
+3. **HKDF Parameters**:
+   - Extract: `HKDF-Extract(salt="nip44-v2", ikm=shared_secret)`
+   - Expand: `HKDF-Expand(conversation_key, nonce, 76_bytes)`
+   - Order matters: output buffer, info (nonce), PRK (conversation key)
+
+4. **Padding Algorithm**:
+   - Not simple power-of-2 padding
+   - Has specific rules for different size ranges
+   - Check Rust implementation for exact algorithm
+
+5. **HMAC Calculation**:
+   - Must include correct data in correct order
+   - Check reference implementations for exact HMAC input structure
+
+### Debugging Strategy
+
+1. **Start with Known Good Tests**:
+   - Test conversation key generation with vectors from `conversation_key` section
+   - Verify your ECDH produces expected shared secrets
+
+2. **Isolate Components**:
+   - Test HKDF separately with `get_message_keys` vectors
+   - Test padding with `calc_padded_len` vectors
+   - Only then test full encrypt/decrypt
+
+3. **Compare Implementations**:
+   - When stuck, implement same test in Go/Rust to compare
+   - Use debug output to see intermediate values
+   - Cross-reference multiple implementations
+
+4. **Use Reference Test Runners**:
+   - Run `go test` in `samples/nip44/go/`
+   - Run `cargo test` in `samples/nip44/rust/`
+   - See how they handle edge cases
+
 ## Bitcoin-core/secp256k1 Integration
 
 ### Custom Wrapper Development

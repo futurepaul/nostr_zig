@@ -22,6 +22,13 @@ pub fn build(b: *std.Build) void {
     });
     const websocket_mod = websocket_dep.module("websocket");
 
+    // Add mls_zig dependency
+    const mls_dep = b.dependency("mls_zig", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const mls_mod = mls_dep.module("mls_zig");
+
     // Build secp256k1 library
     const secp256k1_lib = b.addStaticLibrary(.{
         .name = "secp256k1",
@@ -134,13 +141,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Add websocket, secp256k1, and bech32 imports to modules
+    // Add websocket, secp256k1, bech32, and mls_zig imports to modules
     lib_mod.addImport("websocket", websocket_mod);
     lib_mod.addImport("secp256k1", secp256k1_mod);
     lib_mod.addImport("bech32", bech32_mod);
+    lib_mod.addImport("mls_zig", mls_mod);
     exe_mod.addImport("websocket", websocket_mod);
     exe_mod.addImport("secp256k1", secp256k1_mod);
     exe_mod.addImport("bech32", bech32_mod);
+    exe_mod.addImport("mls_zig", mls_mod);
 
     // Modules can depend on one another using the `std.Build.Module.addImport` function.
     // This is what allows Zig source code to use `@import("foo")` where 'foo' is not a
@@ -311,4 +320,76 @@ pub fn build(b: *std.Build) void {
     const run_simple_roundtrip = b.addRunArtifact(simple_roundtrip);
     const simple_roundtrip_step = b.step("simple-roundtrip", "Run simple roundtrip test");
     simple_roundtrip_step.dependOn(&run_simple_roundtrip.step);
+    
+    // Add MLS HKDF debug test
+    const mls_hkdf_debug = b.addExecutable(.{
+        .name = "mls_hkdf_debug",
+        .root_source_file = b.path("debug_mls_hkdf.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mls_hkdf_debug.root_module.addImport("mls_zig", mls_mod);
+    
+    const run_mls_hkdf_debug = b.addRunArtifact(mls_hkdf_debug);
+    const mls_hkdf_debug_step = b.step("debug-mls-hkdf", "Debug MLS HKDF implementation");
+    mls_hkdf_debug_step.dependOn(&run_mls_hkdf_debug.step);
+    
+    // Add padding debug test
+    const padding_debug = b.addExecutable(.{
+        .name = "padding_debug",
+        .root_source_file = b.path("debug_padding.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    const run_padding_debug = b.addRunArtifact(padding_debug);
+    const padding_debug_step = b.step("debug-padding", "Debug padding algorithm");
+    padding_debug_step.dependOn(&run_padding_debug.step);
+    
+    // Add HKDF chain debug test
+    const hkdf_chain_debug = b.addExecutable(.{
+        .name = "hkdf_chain_debug",
+        .root_source_file = b.path("debug_hkdf_chain.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    hkdf_chain_debug.root_module.addImport("mls_zig", mls_mod);
+    hkdf_chain_debug.root_module.addImport("secp256k1", secp256k1_mod);
+    hkdf_chain_debug.linkLibrary(secp256k1_lib);
+    hkdf_chain_debug.addIncludePath(b.path("deps/secp256k1/include"));
+    hkdf_chain_debug.addIncludePath(b.path("src/secp256k1"));
+    hkdf_chain_debug.linkLibC();
+    
+    const run_hkdf_chain_debug = b.addRunArtifact(hkdf_chain_debug);
+    const hkdf_chain_debug_step = b.step("debug-hkdf-chain", "Debug complete HKDF chain");
+    hkdf_chain_debug_step.dependOn(&run_hkdf_chain_debug.step);
+    
+    // Add Rust padding debug test
+    const rust_padding_debug = b.addExecutable(.{
+        .name = "rust_padding_debug",
+        .root_source_file = b.path("debug_rust_padding.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    const run_rust_padding_debug = b.addRunArtifact(rust_padding_debug);
+    const rust_padding_debug_step = b.step("debug-rust-padding", "Debug Rust reference padding");
+    rust_padding_debug_step.dependOn(&run_rust_padding_debug.step);
+    
+    // Add public key debug test
+    const pubkey_debug = b.addExecutable(.{
+        .name = "pubkey_debug",
+        .root_source_file = b.path("debug_pubkey.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    pubkey_debug.root_module.addImport("secp256k1", secp256k1_mod);
+    pubkey_debug.linkLibrary(secp256k1_lib);
+    pubkey_debug.addIncludePath(b.path("deps/secp256k1/include"));
+    pubkey_debug.addIncludePath(b.path("src/secp256k1"));
+    pubkey_debug.linkLibC();
+    
+    const run_pubkey_debug = b.addRunArtifact(pubkey_debug);
+    const pubkey_debug_step = b.step("debug-pubkey", "Debug public key derivation");
+    pubkey_debug_step.dependOn(&run_pubkey_debug.step);
 }
