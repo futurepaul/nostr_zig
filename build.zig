@@ -85,6 +85,30 @@ pub fn build(b: *std.Build) void {
     secp256k1_mod.addIncludePath(b.path("src/secp256k1"));
     secp256k1_mod.linkLibrary(secp256k1_lib);
 
+    // Build bech32 library
+    const bech32_lib = b.addStaticLibrary(.{
+        .name = "bech32",
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    // Add bech32 C source
+    bech32_lib.addCSourceFile(.{
+        .file = b.path("deps/bech32/ref/c/segwit_addr.c"),
+        .flags = &[_][]const u8{"-std=c99"},
+    });
+    bech32_lib.addIncludePath(b.path("deps/bech32/ref/c"));
+    bech32_lib.linkLibC();
+    
+    // Create bech32 module with proper include paths
+    const bech32_mod = b.createModule(.{
+        .root_source_file = b.path("src/bech32.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bech32_mod.addIncludePath(b.path("deps/bech32/ref/c"));
+    bech32_mod.linkLibrary(bech32_lib);
+
 
     // This creates a "module", which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -110,11 +134,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Add websocket and secp256k1 imports to modules
+    // Add websocket, secp256k1, and bech32 imports to modules
     lib_mod.addImport("websocket", websocket_mod);
     lib_mod.addImport("secp256k1", secp256k1_mod);
+    lib_mod.addImport("bech32", bech32_mod);
     exe_mod.addImport("websocket", websocket_mod);
     exe_mod.addImport("secp256k1", secp256k1_mod);
+    exe_mod.addImport("bech32", bech32_mod);
 
     // Modules can depend on one another using the `std.Build.Module.addImport` function.
     // This is what allows Zig source code to use `@import("foo")` where 'foo' is not a
@@ -129,6 +155,14 @@ pub fn build(b: *std.Build) void {
         .name = "nostr_zig",
         .root_module = lib_mod,
     });
+    
+    // Add library dependencies
+    lib.linkLibrary(secp256k1_lib);
+    lib.linkLibrary(bech32_lib);
+    lib.addIncludePath(b.path("deps/secp256k1/include"));
+    lib.addIncludePath(b.path("src/secp256k1"));
+    lib.addIncludePath(b.path("deps/bech32/ref/c"));
+    lib.linkLibC();
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
@@ -141,6 +175,14 @@ pub fn build(b: *std.Build) void {
         .name = "nostr_zig",
         .root_module = exe_mod,
     });
+    
+    // Add library dependencies to the executable
+    exe.linkLibrary(secp256k1_lib);
+    exe.linkLibrary(bech32_lib);
+    exe.addIncludePath(b.path("deps/secp256k1/include"));
+    exe.addIncludePath(b.path("src/secp256k1"));
+    exe.addIncludePath(b.path("deps/bech32/ref/c"));
+    exe.linkLibC();
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

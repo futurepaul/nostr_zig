@@ -6,6 +6,7 @@ const testing = std.testing;
 pub const nostr = @import("nostr.zig");
 pub const client = @import("client.zig");
 pub const crypto = @import("crypto.zig");
+pub const bech32 = @import("bech32.zig");
 
 // Export main types for convenience
 pub const Event = nostr.Event;
