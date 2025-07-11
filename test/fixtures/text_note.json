@@ -1,0 +1,9 @@
+{
+  "id": "b7b1fb52ad8461a03e949820ae29a9ea07e35bcd79c95c4b59b0254944f62805",
+  "pubkey": "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
+  "created_at": 1704644581,
+  "kind": 1,
+  "tags": [],
+  "content": "Text note",
+  "sig": "ed73a8a4e7c26cd797a7b875c634d9ecb6958c57733305fed23b978109d0411d21b3e182cb67c8ad750884e30ca383b509382ae6187b36e76ee76e6a142c4284"
+}
