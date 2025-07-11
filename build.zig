@@ -373,6 +373,32 @@ pub fn build(b: *std.Build) void {
     const mls_real_test_step = b.step("test-mls-real", "Test real mls_zig functionality");
     mls_real_test_step.dependOn(&run_mls_real_test.step);
     
+    // Add MLS signing API test
+    const mls_signing_api_test = b.addExecutable(.{
+        .name = "test_mls_signing_api",
+        .root_source_file = b.path("debug_scripts/test_mls_signing_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mls_signing_api_test.root_module.addImport("mls_zig", mls_mod);
+    
+    const run_mls_signing_api_test = b.addRunArtifact(mls_signing_api_test);
+    const mls_signing_api_test_step = b.step("test-mls-signing-api", "Test MLS signing API");
+    mls_signing_api_test_step.dependOn(&run_mls_signing_api_test.step);
+    
+    // Add MLS detailed API test
+    const mls_detailed_api_test = b.addExecutable(.{
+        .name = "test_mls_detailed_api",
+        .root_source_file = b.path("debug_scripts/test_mls_detailed_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mls_detailed_api_test.root_module.addImport("mls_zig", mls_mod);
+    
+    const run_mls_detailed_api_test = b.addRunArtifact(mls_detailed_api_test);
+    const mls_detailed_api_test_step = b.step("test-mls-detailed-api", "Test MLS detailed API");
+    mls_detailed_api_test_step.dependOn(&run_mls_detailed_api_test.step);
+    
     // Add padding debug test
     const padding_debug = b.addExecutable(.{
         .name = "padding_debug",
@@ -448,4 +474,43 @@ pub fn build(b: *std.Build) void {
     const run_conv_key_sec2_debug = b.addRunArtifact(conv_key_sec2_debug);
     const conv_key_sec2_debug_step = b.step("debug-conv-key-sec2", "Debug conversation key with sec2");
     conv_key_sec2_debug_step.dependOn(&run_conv_key_sec2_debug.step);
+    
+    // Add HKDF integration test
+    const test_hkdf_integration = b.addExecutable(.{
+        .name = "test_hkdf_integration",
+        .root_source_file = b.path("debug_scripts/test_hkdf_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_hkdf_integration.root_module.addImport("nostr", lib_mod);
+    
+    const run_test_hkdf_integration = b.addRunArtifact(test_hkdf_integration);
+    const test_hkdf_integration_step = b.step("test-hkdf-integration", "Test HKDF integration with mls_zig");
+    test_hkdf_integration_step.dependOn(&run_test_hkdf_integration.step);
+    
+    // Add Ed25519 integration test
+    const test_ed25519_integration = b.addExecutable(.{
+        .name = "test_ed25519_integration",
+        .root_source_file = b.path("debug_scripts/test_ed25519_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_ed25519_integration.root_module.addImport("nostr", lib_mod);
+    
+    const run_test_ed25519_integration = b.addRunArtifact(test_ed25519_integration);
+    const test_ed25519_integration_step = b.step("test-ed25519-integration", "Test Ed25519 integration with mls_zig");
+    test_ed25519_integration_step.dependOn(&run_test_ed25519_integration.step);
+    
+    // Add HPKE integration test
+    const test_hpke_integration = b.addExecutable(.{
+        .name = "test_hpke_integration",
+        .root_source_file = b.path("debug_scripts/test_hpke_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_hpke_integration.root_module.addImport("nostr", lib_mod);
+    
+    const run_test_hpke_integration = b.addRunArtifact(test_hpke_integration);
+    const test_hpke_integration_step = b.step("test-hpke-integration", "Test HPKE integration");
+    test_hpke_integration_step.dependOn(&run_test_hpke_integration.step);
 }
