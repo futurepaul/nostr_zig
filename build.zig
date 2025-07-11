@@ -334,6 +334,45 @@ pub fn build(b: *std.Build) void {
     const mls_hkdf_debug_step = b.step("debug-mls-hkdf", "Debug MLS HKDF implementation");
     mls_hkdf_debug_step.dependOn(&run_mls_hkdf_debug.step);
     
+    // Add mls_zig API exploration
+    const mls_api_test = b.addExecutable(.{
+        .name = "test_mls_zig_api",
+        .root_source_file = b.path("debug_scripts/test_mls_zig_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mls_api_test.root_module.addImport("mls_zig", mls_mod);
+    
+    const run_mls_api_test = b.addRunArtifact(mls_api_test);
+    const mls_api_step = b.step("explore-mls-api", "Explore mls_zig API");
+    mls_api_step.dependOn(&run_mls_api_test.step);
+    
+    // Add detailed mls_zig API exploration
+    const mls_api_detailed = b.addExecutable(.{
+        .name = "explore_mls_zig_detailed",
+        .root_source_file = b.path("debug_scripts/explore_mls_zig_detailed.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mls_api_detailed.root_module.addImport("mls_zig", mls_mod);
+    
+    const run_mls_api_detailed = b.addRunArtifact(mls_api_detailed);
+    const mls_api_detailed_step = b.step("explore-mls-detailed", "Detailed mls_zig API exploration");
+    mls_api_detailed_step.dependOn(&run_mls_api_detailed.step);
+    
+    // Add real mls_zig functionality test
+    const mls_real_test = b.addExecutable(.{
+        .name = "test_mls_zig_real",
+        .root_source_file = b.path("debug_scripts/test_mls_zig_real.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mls_real_test.root_module.addImport("mls_zig", mls_mod);
+    
+    const run_mls_real_test = b.addRunArtifact(mls_real_test);
+    const mls_real_test_step = b.step("test-mls-real", "Test real mls_zig functionality");
+    mls_real_test_step.dependOn(&run_mls_real_test.step);
+    
     // Add padding debug test
     const padding_debug = b.addExecutable(.{
         .name = "padding_debug",

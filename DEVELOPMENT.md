@@ -415,6 +415,16 @@ When implementing NIP-44 cryptographic operations, use the reference implementat
 - `PROBLEMS.md` - Known issues and solutions
 - Avoid creating temporary markdown files for planning
 
+### Debug Scripts Guidelines
+- **Always** place debug scripts and test utilities in the `debug_scripts/` directory
+- Never leave debug scripts in the root directory
+- Follow naming conventions:
+  - `debug_*.zig` - For debugging specific features
+  - `test_*.zig` - For standalone test scripts
+  - `verify_*.zig` - For verification utilities
+- These scripts are not part of the production codebase
+- They should be self-contained and runnable independently
+
 ### Source Code Organization
 - `src/` - All production code
 - `src/nostr/` - Core Nostr protocol implementations
