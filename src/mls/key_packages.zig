@@ -157,7 +157,7 @@ pub fn generateKeyPackage(
 pub fn parseKeyPackage(
     allocator: std.mem.Allocator,
     data: []const u8,
-) !types.KeyPackage {
+) types.KeyPackageError!types.KeyPackage {
     // Use TLS 1.3 wire format as per RFC 9420
     var stream = std.io.fixedBufferStream(data);
     var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
@@ -173,41 +173,43 @@ pub fn parseKeyPackage(
     // } KeyPackage;
     
     // Version (u16)
-    const version_raw = try reader.readU16();
-    const version: types.ProtocolVersion = @enumFromInt(version_raw);
+    const version_raw = reader.readU16() catch return error.UnexpectedEndOfStream;
+    const version = types.ProtocolVersion.fromInt(version_raw);
     
     // Cipher suite (u16)
-    const cipher_suite_raw = try reader.readU16();
-    const cipher_suite: types.Ciphersuite = @enumFromInt(cipher_suite_raw);
+    const cipher_suite_raw = reader.readU16() catch return error.UnexpectedEndOfStream;
+    const cipher_suite = types.Ciphersuite.fromInt(cipher_suite_raw);
     
     // Init key (variable length with u16 length prefix)
-    const init_key_len = try reader.readU16();
-    const init_key = try allocator.alloc(u8, init_key_len);
-    try reader.reader.readNoEof(init_key);
+    const init_key_len = reader.readU16() catch return error.UnexpectedEndOfStream;
+    if (init_key_len > 256) return error.InvalidKeyLength; // Sanity check
+    const init_key = allocator.alloc(u8, init_key_len) catch return error.UnexpectedEndOfStream;
+    reader.reader.readNoEof(init_key) catch return error.UnexpectedEndOfStream;
     
     // Leaf node (variable length)
-    const leaf_node_len = try reader.readU16();
-    const leaf_node_data = try allocator.alloc(u8, leaf_node_len);
+    const leaf_node_len = reader.readU16() catch return error.UnexpectedEndOfStream;
+    const leaf_node_data = allocator.alloc(u8, leaf_node_len) catch return error.UnexpectedEndOfStream;
     defer allocator.free(leaf_node_data);
-    try reader.reader.readNoEof(leaf_node_data);
-    const leaf_node = try parseLeafNode(allocator, leaf_node_data);
+    reader.reader.readNoEof(leaf_node_data) catch return error.UnexpectedEndOfStream;
+    const leaf_node = parseLeafNode(allocator, leaf_node_data) catch return error.InvalidLeafNode;
     
     // Extensions (variable length)
-    const extensions_len = try reader.readU16();
-    const extensions_data = try allocator.alloc(u8, extensions_len);
+    const extensions_len = reader.readU16() catch return error.UnexpectedEndOfStream;
+    const extensions_data = allocator.alloc(u8, extensions_len) catch return error.UnexpectedEndOfStream;
     defer allocator.free(extensions_data);
-    try reader.reader.readNoEof(extensions_data);
-    const extensions = try parseExtensions(allocator, extensions_data);
+    reader.reader.readNoEof(extensions_data) catch return error.UnexpectedEndOfStream;
+    const extensions = parseExtensions(allocator, extensions_data) catch return error.MalformedExtensions;
     
     // Signature (variable length with u16 length prefix)
-    const signature_len = try reader.readU16();
-    const signature = try allocator.alloc(u8, signature_len);
-    try reader.reader.readNoEof(signature);
+    const signature_len = reader.readU16() catch return error.UnexpectedEndOfStream;
+    if (signature_len > 512) return error.InvalidSignature; // Sanity check
+    const signature = allocator.alloc(u8, signature_len) catch return error.UnexpectedEndOfStream;
+    reader.reader.readNoEof(signature) catch return error.UnexpectedEndOfStream;
     
     return types.KeyPackage{
         .version = version,
         .cipher_suite = cipher_suite,
-        .init_key = types.HPKEPublicKey{ .data = init_key },
+        .init_key = types.HPKEPublicKey.init(init_key),
         .leaf_node = leaf_node,
         .extensions = extensions,
         .signature = signature,
@@ -333,6 +335,49 @@ pub fn extractNostrPubkey(key_package: types.KeyPackage) ![32]u8 {
         },
         else => return error.UnsupportedCredential,
     }
+}
+
+/// Parse key package from Nostr event content
+pub fn parseFromNostrEvent(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+) types.KeyPackageError!types.KeyPackage {
+    // Try hex decoding first (most common in Nostr)
+    if (isHexString(content)) {
+        const decoded = allocator.alloc(u8, content.len / 2) catch return error.UnexpectedEndOfStream;
+        defer allocator.free(decoded);
+        _ = std.fmt.hexToBytes(decoded, content) catch return error.InvalidVersion;
+        return parseKeyPackage(allocator, decoded);
+    }
+    
+    // Try base64 if not hex
+    // TODO: Implement base64 decoding when needed
+    
+    // Otherwise assume raw binary
+    return parseKeyPackage(allocator, content);
+}
+
+/// Serialize key package for Nostr event
+pub fn serializeForNostrEvent(
+    allocator: std.mem.Allocator,
+    key_package: types.KeyPackage,
+) ![]u8 {
+    const binary = try serializeKeyPackage(allocator, key_package);
+    defer allocator.free(binary);
+    
+    // Encode as hex for Nostr
+    const hex = try allocator.alloc(u8, binary.len * 2);
+    _ = std.fmt.bufPrint(hex, "{s}", .{std.fmt.fmtSliceHexLower(binary)}) catch unreachable;
+    return hex;
+}
+
+/// Check if string is valid hex
+fn isHexString(s: []const u8) bool {
+    if (s.len == 0 or s.len % 2 != 0) return false;
+    for (s) |c| {
+        if (!std.ascii.isHex(c)) return false;
+    }
+    return true;
 }
 
 // Helper functions
@@ -541,7 +586,7 @@ fn parseLeafNode(allocator: std.mem.Allocator, data: []const u8) !types.LeafNode
         try reader.reader.readNoEof(ext_data);
         
         ext.* = types.Extension{
-            .extension_type = @enumFromInt(ext_type),
+            .extension_type = types.ExtensionType.fromInt(ext_type),
             .critical = false,
             .extension_data = ext_data,
         };
@@ -610,7 +655,7 @@ fn parseExtensions(allocator: std.mem.Allocator, data: []const u8) ![]types.Exte
         try reader.reader.readNoEof(ext_data);
         
         try extensions.append(types.Extension{
-            .extension_type = @enumFromInt(ext_type),
+            .extension_type = types.ExtensionType.fromInt(ext_type),
             .critical = critical,
             .extension_data = ext_data,
         });
@@ -640,10 +685,10 @@ test "extract nostr pubkey from credential" {
     const key_package = types.KeyPackage{
         .version = .mls10,
         .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
-        .init_key = .{ .data = &.{} },
+        .init_key = types.HPKEPublicKey.init(&.{}),
         .leaf_node = .{
-            .encryption_key = .{ .data = &.{} },
-            .signature_key = .{ .data = &.{} },
+            .encryption_key = types.HPKEPublicKey.init(&.{}),
+            .signature_key = types.SignaturePublicKey.init(&.{}),
             .credential = .{ .basic = .{ .identity = pubkey_hex } },
             .capabilities = .{
                 .versions = &.{},
@@ -664,4 +709,60 @@ test "extract nostr pubkey from credential" {
     var expected: [32]u8 = undefined;
     _ = try std.fmt.hexToBytes(&expected, pubkey_hex);
     try std.testing.expectEqualSlices(u8, &expected, &extracted);
+}
+
+test "key package serialization roundtrip" {
+    const allocator = std.testing.allocator;
+    
+    // Create a test key package
+    const test_init_key = try allocator.alloc(u8, 32);
+    defer allocator.free(test_init_key);
+    @memset(test_init_key, 0xAA);
+    
+    const test_enc_key = try allocator.alloc(u8, 32);
+    defer allocator.free(test_enc_key);
+    @memset(test_enc_key, 0xBB);
+    
+    const test_sig_key = try allocator.alloc(u8, 32);
+    defer allocator.free(test_sig_key);
+    @memset(test_sig_key, 0xCC);
+    
+    const test_signature = try allocator.alloc(u8, 64);
+    defer allocator.free(test_signature);
+    @memset(test_signature, 0xDD);
+    
+    const original = types.KeyPackage{
+        .version = .mls10,
+        .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+        .init_key = types.HPKEPublicKey.init(test_init_key),
+        .leaf_node = .{
+            .encryption_key = types.HPKEPublicKey.init(test_enc_key),
+            .signature_key = types.SignaturePublicKey.init(test_sig_key),
+            .credential = .{ .basic = .{ .identity = "test" } },
+            .capabilities = .{
+                .versions = &.{},
+                .ciphersuites = &.{},
+                .extensions = &.{},
+                .proposals = &.{},
+                .credentials = &.{},
+            },
+            .leaf_node_source = .key_package,
+            .extensions = &.{},
+            .signature = test_signature,
+        },
+        .extensions = &.{},
+        .signature = test_signature,
+    };
+    
+    // Serialize
+    const serialized = try serializeKeyPackage(allocator, original);
+    defer allocator.free(serialized);
+    
+    // Parse back
+    const parsed = try parseKeyPackage(allocator, serialized);
+    
+    // Check key fields match
+    try std.testing.expectEqual(original.version, parsed.version);
+    try std.testing.expectEqual(original.cipher_suite, parsed.cipher_suite);
+    try std.testing.expect(original.init_key.eql(parsed.init_key));
 }
