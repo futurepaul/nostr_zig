@@ -41,8 +41,7 @@
             .hash = "websocket-0.1.0-ZPISdbZVAwAgDzIxt0cpiG4hjPVq92ALsEPLSCPbMQqv",
         },
         .mls_zig = .{
-            .url = "https://github.com/futurepaul/mls_zig/archive/refs/heads/master.tar.gz",
-            .hash = "mls_zig-0.0.0-LKybgRyXBABDIu3T1WjQfn7B5Q6FRYBGzlr30I-3EU1T",
+            .path = "../mls_zig",
         },
     },
     .paths = .{

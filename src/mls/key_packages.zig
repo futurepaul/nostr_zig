@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const provider = @import("provider.zig");
 const crypto = @import("../crypto.zig");
+const mls_zig = @import("mls_zig");
 
 /// Key package generation parameters
 pub const KeyPackageParams = struct {
@@ -157,10 +158,60 @@ pub fn parseKeyPackage(
     allocator: std.mem.Allocator,
     data: []const u8,
 ) !types.KeyPackage {
-    // TODO: Implement wire format parsing
-    _ = allocator;
-    _ = data;
-    return error.NotImplemented;
+    // Use TLS 1.3 wire format as per RFC 9420
+    var stream = std.io.fixedBufferStream(data);
+    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    
+    // Parse according to MLS KeyPackage format:
+    // struct {
+    //     ProtocolVersion version;
+    //     CipherSuite cipher_suite;
+    //     HPKEPublicKey init_key<V>;
+    //     LeafNode leaf_node<V>;
+    //     Extension extensions<V>;
+    //     opaque signature<V>;
+    // } KeyPackage;
+    
+    // Version (u16)
+    const version_raw = try reader.readU16();
+    const version: types.ProtocolVersion = @enumFromInt(version_raw);
+    
+    // Cipher suite (u16)
+    const cipher_suite_raw = try reader.readU16();
+    const cipher_suite: types.Ciphersuite = @enumFromInt(cipher_suite_raw);
+    
+    // Init key (variable length with u16 length prefix)
+    const init_key_len = try reader.readU16();
+    const init_key = try allocator.alloc(u8, init_key_len);
+    try reader.reader.readNoEof(init_key);
+    
+    // Leaf node (variable length)
+    const leaf_node_len = try reader.readU16();
+    const leaf_node_data = try allocator.alloc(u8, leaf_node_len);
+    defer allocator.free(leaf_node_data);
+    try reader.reader.readNoEof(leaf_node_data);
+    const leaf_node = try parseLeafNode(allocator, leaf_node_data);
+    
+    // Extensions (variable length)
+    const extensions_len = try reader.readU16();
+    const extensions_data = try allocator.alloc(u8, extensions_len);
+    defer allocator.free(extensions_data);
+    try reader.reader.readNoEof(extensions_data);
+    const extensions = try parseExtensions(allocator, extensions_data);
+    
+    // Signature (variable length with u16 length prefix)
+    const signature_len = try reader.readU16();
+    const signature = try allocator.alloc(u8, signature_len);
+    try reader.reader.readNoEof(signature);
+    
+    return types.KeyPackage{
+        .version = version,
+        .cipher_suite = cipher_suite,
+        .init_key = types.HPKEPublicKey{ .data = init_key },
+        .leaf_node = leaf_node,
+        .extensions = extensions,
+        .signature = signature,
+    };
 }
 
 /// Serialize key package to wire format
@@ -168,10 +219,49 @@ pub fn serializeKeyPackage(
     allocator: std.mem.Allocator,
     key_package: types.KeyPackage,
 ) ![]u8 {
-    // TODO: Implement wire format serialization
-    _ = allocator;
-    _ = key_package;
-    return error.NotImplemented;
+    // Use TLS 1.3 wire format as per RFC 9420
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    
+    // Serialize according to MLS KeyPackage format:
+    // struct {
+    //     ProtocolVersion version;
+    //     CipherSuite cipher_suite;
+    //     HPKEPublicKey init_key<V>;
+    //     LeafNode leaf_node<V>;
+    //     Extension extensions<V>;
+    //     opaque signature<V>;
+    // } KeyPackage;
+    
+    // Version (u16)
+    try writer.writeU16(@intFromEnum(key_package.version));
+    
+    // Cipher suite (u16)
+    try writer.writeU16(@intFromEnum(key_package.cipher_suite));
+    
+    // Init key (variable length with u16 length prefix)
+    try writer.writeU16(@intCast(key_package.init_key.data.len));
+    try writer.writer.writeAll(key_package.init_key.data);
+    
+    // Leaf node - serialize as variable length (simplified for now)
+    const leaf_node_data = try serializeLeafNode(allocator, key_package.leaf_node);
+    defer allocator.free(leaf_node_data);
+    try writer.writeU16(@intCast(leaf_node_data.len));
+    try writer.writer.writeAll(leaf_node_data);
+    
+    // Extensions - serialize as variable length 
+    const extensions_data = try serializeExtensions(allocator, key_package.extensions);
+    defer allocator.free(extensions_data);
+    try writer.writeU16(@intCast(extensions_data.len));
+    try writer.writer.writeAll(extensions_data);
+    
+    // Signature (variable length with u16 length prefix)
+    try writer.writeU16(@intCast(key_package.signature.len));
+    try writer.writer.writeAll(key_package.signature);
+    
+    return buffer.toOwnedSlice();
 }
 
 /// Validate a key package
@@ -364,6 +454,169 @@ fn serializeCapabilities(allocator: std.mem.Allocator, capabilities: types.Capab
     }
     
     return try data.toOwnedSlice();
+}
+
+/// Helper function to serialize a leaf node
+fn serializeLeafNode(allocator: std.mem.Allocator, leaf_node: types.LeafNode) ![]u8 {
+    // Simplified leaf node serialization
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    
+    // Encryption key
+    try writer.writeU16(@intCast(leaf_node.encryption_key.data.len));
+    try writer.writer.writeAll(leaf_node.encryption_key.data);
+    
+    // Signature key  
+    try writer.writeU16(@intCast(leaf_node.signature_key.data.len));
+    try writer.writer.writeAll(leaf_node.signature_key.data);
+    
+    // Credential (simplified)
+    try writer.writeU8(@intFromEnum(types.CredentialType.basic));
+    switch (leaf_node.credential) {
+        .basic => |basic| {
+            try writer.writeU16(@intCast(basic.identity.len));
+            try writer.writer.writeAll(basic.identity);
+        },
+        else => return error.UnsupportedCredential,
+    }
+    
+    // Capabilities (simplified - write as empty for now)
+    try writer.writeU16(0);
+    
+    // Leaf node source
+    try writer.writeU8(@intFromEnum(leaf_node.leaf_node_source));
+    
+    // Extensions (simplified)
+    try writer.writeU16(@intCast(leaf_node.extensions.len));
+    for (leaf_node.extensions) |ext| {
+        try writer.writeU16(@intFromEnum(ext.extension_type));
+        try writer.writeU16(@intCast(ext.extension_data.len));
+        try writer.writer.writeAll(ext.extension_data);
+    }
+    
+    // Signature
+    try writer.writeU16(@intCast(leaf_node.signature.len));
+    try writer.writer.writeAll(leaf_node.signature);
+    
+    return buffer.toOwnedSlice();
+}
+
+/// Helper function to parse a leaf node
+fn parseLeafNode(allocator: std.mem.Allocator, data: []const u8) !types.LeafNode {
+    var stream = std.io.fixedBufferStream(data);
+    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    
+    // Encryption key
+    const enc_key_len = try reader.readU16();
+    const enc_key_data = try allocator.alloc(u8, enc_key_len);
+    try reader.reader.readNoEof(enc_key_data);
+    
+    // Signature key
+    const sig_key_len = try reader.readU16();
+    const sig_key_data = try allocator.alloc(u8, sig_key_len);
+    try reader.reader.readNoEof(sig_key_data);
+    
+    // Credential
+    _ = try reader.readU8(); // credential type (ignore for now)
+    const identity_len = try reader.readU16();
+    const identity = try allocator.alloc(u8, identity_len);
+    try reader.reader.readNoEof(identity);
+    
+    // Skip capabilities for now
+    const cap_len = try reader.readU16();
+    try stream.seekBy(cap_len);
+    
+    // Leaf node source
+    const source = try reader.readU8();
+    
+    // Extensions
+    const ext_count = try reader.readU16();
+    const extensions = try allocator.alloc(types.Extension, ext_count);
+    for (extensions) |*ext| {
+        const ext_type = try reader.readU16();
+        const ext_data_len = try reader.readU16();
+        const ext_data = try allocator.alloc(u8, ext_data_len);
+        try reader.reader.readNoEof(ext_data);
+        
+        ext.* = types.Extension{
+            .extension_type = @enumFromInt(ext_type),
+            .critical = false,
+            .extension_data = ext_data,
+        };
+    }
+    
+    // Signature
+    const sig_len = try reader.readU16();
+    const signature = try allocator.alloc(u8, sig_len);
+    try reader.reader.readNoEof(signature);
+    
+    return types.LeafNode{
+        .encryption_key = .{ .data = enc_key_data },
+        .signature_key = .{ .data = sig_key_data },
+        .credential = .{ .basic = .{ .identity = identity } },
+        .capabilities = .{
+            .versions = &.{},
+            .ciphersuites = &.{},
+            .extensions = &.{},
+            .proposals = &.{},
+            .credentials = &.{},
+        },
+        .leaf_node_source = switch (source) {
+            0 => .reserved,
+            1 => .key_package,
+            2 => .update,
+            3 => .{ .commit = &.{} }, // TODO: Parse commit data if present
+            else => return error.InvalidLeafNodeSource,
+        },
+        .extensions = extensions,
+        .signature = signature,
+    };
+}
+
+/// Helper function to serialize extensions
+fn serializeExtensions(allocator: std.mem.Allocator, extensions: []const types.Extension) ![]u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    
+    for (extensions) |ext| {
+        try writer.writeU16(@intFromEnum(ext.extension_type));
+        try writer.writeU8(if (ext.critical) 1 else 0);
+        try writer.writeU16(@intCast(ext.extension_data.len));
+        try writer.writer.writeAll(ext.extension_data);
+    }
+    
+    return buffer.toOwnedSlice();
+}
+
+/// Helper function to parse extensions
+fn parseExtensions(allocator: std.mem.Allocator, data: []const u8) ![]types.Extension {
+    if (data.len == 0) return &.{};
+    
+    var stream = std.io.fixedBufferStream(data);
+    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    
+    var extensions = std.ArrayList(types.Extension).init(allocator);
+    defer extensions.deinit();
+    
+    while (stream.pos < data.len) {
+        const ext_type = try reader.readU16();
+        const critical = (try reader.readU8()) != 0;
+        const ext_data_len = try reader.readU16();
+        const ext_data = try allocator.alloc(u8, ext_data_len);
+        try reader.reader.readNoEof(ext_data);
+        
+        try extensions.append(types.Extension{
+            .extension_type = @enumFromInt(ext_type),
+            .critical = critical,
+            .extension_data = ext_data,
+        });
+    }
+    
+    return extensions.toOwnedSlice();
 }
 
 test "key package lifetime extension" {

@@ -32,7 +32,10 @@ pub const GroupState = enum {
 
 /// MLS protocol version
 pub const ProtocolVersion = enum(u16) {
+    reserved = 0x0000,
+    draft = 0x0001,  // Seen in wire format
     mls10 = 0x0100,
+    _,  // Allow unknown values for forward compatibility
 };
 
 /// MLS wire format
@@ -137,6 +140,7 @@ pub const Lifetime = struct {
 /// Extension
 pub const Extension = struct {
     extension_type: ExtensionType,
+    critical: bool = false,
     extension_data: []const u8,
 };
 

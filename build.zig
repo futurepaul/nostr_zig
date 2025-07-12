@@ -513,4 +513,18 @@ pub fn build(b: *std.Build) void {
     const run_test_hpke_integration = b.addRunArtifact(test_hpke_integration);
     const test_hpke_integration_step = b.step("test-hpke-integration", "Test HPKE integration");
     test_hpke_integration_step.dependOn(&run_test_hpke_integration.step);
+    
+    // Add NAK KeyPackage test
+    const test_nak_keypackages = b.addExecutable(.{
+        .name = "test_nak_keypackages",
+        .root_source_file = b.path("debug_scripts/test_nak_keypackages.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_nak_keypackages.root_module.addImport("nostr", lib_mod);
+    test_nak_keypackages.root_module.addImport("websocket", websocket_mod);
+    
+    const run_test_nak_keypackages = b.addRunArtifact(test_nak_keypackages);
+    const test_nak_keypackages_step = b.step("test-nak", "Test KeyPackage parsing with NAK server");
+    test_nak_keypackages_step.dependOn(&run_test_nak_keypackages.step);
 }

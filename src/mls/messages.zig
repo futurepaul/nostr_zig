@@ -5,6 +5,7 @@ const mls = @import("mls.zig");
 const nip44 = @import("../nip44/mod.zig");
 const crypto = @import("../crypto.zig");
 const nip_ee = @import("nip_ee.zig");
+const mls_zig = @import("mls_zig");
 
 /// Message encryption parameters
 pub const MessageParams = struct {
@@ -475,10 +476,55 @@ fn serializeMLSCiphertext(allocator: std.mem.Allocator, ciphertext: types.MLSCip
 }
 
 fn parseMLSCiphertext(allocator: std.mem.Allocator, data: []const u8) !types.MLSCiphertext {
-    _ = allocator;
-    _ = data;
-    // TODO: Implement wire format parsing
-    return error.NotImplemented;
+    // Use TLS 1.3 wire format as per RFC 9420
+    var stream = std.io.fixedBufferStream(data);
+    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    
+    // MLSCiphertext format:
+    // struct {
+    //     opaque group_id<V>;
+    //     uint64 epoch;
+    //     ContentType content_type;
+    //     opaque authenticated_data<V>;
+    //     opaque encrypted_sender_data<V>;
+    //     opaque ciphertext<V>;
+    // } MLSCiphertext;
+    
+    // Group ID (variable length with u16 length prefix)
+    const group_id_len = try reader.readU16();
+    const group_id_data = try allocator.alloc(u8, group_id_len);
+    try reader.reader.readNoEof(group_id_data);
+    
+    // Epoch (u64)
+    const epoch = try reader.readU64();
+    
+    // Content type (u8)
+    const content_type_raw = try reader.readU8();
+    const content_type: types.ContentType = @enumFromInt(content_type_raw);
+    
+    // Authenticated data (variable length with u16 length prefix)
+    const auth_data_len = try reader.readU16();
+    const authenticated_data = try allocator.alloc(u8, auth_data_len);
+    try reader.reader.readNoEof(authenticated_data);
+    
+    // Encrypted sender data (variable length with u16 length prefix)
+    const sender_data_len = try reader.readU16();
+    const encrypted_sender_data = try allocator.alloc(u8, sender_data_len);
+    try reader.reader.readNoEof(encrypted_sender_data);
+    
+    // Ciphertext (variable length with u16 length prefix)
+    const ciphertext_len = try reader.readU16();
+    const ciphertext = try allocator.alloc(u8, ciphertext_len);
+    try reader.reader.readNoEof(ciphertext);
+    
+    return types.MLSCiphertext{
+        .group_id = .{ .data = group_id_data },
+        .epoch = epoch,
+        .content_type = content_type,
+        .authenticated_data = authenticated_data,
+        .encrypted_sender_data = encrypted_sender_data,
+        .ciphertext = ciphertext,
+    };
 }
 
 fn serializeMLSPlaintextContent(allocator: std.mem.Allocator, plaintext: types.MLSPlaintext) ![]u8 {

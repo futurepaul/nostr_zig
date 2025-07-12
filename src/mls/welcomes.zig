@@ -5,6 +5,7 @@ const extension = @import("extension.zig");
 const mls = @import("mls.zig");
 const groups = @import("groups.zig");
 const key_packages = @import("key_packages.zig");
+const mls_zig = @import("mls_zig");
 
 /// Welcome processing result
 pub const WelcomeProcessingResult = struct {
@@ -246,18 +247,89 @@ pub fn createWelcome(
 
 /// Parse a serialized welcome message
 pub fn parseWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welcome {
-    _ = allocator;
-    _ = data;
-    // TODO: Implement MLS wire format parsing
-    return error.NotImplemented;
+    // Use TLS 1.3 wire format as per RFC 9420
+    var stream = std.io.fixedBufferStream(data);
+    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    
+    // Welcome message format:
+    // struct {
+    //     CipherSuite cipher_suite;
+    //     EncryptedGroupSecrets secrets<V>;
+    //     opaque encrypted_group_info<V>;
+    // } Welcome;
+    
+    // Cipher suite (u16)
+    const cipher_suite_raw = try reader.readU16();
+    const cipher_suite: types.Ciphersuite = @enumFromInt(cipher_suite_raw);
+    
+    // Secrets array (variable length with u16 count prefix)
+    const secrets_count = try reader.readU16();
+    const secrets = try allocator.alloc(types.EncryptedGroupSecrets, secrets_count);
+    
+    for (secrets) |*secret| {
+        // new_member (variable length with u16 length prefix)
+        const new_member_len = try reader.readU16();
+        const new_member = try allocator.alloc(u8, new_member_len);
+        try reader.reader.readNoEof(new_member);
+        
+        // encrypted_group_secrets (variable length with u16 length prefix)
+        const encrypted_secrets_len = try reader.readU16();
+        const encrypted_secrets = try allocator.alloc(u8, encrypted_secrets_len);
+        try reader.reader.readNoEof(encrypted_secrets);
+        
+        secret.* = types.EncryptedGroupSecrets{
+            .new_member = new_member,
+            .encrypted_group_secrets = encrypted_secrets,
+        };
+    }
+    
+    // Encrypted group info (variable length with u16 length prefix)
+    const group_info_len = try reader.readU16();
+    const encrypted_group_info = try allocator.alloc(u8, group_info_len);
+    try reader.reader.readNoEof(encrypted_group_info);
+    
+    return types.Welcome{
+        .cipher_suite = cipher_suite,
+        .secrets = secrets,
+        .encrypted_group_info = encrypted_group_info,
+    };
 }
 
 /// Serialize a welcome message
 pub fn serializeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) ![]u8 {
-    _ = allocator;
-    _ = welcome;
-    // TODO: Implement MLS wire format serialization
-    return error.NotImplemented;
+    // Use TLS 1.3 wire format as per RFC 9420
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    
+    // Welcome message format:
+    // struct {
+    //     CipherSuite cipher_suite;
+    //     EncryptedGroupSecrets secrets<V>;
+    //     opaque encrypted_group_info<V>;
+    // } Welcome;
+    
+    // Cipher suite (u16)
+    try writer.writeU16(@intFromEnum(welcome.cipher_suite));
+    
+    // Secrets array (variable length with u16 count prefix)
+    try writer.writeU16(@intCast(welcome.secrets.len));
+    for (welcome.secrets) |secret| {
+        // new_member (variable length with u16 length prefix)
+        try writer.writeU16(@intCast(secret.new_member.len));
+        try writer.writer.writeAll(secret.new_member);
+        
+        // encrypted_group_secrets (variable length with u16 length prefix)
+        try writer.writeU16(@intCast(secret.encrypted_group_secrets.len));
+        try writer.writer.writeAll(secret.encrypted_group_secrets);
+    }
+    
+    // Encrypted group info (variable length with u16 length prefix)
+    try writer.writeU16(@intCast(welcome.encrypted_group_info.len));
+    try writer.writer.writeAll(welcome.encrypted_group_info);
+    
+    return buffer.toOwnedSlice();
 }
 
 // Helper functions

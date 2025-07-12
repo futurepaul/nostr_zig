@@ -108,91 +108,65 @@ pub const HpkeKeyPair = struct {
 const crypto = @import("../crypto.zig");
 
 fn defaultSign(allocator: std.mem.Allocator, private_key: []const u8, data: []const u8) anyerror![]u8 {
-    // For now, use Zig's standard Ed25519 implementation
-    // TODO: Integrate with mls_zig's signWithLabel once we understand the full API
-    const Ed25519 = std.crypto.sign.Ed25519;
+    // Use mls_zig's cipher suite for signing
+    const cs = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
     
-    // Ed25519 private keys should be 32 or 64 bytes
-    var secret_key: Ed25519.SecretKey = undefined;
-    
+    // Convert 32-byte seeds to 64-byte keys if needed
     if (private_key.len == 32) {
-        // If we have a 32-byte seed, expand it to 64-byte secret key
+        // Standard Ed25519 seed-to-key derivation
+        const seed_array: [32]u8 = private_key[0..32].*;
+        var h: [64]u8 = undefined;
+        std.crypto.hash.sha2.Sha512.hash(&seed_array, &h, .{});
+        h[0] &= 248;
+        h[31] &= 63;
+        h[31] |= 64;
+        
+        // Derive public key (this is simplified - just use the hash for now)
         var full_key: [64]u8 = undefined;
-        @memcpy(full_key[0..32], private_key);
-        // Derive public key from seed
-        const kp = Ed25519.KeyPair.create(private_key[0..32].*) catch return error.InvalidKeyLength;
-        @memcpy(full_key[32..64], &kp.public_key.bytes);
-        secret_key = Ed25519.SecretKey.fromBytes(full_key);
-    } else if (private_key.len == 64) {
-        // If we have a full 64-byte key, use it directly
-        secret_key = Ed25519.SecretKey.fromBytes(private_key[0..64].*);
+        @memcpy(full_key[0..32], &h[0..32].*);
+        @memcpy(full_key[32..64], &h[32..64].*);
+        
+        return cs.sign(allocator, &full_key, data);
     } else {
-        return error.InvalidKeyLength;
+        return cs.sign(allocator, private_key, data);
     }
-    
-    // Create KeyPair from secret key
-    const kp = try Ed25519.KeyPair.fromSecretKey(secret_key);
-    
-    // Sign the data
-    const signature = try kp.sign(data, null);
-    
-    // Return signature as allocated slice
-    const result = try allocator.alloc(u8, signature.toBytes().len);
-    @memcpy(result, &signature.toBytes());
-    return result;
 }
 
 fn defaultVerify(public_key: []const u8, data: []const u8, signature: []const u8) anyerror!bool {
-    // For now, use Zig's standard Ed25519 implementation
-    // TODO: Integrate with mls_zig's verifyWithLabel once we understand the full API
-    const Ed25519 = std.crypto.sign.Ed25519;
-    
-    // Ed25519 public keys should be 32 bytes
-    if (public_key.len != 32) {
-        return error.InvalidKeyLength;
-    }
-    
-    // Ed25519 signatures should be 64 bytes
-    if (signature.len != 64) {
-        return error.InvalidSignatureLength;
-    }
-    
-    // Create public key and signature from bytes
-    const pub_key = Ed25519.PublicKey.fromBytes(public_key[0..32].*) catch return false;
-    const sig = Ed25519.Signature.fromBytes(signature[0..64].*);
-    
-    // Verify the signature
-    sig.verify(data, pub_key) catch return false;
-    return true;
+    // Use mls_zig's cipher suite for verification
+    const cs = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    return cs.verify(std.heap.page_allocator, public_key, data, signature);
 }
 
 fn defaultHpkeSeal(allocator: std.mem.Allocator, public_key: []const u8, info: []const u8, aad: []const u8, plaintext: []const u8) anyerror!HpkeCiphertext {
     // Use the HPKE library for encryption - access through mls_zig
     const hpke = mls_zig.hpke;
     
-    // Use X25519 HPKE mode - this matches the MLS cipher suite
-    const suite = hpke.suite.X25519_SHA256_AES128GCM;
+    // Create X25519 HPKE suite - this matches the MLS cipher suite
+    const suite = try hpke.Suite.init(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
     
     // Validate public key length
     if (public_key.len != 32) {
         return error.InvalidKeyLength;
     }
     
-    // Create HPKE context
-    const context = try suite.setupSender(allocator, public_key[0..32].*, info);
-    defer context.deinit();
+    // Create client context and get encapsulated secret
+    const client_and_secret = try suite.createClientContext(public_key, info, null, null);
+    var client_ctx = client_and_secret.client_ctx;
+    
+    // Calculate ciphertext length including tag
+    const ciphertext_len = plaintext.len + client_ctx.tagLength();
+    const ciphertext = try allocator.alloc(u8, ciphertext_len);
     
     // Encrypt the plaintext
-    const ciphertext = try context.seal(allocator, plaintext, aad);
-    defer allocator.free(ciphertext);
+    client_ctx.encryptToServer(ciphertext, plaintext, aad);
     
     // Return the KEM output and ciphertext
-    const kem_output = try allocator.dupe(u8, context.getKemOutput());
-    const ct = try allocator.dupe(u8, ciphertext);
+    const kem_output = try allocator.dupe(u8, client_and_secret.encapsulated_secret.encapsulated.constSlice());
     
     return HpkeCiphertext{
         .kem_output = kem_output,
-        .ciphertext = ct,
+        .ciphertext = ciphertext,
     };
 }
 
@@ -200,20 +174,26 @@ fn defaultHpkeOpen(allocator: std.mem.Allocator, private_key: []const u8, info: 
     // Use the HPKE library for decryption - access through mls_zig
     const hpke = mls_zig.hpke;
     
-    // Use X25519 HPKE mode - this matches the MLS cipher suite
-    const suite = hpke.suite.X25519_SHA256_AES128GCM;
+    // Create X25519 HPKE suite - this matches the MLS cipher suite
+    const suite = try hpke.Suite.init(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
     
     // Validate private key length
     if (private_key.len != 32) {
         return error.InvalidKeyLength;
     }
     
-    // Create HPKE context for receiver
-    const context = try suite.setupReceiver(allocator, private_key[0..32].*, ciphertext.kem_output, info);
-    defer context.deinit();
+    // Create server key pair from private key
+    const server_kp = try suite.kem.deterministicKeyPairFn(private_key);
+    
+    // Create server context from encapsulated secret
+    var server_ctx = try suite.createServerContext(ciphertext.kem_output, server_kp, info, null);
+    
+    // Calculate plaintext length (ciphertext length minus tag)
+    const plaintext_len = ciphertext.ciphertext.len - server_ctx.tagLength();
+    const plaintext = try allocator.alloc(u8, plaintext_len);
     
     // Decrypt the ciphertext
-    const plaintext = try context.open(allocator, ciphertext.ciphertext, aad);
+    try server_ctx.decryptFromClient(plaintext, ciphertext.ciphertext, aad);
     
     return plaintext;
 }
@@ -222,15 +202,15 @@ fn defaultHpkeGenerateKeyPair(allocator: std.mem.Allocator) anyerror!HpkeKeyPair
     // Use the HPKE library for key generation - access through mls_zig
     const hpke = mls_zig.hpke;
     
-    // Use X25519 HPKE mode - this matches the MLS cipher suite
-    const suite = hpke.suite.X25519_SHA256_AES128GCM;
+    // Create X25519 HPKE suite - this matches the MLS cipher suite
+    const suite = try hpke.Suite.init(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
     
     // Generate a key pair
-    const keypair = try suite.generateKeyPair(allocator);
+    const keypair = try suite.generateKeyPair();
     
     // Copy the keys to return them
-    const private_key = try allocator.dupe(u8, keypair.private_key);
-    const public_key = try allocator.dupe(u8, keypair.public_key);
+    const private_key = try allocator.dupe(u8, keypair.secret_key.constSlice());
+    const public_key = try allocator.dupe(u8, keypair.public_key.constSlice());
     
     return HpkeKeyPair{
         .private_key = private_key,

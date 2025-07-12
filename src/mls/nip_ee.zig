@@ -1,6 +1,8 @@
 const std = @import("std");
 const nostr = @import("../nostr.zig");
 const types = @import("types.zig");
+const key_packages = @import("key_packages.zig");
+const welcomes = @import("welcomes.zig");
 
 /// NIP-EE event kinds
 pub const EventKind = enum(u32) {
@@ -316,23 +318,18 @@ fn serializeKeyPackage(allocator: std.mem.Allocator, key_package: types.KeyPacka
 }
 
 fn deserializeKeyPackage(allocator: std.mem.Allocator, data: []const u8) !types.KeyPackage {
-    _ = allocator;
-    _ = data;
-    // TODO: Implement MLS wire format deserialization
-    return error.NotImplemented;
+    // Use the parseKeyPackage function we implemented
+    return key_packages.parseKeyPackage(allocator, data);
 }
 
 fn serializeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) ![]u8 {
-    _ = welcome;
-    // TODO: Implement MLS wire format serialization
-    return try allocator.dupe(u8, "serialized_welcome");
+    // Use the serializeWelcome function we implemented
+    return welcomes.serializeWelcome(allocator, welcome);
 }
 
 fn deserializeWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welcome {
-    _ = allocator;
-    _ = data;
-    // TODO: Implement MLS wire format deserialization
-    return error.NotImplemented;
+    // Use the parseWelcome function we implemented
+    return welcomes.parseWelcome(allocator, data);
 }
 
 test "event kind values" {
