@@ -41,7 +41,7 @@ pub fn createGroup(
 ) !mls.GroupCreationResult {
     // Generate group ID
     var group_id: types.GroupId = undefined;
-    mls_provider.rand.fill(&group_id);
+    mls_provider.rand.fill(&group_id.data);
     
     // Derive creator's public key
     var creator_pubkey: [32]u8 = undefined;
@@ -375,7 +375,7 @@ fn deriveSecret(
     context: types.GroupId,
 ) ![]u8 {
     // Build info string
-    const info = try std.fmt.allocPrint(allocator, "MLS 1.0 {s}{s}", .{ label, std.fmt.fmtSliceHexLower(&context) });
+    const info = try std.fmt.allocPrint(allocator, "MLS 1.0 {s}{s}", .{ label, std.fmt.fmtSliceHexLower(&context.data) });
     defer allocator.free(info);
     
     return try mls_provider.crypto.hkdfExpandFn(allocator, &secret, info, 32);
@@ -590,7 +590,7 @@ test "group creation with admins" {
 test "extract group data from context" {
     const allocator = std.testing.allocator;
     
-    const group_id: types.GroupId = [_]u8{7} ** 32;
+    const group_id = types.GroupId.init([_]u8{7} ** 32);
     const group_data = extension.NostrGroupData{
         .group_id = group_id,
         .name = "Extract Test",

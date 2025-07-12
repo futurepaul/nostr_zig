@@ -538,9 +538,13 @@ pub const ParseError = error{
 };
 
 test "types sizes" {
-    try std.testing.expectEqual(@sizeOf(GroupId.data), 32);
+    // GroupId contains a [32]u8 data field
+    const gid = GroupId.init([_]u8{0} ** 32);
+    try std.testing.expectEqual(@as(usize, 32), gid.data.len);
     try std.testing.expectEqual(@sizeOf(Epoch), 8);
-    try std.testing.expectEqual(@sizeOf(ProposalRef.data), 32);
+    // ProposalRef contains a [32]u8 data field
+    const ref = ProposalRef.init([_]u8{0} ** 32);
+    try std.testing.expectEqual(@as(usize, 32), ref.data.len);
 }
 
 test "enum values" {

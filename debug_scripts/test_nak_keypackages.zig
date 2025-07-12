@@ -232,8 +232,17 @@ fn processRelayMessage(
                 if (parseKeyPackageFromEvent(allocator, provider, event_msg.event)) |keypackage| {
                     stats.successful_parses += 1;
                     log.info("  ✅ Successfully parsed KeyPackage!", .{});
-                    log.info("    Cipher suite: {}", .{keypackage.cipher_suite});
-                    log.info("    Version: {}", .{keypackage.version});
+                    log.info("    Version: {} (0x{x:0>4})", .{keypackage.version, @intFromEnum(keypackage.version)});
+                    log.info("    Cipher Suite: {} (0x{x:0>4})", .{keypackage.cipher_suite, @intFromEnum(keypackage.cipher_suite)});
+                    log.info("    Init Key Length: {} bytes", .{keypackage.init_key.data.len});
+                    log.info("    Has extensions: {}", .{keypackage.extensions.len > 0});
+                    
+                    // Extract and show Nostr pubkey
+                    if (nostr.mls.key_packages.extractNostrPubkey(keypackage)) |nostr_pubkey| {
+                        log.info("    Nostr PubKey: {s}", .{std.fmt.bytesToHex(nostr_pubkey, .lower)});
+                    } else |_| {
+                        log.debug("    Could not extract Nostr pubkey", .{});
+                    }
                     
                     // Test roundtrip serialization
                     if (testRoundtripSerialization(allocator, keypackage)) {
@@ -275,25 +284,26 @@ fn parseKeyPackageFromEvent(
 ) !nostr.mls.types.KeyPackage {
     _ = provider; // Not needed for current parsing implementation
     
-    // The content should contain the KeyPackage data
-    // It might be base64 encoded or hex encoded
-    
-    // Try hex decoding first (most common for Nostr)
-    if (decodeHex(allocator, event.content)) |decoded_data| {
-        defer allocator.free(decoded_data);
+    // Use the new parseFromNostrEvent helper which handles encoding detection
+    return nostr.mls.key_packages.parseFromNostrEvent(allocator, event.content) catch |err| {
+        // If it fails, let's debug why
+        log.debug("Parse error: {}", .{err});
         
-        return nostr.mls.key_packages.parseKeyPackage(allocator, decoded_data);
-    } else |_| {
-        // Try base64
-        if (decodeBase64(allocator, event.content)) |decoded_data| {
+        // Show more details about the data
+        if (decodeHex(allocator, event.content)) |decoded_data| {
             defer allocator.free(decoded_data);
-            
-            return nostr.mls.key_packages.parseKeyPackage(allocator, decoded_data);
-        } else |_| {
-            // Try parsing content directly as binary
-            return nostr.mls.key_packages.parseKeyPackage(allocator, event.content);
-        }
-    }
+            log.debug("  Decoded length: {} bytes", .{decoded_data.len});
+            if (decoded_data.len >= 4) {
+                const version = std.mem.readInt(u16, decoded_data[0..2], .big);
+                const cipher_suite = std.mem.readInt(u16, decoded_data[2..4], .big);
+                log.debug("  Version: 0x{x:0>4}", .{version});
+                log.debug("  Cipher suite: 0x{x:0>4}", .{cipher_suite});
+            }
+            log.debug("  First 64 bytes: {x}", .{std.fmt.fmtSliceHexLower(decoded_data[0..@min(64, decoded_data.len)])});
+        } else |_| {}
+        
+        return err;
+    };
 }
 
 fn decodeBase64(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
@@ -308,10 +318,7 @@ fn decodeHex(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     if (input.len % 2 != 0) return error.InvalidHexLength;
     
     var decoded = try allocator.alloc(u8, input.len / 2);
-    var i: usize = 0;
-    while (i < input.len) : (i += 2) {
-        decoded[i / 2] = try std.fmt.parseInt(u8, input[i..i+2], 16);
-    }
+    _ = std.fmt.hexToBytes(decoded, input) catch return error.InvalidHex;
     return decoded;
 }
 
@@ -327,6 +334,9 @@ fn testRoundtripSerialization(allocator: std.mem.Allocator, keypackage: nostr.ml
     // Basic validation that key fields match
     if (keypackage.version != reparsed.version) return error.VersionMismatch;
     if (keypackage.cipher_suite != reparsed.cipher_suite) return error.CipherSuiteMismatch;
+    
+    // Use the new eql method for comprehensive comparison
+    if (!keypackage.init_key.eql(reparsed.init_key)) return error.InitKeyMismatch;
     
     log.debug("Roundtrip validation passed", .{});
 }

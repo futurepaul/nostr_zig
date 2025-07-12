@@ -172,9 +172,9 @@ pub const WelcomeEvent = struct {
                     _ = try std.fmt.hexToBytes(&pubkey, tag[1]);
                     recipient_pubkey = pubkey;
                 } else if (std.mem.eql(u8, tag[0], "g")) {
-                    var gid: types.GroupId = undefined;
-                    _ = try std.fmt.hexToBytes(&gid, tag[1]);
-                    group_id = gid;
+                    var gid_data: [32]u8 = undefined;
+                    _ = try std.fmt.hexToBytes(&gid_data, tag[1]);
+                    group_id = types.GroupId.init(gid_data);
                 }
             }
         }
@@ -287,9 +287,9 @@ pub const GroupMessageEvent = struct {
         for (event.tags) |tag| {
             if (tag.len >= 2) {
                 if (std.mem.eql(u8, tag[0], "g")) {
-                    var gid: types.GroupId = undefined;
-                    _ = try std.fmt.hexToBytes(&gid, tag[1]);
-                    group_id = gid;
+                    var gid_data: [32]u8 = undefined;
+                    _ = try std.fmt.hexToBytes(&gid_data, tag[1]);
+                    group_id = types.GroupId.init(gid_data);
                 } else if (std.mem.eql(u8, tag[0], "epoch")) {
                     epoch = try std.fmt.parseInt(types.Epoch, tag[1], 10);
                 } else if (std.mem.eql(u8, tag[0], "mls")) {

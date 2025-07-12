@@ -302,7 +302,7 @@ test "MLS workflow example" {
 test "NostrGroupData extension round-trip" {
     const allocator = std.testing.allocator;
     
-    const group_id: mls.types.GroupId = [_]u8{42} ** 32;
+    const group_id = mls.types.GroupId.init([_]u8{42} ** 32);
     const admin_key: [32]u8 = [_]u8{1} ** 32;
     
     const original_data = mls.extension.NostrGroupData{
@@ -340,7 +340,7 @@ test "NostrGroupData extension round-trip" {
     }
     
     // Verify all fields match
-    try std.testing.expectEqualSlices(u8, &original_data.group_id, &extracted.group_id);
+    try std.testing.expect(original_data.group_id.eql(extracted.group_id));
     try std.testing.expectEqualStrings(original_data.name, extracted.name);
     try std.testing.expectEqualStrings(original_data.description, extracted.description);
     try std.testing.expectEqual(original_data.admins.len, extracted.admins.len);

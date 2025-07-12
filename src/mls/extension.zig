@@ -63,7 +63,7 @@ pub fn serializeNostrGroupData(
     try buf.append(0x01);
     
     // Group ID (32 bytes)
-    try buf.appendSlice(&data.group_id);
+    try buf.appendSlice(&data.group_id.data);
     
     // Name (length-prefixed)
     try writeString(&buf, data.name);
@@ -115,7 +115,7 @@ pub fn parseNostrGroupData(
     // Group ID
     if (offset + 32 > data.len) return error.InvalidExtension;
     var group_id: types.GroupId = undefined;
-    @memcpy(&group_id, data[offset..offset + 32]);
+    @memcpy(&group_id.data, data[offset..offset + 32]);
     offset += 32;
     
     // Name
@@ -215,7 +215,7 @@ fn readString(allocator: std.mem.Allocator, data: []const u8, offset: *usize) ![
 test "serialize and parse NostrGroupData" {
     const allocator = std.testing.allocator;
     
-    const group_id: types.GroupId = [_]u8{1} ** 32;
+    const group_id = types.GroupId.init([_]u8{1} ** 32);
     const admin1: [32]u8 = [_]u8{2} ** 32;
     const admin2: [32]u8 = [_]u8{3} ** 32;
     
@@ -251,7 +251,7 @@ test "serialize and parse NostrGroupData" {
     }
     
     // Verify
-    try std.testing.expectEqualSlices(u8, &original.group_id, &parsed.group_id);
+    try std.testing.expect(original.group_id.eql(parsed.group_id));
     try std.testing.expectEqualStrings(original.name, parsed.name);
     try std.testing.expectEqualStrings(original.description, parsed.description);
     try std.testing.expectEqual(original.admins.len, parsed.admins.len);
@@ -264,7 +264,7 @@ test "serialize and parse NostrGroupData" {
 }
 
 test "isAdmin function" {
-    const group_id: types.GroupId = [_]u8{1} ** 32;
+    const group_id = types.GroupId.init([_]u8{1} ** 32);
     const admin1: [32]u8 = [_]u8{2} ** 32;
     const admin2: [32]u8 = [_]u8{3} ** 32;
     const non_admin: [32]u8 = [_]u8{4} ** 32;
@@ -286,7 +286,7 @@ test "isAdmin function" {
 test "create and extract extension" {
     const allocator = std.testing.allocator;
     
-    const group_id: types.GroupId = [_]u8{5} ** 32;
+    const group_id = types.GroupId.init([_]u8{5} ** 32);
     const data = NostrGroupData{
         .group_id = group_id,
         .name = "Extension Test",

@@ -187,10 +187,10 @@ pub fn init() void {
 }
 
 test "mls types" {
-    const group_id: GroupId = [_]u8{0} ** 32;
+    const group_id = GroupId.init([_]u8{0} ** 32);
     const epoch: Epoch = 42;
     
-    try std.testing.expectEqual(@as(usize, 32), group_id.len);
+    try std.testing.expectEqual(@as(usize, 32), group_id.data.len);
     try std.testing.expectEqual(@as(u64, 42), epoch);
 }
 

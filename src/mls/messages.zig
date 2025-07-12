@@ -638,7 +638,7 @@ test "find member index" {
     };
     
     const state = mls.MlsGroupState{
-        .group_id = [_]u8{0} ** 32,
+        .group_id = types.GroupId.init([_]u8{0} ** 32),
         .epoch = 0,
         .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
         .group_context = undefined,
