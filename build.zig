@@ -527,4 +527,51 @@ pub fn build(b: *std.Build) void {
     const run_test_nak_keypackages = b.addRunArtifact(test_nak_keypackages);
     const test_nak_keypackages_step = b.step("test-nak", "Test KeyPackage parsing with NAK server");
     test_nak_keypackages_step.dependOn(&run_test_nak_keypackages.step);
+    
+    // Create test KeyPackage
+    const create_kp = b.addExecutable(.{
+        .name = "create_test_keypackage",
+        .root_source_file = b.path("create_test_keypackage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    create_kp.root_module.addImport("nostr", lib_mod);
+    b.installArtifact(create_kp);
+
+    const run_create_kp = b.addRunArtifact(create_kp);
+    const create_kp_step = b.step("create-kp", "Create a test KeyPackage");
+    create_kp_step.dependOn(&run_create_kp.step);
+    
+    // Test parse
+    const test_parse = b.addExecutable(.{
+        .name = "test_parse",
+        .root_source_file = b.path("test_parse.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_parse.root_module.addImport("nostr", lib_mod);
+    b.installArtifact(test_parse);
+
+    const run_test_parse = b.addRunArtifact(test_parse);
+    const test_parse_step = b.step("test-parse", "Test KeyPackage parsing");
+    test_parse_step.dependOn(&run_test_parse.step);
+    
+    // Add publish test keypackages
+    const publish_test_keypackages = b.addExecutable(.{
+        .name = "publish_test_keypackages",
+        .root_source_file = b.path("debug_scripts/publish_test_keypackages.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    publish_test_keypackages.root_module.addImport("nostr", lib_mod);
+    publish_test_keypackages.root_module.addImport("websocket", websocket_mod);
+    publish_test_keypackages.root_module.addImport("secp256k1", secp256k1_mod);
+    publish_test_keypackages.linkLibrary(secp256k1_lib);
+    publish_test_keypackages.addIncludePath(b.path("deps/secp256k1/include"));
+    publish_test_keypackages.addIncludePath(b.path("src/secp256k1"));
+    publish_test_keypackages.linkLibC();
+    
+    const run_publish_test_keypackages = b.addRunArtifact(publish_test_keypackages);
+    const publish_test_keypackages_step = b.step("publish-nak", "Publish test KeyPackages to NAK server");
+    publish_test_keypackages_step.dependOn(&run_publish_test_keypackages.step);
 }

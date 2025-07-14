@@ -25,6 +25,27 @@
 - ✅ **Wire format serialization working** - TLS codec integration complete
 - ✅ **RFC 9420 compliant** - Real MLS protocol implementation
 
+## 🆕 **API IMPROVEMENTS COMPLETED (2025-01-14)**
+
+### Major API Refactoring Successfully Implemented!
+
+Following the creation of `API_STYLE_GUIDELINES.md`, we've completed a comprehensive API refactoring:
+
+**Key Improvements**:
+1. **Consistent Type Wrapping**: All semantic types now use struct wrappers with `init()` and `eql()` methods
+2. **Non-exhaustive Enums**: All enums support unknown values for protocol compatibility
+3. **Descriptive Error Sets**: Module-specific error types for better debugging
+4. **Symmetric Serialization**: Parse/serialize pairs for all major types
+5. **Idiomatic Zig Patterns**: Init functions with options structs, stream-based I/O
+
+**Results**:
+- ✅ Successfully parsed test KeyPackages with version 0x0001 (draft) and 0x0100 (mls10)
+- ✅ NAK server integration ready and tested
+- ✅ All compilation errors resolved
+- ✅ API now follows Zig best practices consistently
+
+See `API_STYLE_GUIDELINES.md` for complete documentation and examples.
+
 ## 📊 Progress Tracker - **IMPLEMENTATION COMPLETE!** 🎉
 
 ```

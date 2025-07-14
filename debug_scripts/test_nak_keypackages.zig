@@ -317,7 +317,7 @@ fn decodeBase64(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 fn decodeHex(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     if (input.len % 2 != 0) return error.InvalidHexLength;
     
-    var decoded = try allocator.alloc(u8, input.len / 2);
+    const decoded = try allocator.alloc(u8, input.len / 2);
     _ = std.fmt.hexToBytes(decoded, input) catch return error.InvalidHex;
     return decoded;
 }

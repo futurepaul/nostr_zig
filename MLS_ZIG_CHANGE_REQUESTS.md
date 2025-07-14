@@ -221,3 +221,41 @@ The MLS integration project has been **successfully completed**! What started as
 - 📚 **Zero technical debt** - No NotImplemented functions remaining
 
 This implementation provides a solid foundation for secure group messaging in the Nostr ecosystem!
+
+## 🆕 **API IMPROVEMENTS (2025-01-14)**
+
+### Major API Refactoring Completed!
+
+We've successfully refactored the entire MLS API to follow consistent style guidelines:
+
+**1. Consistent Type Wrapping (Option B)**
+- All semantic types now use struct wrappers with `init()` and `eql()` methods
+- Examples: `GroupId`, `HPKEPublicKey`, `SignaturePublicKey`, `ProposalRef`
+- Provides type safety and clear API boundaries
+
+**2. Non-exhaustive Enums**
+- All enums now support unknown values with `fromInt()` factory methods
+- Critical for protocol compatibility (e.g., accepting both draft 0x0001 and mls10 0x0100)
+- Enables graceful handling of future protocol versions
+
+**3. Descriptive Error Sets**
+- Module-specific error types: `KeyPackageError`, `GroupError`, `WelcomeError`, `ParseError`
+- Clear, actionable error messages for better debugging
+
+**4. Symmetric Serialization**
+- Added `parseFromNostrEvent()` and `serializeForNostrEvent()` helpers
+- Automatic hex/base64 encoding detection
+- Roundtrip testing support
+
+**5. Idiomatic Zig Patterns**
+- Init functions with options structs instead of builder pattern
+- Stream-based I/O with readers/writers
+- Consistent API patterns across all modules
+
+**Test Results**:
+- ✅ Successfully parsed test KeyPackages with new API
+- ✅ NAK server integration ready (debug script connects successfully)
+- ✅ All compilation errors resolved
+- ✅ API now follows Zig best practices
+
+See `API_STYLE_GUIDELINES.md` for the complete style guide and implementation examples.

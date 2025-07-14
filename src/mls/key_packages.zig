@@ -182,6 +182,7 @@ pub fn parseKeyPackage(
     
     // Init key (variable length with u16 length prefix)
     const init_key_len = reader.readU16() catch return error.UnexpectedEndOfStream;
+    std.log.debug("Init key length: {}", .{init_key_len});
     if (init_key_len > 256) return error.InvalidKeyLength; // Sanity check
     const init_key = allocator.alloc(u8, init_key_len) catch return error.UnexpectedEndOfStream;
     reader.reader.readNoEof(init_key) catch return error.UnexpectedEndOfStream;
