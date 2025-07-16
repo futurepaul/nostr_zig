@@ -13,9 +13,29 @@ interface MessageComposerProps {
 export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
   const { sendMessage, isReady, generateEphemeralKeys } = useWasm();
+  
+  // Debug button state
+  const isButtonDisabled = !isReady || !message.trim() || !state.identity || state.groups.size === 0;
+  console.log('MessageComposer render - button disabled:', isButtonDisabled, {
+    isReady,
+    messageLength: message.trim().length,
+    hasIdentity: !!state.identity,
+    groupsSize: state.groups.size
+  });
 
   const handleSend = () => {
-    if (!message.trim() || !state.identity || state.groups.size === 0) return;
+    console.log('handleSend called');
+    console.log('handleSend conditions:', {
+      message: message.trim(),
+      hasIdentity: !!state.identity,
+      groupsSize: state.groups.size,
+      isReady
+    });
+    
+    if (!message.trim() || !state.identity || state.groups.size === 0) {
+      console.log('handleSend: Early return due to conditions');
+      return;
+    }
 
     // Get the first group (for demo purposes)
     const group = Array.from(state.groups.values())[0];
@@ -101,7 +121,7 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         <Button 
           onClick={handleSend} 
           size="sm"
-          disabled={!isReady || !message.trim() || !state.identity || state.groups.size === 0}
+          disabled={isButtonDisabled}
         >
           Send
         </Button>
