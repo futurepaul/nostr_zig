@@ -125,6 +125,13 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         >
           Send
         </Button>
+        <Button 
+          onClick={() => console.log('Debug button clicked!')} 
+          size="sm"
+          variant="outline"
+        >
+          Debug
+        </Button>
       </div>
     </div>
   );
