@@ -2,12 +2,12 @@
 
 ## 🎯 Objective
 
-Test our completed MLS implementation by connecting to the running NAK server (`ws://localhost:10547`) and parsing real KeyPackages. This will validate that our MLS functions work with actual NIP-EE data.
+Test our completed MLS implementation by connecting to the running NAK server (`ws://localhost:8080`) and parsing real KeyPackages. This will validate that our MLS functions work with actual NIP-EE data.
 
 ## 📊 Current Status
 
 **MLS Implementation**: ✅ 100% Complete (13/13 functions implemented)
-**NAK Server**: 🔗 Running on `ws://localhost:10547` with KeyPackages available
+**NAK Server**: 🔗 Running on `ws://localhost:8080` with KeyPackages available
 **Test Script**: ✅ Created and working (`debug_scripts/test_nak_keypackages.zig`)
 **Test Goal**: Validate KeyPackage parsing with real-world data
 
@@ -25,7 +25,7 @@ Test our completed MLS implementation by connecting to the running NAK server (`
 **Goal**: Connect to the NAK server and retrieve existing KeyPackages
 
 **Implementation**:
-1. Create WebSocket client connection to `ws://localhost:10547`
+1. Create WebSocket client connection to `ws://localhost:8080`
 2. Query for NIP-EE KeyPackage events (kind 443)
 3. Extract KeyPackage data from event content
 4. Log retrieved KeyPackages for analysis

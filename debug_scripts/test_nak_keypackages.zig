@@ -4,7 +4,7 @@ const nostr = @import("nostr");
 
 const log = std.log.scoped(.nak_test);
 
-const NAK_SERVER_URL = "ws://localhost:10547";
+const NAK_SERVER_URL = "ws://localhost:8080";
 
 const TestStats = struct {
     total_events: u32 = 0,
@@ -284,25 +284,34 @@ fn parseKeyPackageFromEvent(
 ) !nostr.mls.types.KeyPackage {
     _ = provider; // Not needed for current parsing implementation
     
-    // Use the new parseFromNostrEvent helper which handles encoding detection
-    return nostr.mls.key_packages.parseFromNostrEvent(allocator, event.content) catch |err| {
-        // If it fails, let's debug why
-        log.debug("Parse error: {}", .{err});
+    // First decode the hex content
+    const decoded_data = decodeHex(allocator, event.content) catch {
+        log.debug("Failed to decode hex content", .{});
+        return error.InvalidEncoding;
+    };
+    defer allocator.free(decoded_data);
+    
+    // Try the OpenMLS format parser first since NAK seems to use that
+    return nostr.mls.openmls_key_packages.parseOpenMlsKeyPackage(allocator, decoded_data) catch |err| {
+        log.debug("OpenMLS parse error: {}", .{err});
         
-        // Show more details about the data
-        if (decodeHex(allocator, event.content)) |decoded_data| {
-            defer allocator.free(decoded_data);
+        // Fall back to standard parser
+        return nostr.mls.key_packages.parseFromNostrEvent(allocator, event.content) catch |err2| {
+            // If both fail, show debug info
+            log.debug("Standard parse error: {}", .{err2});
             log.debug("  Decoded length: {} bytes", .{decoded_data.len});
-            if (decoded_data.len >= 4) {
+            if (decoded_data.len >= 5) {
                 const version = std.mem.readInt(u16, decoded_data[0..2], .big);
                 const cipher_suite = std.mem.readInt(u16, decoded_data[2..4], .big);
+                const init_key_len = decoded_data[4];
                 log.debug("  Version: 0x{x:0>4}", .{version});
                 log.debug("  Cipher suite: 0x{x:0>4}", .{cipher_suite});
+                log.debug("  Init key length byte: {} (0x{x:0>2})", .{init_key_len, init_key_len});
             }
             log.debug("  First 64 bytes: {x}", .{std.fmt.fmtSliceHexLower(decoded_data[0..@min(64, decoded_data.len)])});
-        } else |_| {}
-        
-        return err;
+            
+            return err2;
+        };
     };
 }
 

@@ -9,6 +9,7 @@ pub const extension = @import("extension.zig");
 pub const groups = @import("groups.zig");
 pub const welcomes = @import("welcomes.zig");
 pub const messages = @import("messages.zig");
+pub const openmls_key_packages = @import("openmls_key_packages.zig");
 
 // Re-export commonly used types
 pub const Epoch = types.Epoch;

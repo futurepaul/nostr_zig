@@ -574,4 +574,22 @@ pub fn build(b: *std.Build) void {
     const run_publish_test_keypackages = b.addRunArtifact(publish_test_keypackages);
     const publish_test_keypackages_step = b.step("publish-nak", "Publish test KeyPackages to NAK server");
     publish_test_keypackages_step.dependOn(&run_publish_test_keypackages.step);
+    
+    // Add WASM library build
+    const wasm_lib = b.addExecutable(.{
+        .name = "nostr_mls",
+        .root_source_file = b.path("src/wasm_exports.zig"),
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .wasm32,
+            .os_tag = .freestanding,
+        }),
+        .optimize = .ReleaseSmall,
+    });
+    wasm_lib.entry = .disabled;
+    wasm_lib.export_memory = true;
+    
+    b.installArtifact(wasm_lib);
+    
+    const wasm_step = b.step("wasm", "Build WASM library");
+    wasm_step.dependOn(&wasm_lib.step);
 }
