@@ -12,7 +12,7 @@ interface MessageComposerProps {
 
 export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
-  const { sendMessage, isReady } = useWasm();
+  const { sendMessage, isReady, generateEphemeralKeys } = useWasm();
 
   const handleSend = () => {
     if (!message.trim() || !state.identity || state.groups.size === 0) return;
@@ -22,21 +22,7 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
     
     try {
       // Generate ephemeral key pair for this message using real crypto
-      const ephemeralPrivateKey = new Uint8Array(32);
-      const ephemeralPublicKey = new Uint8Array(32);
-      
-      // WASM is required for real cryptography
-      if (!window.wasmModule?.wasm_create_identity) {
-        throw new Error('WASM module not loaded. Cannot generate secure ephemeral keys.');
-      }
-      
-      const success = window.wasmModule.wasm_create_identity(
-        ephemeralPrivateKey,
-        ephemeralPublicKey
-      );
-      if (!success) {
-        throw new Error('Failed to generate ephemeral key pair');
-      }
+      const ephemeralKeys = generateEphemeralKeys();
       
       // Send encrypted message
       const ciphertext = sendMessage(
@@ -63,7 +49,7 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
       // Create encrypted message event with ephemeral pubkey
       const event = {
         id: eventId,
-        pubkey: bytesToHex(ephemeralPublicKey), // Use ephemeral public key
+        pubkey: bytesToHex(ephemeralKeys.publicKey), // Use ephemeral public key
         created_at: Math.floor(Date.now() / 1000),
         kind: 445,
         tags: [
@@ -81,7 +67,7 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         ephemeralKeys: new Map([
           ...Array.from(prev.ephemeralKeys || new Map()),
           [event.id, { 
-            publicKey: ephemeralPublicKey,
+            publicKey: ephemeralKeys.publicKey,
             timestamp: Date.now(),
             messageId: event.id
           }]
@@ -93,7 +79,7 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
       // Log ephemeral key usage for debugging
       console.log('Message sent with ephemeral key:', {
         eventId: event.id,
-        ephemeralPubkey: bytesToHex(ephemeralPublicKey),
+        ephemeralPubkey: bytesToHex(ephemeralKeys.publicKey),
         realPubkey: bytesToHex(state.identity.publicKey)
       });
     } catch (error) {

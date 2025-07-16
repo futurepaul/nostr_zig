@@ -111,7 +111,7 @@ export function ParticipantPanel({
     if (!isReady || !state.identity || !isCreator) return;
 
     const groupId = `group_${Date.now()}`;
-    const groupStateData = createGroup(state.identity.privateKey, groupId);
+    const groupStateData = createGroup(state.identity.privateKey, state.identity.publicKey);
     
     const groupState = {
       id: groupId,
