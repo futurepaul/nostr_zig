@@ -41,8 +41,10 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
     const group = Array.from(state.groups.values())[0];
     
     try {
+      console.log('About to generate ephemeral keys...');
       // Generate ephemeral key pair for this message using real crypto
       const ephemeralKeys = generateEphemeralKeys();
+      console.log('Successfully generated ephemeral keys:', ephemeralKeys);
       
       // Send encrypted message
       const ciphertext = sendMessage(
@@ -104,6 +106,11 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
       });
     } catch (error) {
       console.error('Failed to send message:', error);
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
     }
   };
 
