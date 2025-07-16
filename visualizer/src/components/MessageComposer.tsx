@@ -3,6 +3,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { useWasm } from './WasmProvider';
 import { MLSState } from './MLSVisualizer';
+import { getRandomBytes, hexToBytes, bytesToHex } from '../utils/crypto';
 
 interface MessageComposerProps {
   state: MLSState;
@@ -20,6 +21,12 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
     const group = Array.from(state.groups.values())[0];
     
     try {
+      // Generate ephemeral key pair for this message
+      const ephemeralPrivateKey = getRandomBytes(32);
+      // In a real implementation, we'd derive the public key properly
+      // For now, we'll simulate it
+      const ephemeralPublicKey = getRandomBytes(32);
+      
       // Send encrypted message
       const ciphertext = sendMessage(
         group.state,
@@ -38,13 +45,16 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         }],
       }));
 
-      // Create encrypted message event
+      // Create encrypted message event with ephemeral pubkey
       const event = {
         id: Math.random().toString(36).substring(7),
-        pubkey: Array.from(state.identity.publicKey).map(b => b.toString(16).padStart(2, '0')).join(''),
+        pubkey: bytesToHex(ephemeralPublicKey), // Use ephemeral public key
         created_at: Math.floor(Date.now() / 1000),
         kind: 445,
-        tags: [['g', group.id]],
+        tags: [
+          ['g', group.id],
+          ['ephemeral', 'true'] // Mark as ephemeral for visualization
+        ],
         content: btoa(String.fromCharCode(...ciphertext)),
         sig: 'mock_signature',
       };
@@ -52,9 +62,25 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
       setState(prev => ({
         ...prev,
         events: [...prev.events, event],
+        // Track ephemeral key usage for visualization
+        ephemeralKeys: new Map([
+          ...Array.from(prev.ephemeralKeys || new Map()),
+          [event.id, { 
+            publicKey: ephemeralPublicKey,
+            timestamp: Date.now(),
+            messageId: event.id
+          }]
+        ])
       }));
 
       setMessage('');
+      
+      // Log ephemeral key usage for debugging
+      console.log('Message sent with ephemeral key:', {
+        eventId: event.id,
+        ephemeralPubkey: bytesToHex(ephemeralPublicKey),
+        realPubkey: bytesToHex(state.identity.publicKey)
+      });
     } catch (error) {
       console.error('Failed to send message:', error);
     }

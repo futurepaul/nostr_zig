@@ -1,10 +1,12 @@
 import React from 'react';
 import { NostrEvent } from './MLSVisualizer';
 import { motion } from 'framer-motion';
+import { isEphemeralKey } from '../utils/crypto';
 
 interface EventTimelineProps {
   events: NostrEvent[];
   onEventClick: (event: NostrEvent) => void;
+  knownIdentities?: Map<string, any>;
 }
 
 const eventKindNames: Record<number, string> = {
@@ -25,7 +27,7 @@ const eventKindColors: Record<number, string> = {
   445: 'bg-purple-100 border-purple-300',
 };
 
-export function EventTimeline({ events, onEventClick }: EventTimelineProps) {
+export function EventTimeline({ events, onEventClick, knownIdentities }: EventTimelineProps) {
   if (events.length === 0) {
     return (
       <div className="text-center text-gray-500 py-4">
@@ -60,8 +62,15 @@ export function EventTimeline({ events, onEventClick }: EventTimelineProps) {
                 </div>
               </div>
             </div>
-            <div className="text-xs font-mono text-gray-500">
-              {event.pubkey.substring(0, 8)}...
+            <div className="flex items-center space-x-1">
+              {event.kind === 445 && knownIdentities && isEphemeralKey(event.pubkey, knownIdentities) && (
+                <span className="text-xs bg-green-500 text-white px-2 py-1 rounded-full">
+                  EPH
+                </span>
+              )}
+              <div className="text-xs font-mono text-gray-500">
+                {event.pubkey.substring(0, 8)}...
+              </div>
             </div>
           </div>
         </motion.div>

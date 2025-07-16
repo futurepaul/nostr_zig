@@ -1,11 +1,14 @@
 const std = @import("std");
 const nostr = @import("nostr.zig");
 const secp256k1 = @import("secp256k1");
+const wasm_random = @import("wasm_random.zig");
 
 /// Generate a cryptographically secure random 32-byte private key
 pub fn generatePrivateKey() ![32]u8 {
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    
+    // Use WASM-safe randomness
+    wasm_random.secure_random.bytes(&key);
     
     // Verify the generated key is valid for secp256k1
     const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;

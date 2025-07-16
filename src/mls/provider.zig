@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const mls_zig = @import("mls_zig");
+const wasm_random = @import("../wasm_random.zig");
 
 /// MLS Provider interface for cryptographic operations
 pub const MlsProvider = struct {
@@ -250,7 +251,8 @@ fn defaultHash(allocator: std.mem.Allocator, data: []const u8) anyerror![32]u8 {
 }
 
 fn defaultRandomFill(buffer: []u8) void {
-    std.crypto.random.bytes(buffer);
+    // Use WASM-safe randomness
+    wasm_random.secure_random.bytes(buffer);
 }
 
 fn defaultNow() u64 {

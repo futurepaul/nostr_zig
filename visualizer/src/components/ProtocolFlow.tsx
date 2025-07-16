@@ -11,6 +11,7 @@ interface ProtocolFlowProps {
   bobState: MLSState;
   events: NostrEvent[];
   onEventClick: (event: NostrEvent) => void;
+  knownIdentities?: Map<string, any>;
 }
 
 export function ProtocolFlow({
@@ -19,6 +20,7 @@ export function ProtocolFlow({
   bobState,
   events,
   onEventClick,
+  knownIdentities,
 }: ProtocolFlowProps) {
   return (
     <div className="space-y-4">
@@ -52,7 +54,7 @@ export function ProtocolFlow({
           <CardTitle>Nostr Events</CardTitle>
         </CardHeader>
         <CardContent>
-          <EventTimeline events={events} onEventClick={onEventClick} />
+          <EventTimeline events={events} onEventClick={onEventClick} knownIdentities={knownIdentities} />
         </CardContent>
       </Card>
     </div>

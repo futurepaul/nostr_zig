@@ -39,6 +39,12 @@ export interface Message {
   encrypted: boolean;
 }
 
+export interface EphemeralKeyInfo {
+  publicKey: Uint8Array;
+  timestamp: number;
+  messageId: string;
+}
+
 export interface MLSState {
   identity?: Identity;
   keyPackage?: KeyPackage;
@@ -49,6 +55,7 @@ export interface MLSState {
     groupId: string;
     keyPackage: KeyPackage;
   };
+  ephemeralKeys?: Map<string, EphemeralKeyInfo>;
 }
 
 export type ProtocolStep = 
@@ -64,12 +71,14 @@ export function MLSVisualizer() {
     groups: new Map(),
     events: [],
     messages: [],
+    ephemeralKeys: new Map(),
   });
 
   const [bobState, setBobState] = useState<MLSState>({
     groups: new Map(),
     events: [],
     messages: [],
+    ephemeralKeys: new Map(),
   });
 
   const [currentStep, setCurrentStep] = useState<ProtocolStep>('setup');
@@ -78,6 +87,21 @@ export function MLSVisualizer() {
   const allEvents = [...aliceState.events, ...bobState.events].sort(
     (a, b) => a.created_at - b.created_at
   );
+  
+  // Build known identities map
+  const knownIdentities = new Map<string, any>();
+  if (aliceState.identity) {
+    const alicePubkey = Array.from(aliceState.identity.publicKey)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+    knownIdentities.set(alicePubkey, { name: 'Alice', identity: aliceState.identity });
+  }
+  if (bobState.identity) {
+    const bobPubkey = Array.from(bobState.identity.publicKey)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+    knownIdentities.set(bobPubkey, { name: 'Bob', identity: bobState.identity });
+  }
 
   return (
     <WasmProvider>
@@ -109,6 +133,7 @@ export function MLSVisualizer() {
                 bobState={bobState}
                 events={allEvents}
                 onEventClick={setSelectedEvent}
+                knownIdentities={knownIdentities}
               />
             </div>
 
@@ -132,6 +157,7 @@ export function MLSVisualizer() {
               <NostrEventViewer
                 event={selectedEvent}
                 onClose={() => setSelectedEvent(null)}
+                knownIdentities={knownIdentities}
               />
             </div>
           )}

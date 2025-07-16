@@ -10,6 +10,8 @@ pub const groups = @import("groups.zig");
 pub const welcomes = @import("welcomes.zig");
 pub const messages = @import("messages.zig");
 pub const openmls_key_packages = @import("openmls_key_packages.zig");
+pub const ephemeral = @import("ephemeral.zig");
+pub const group_messaging = @import("group_messaging.zig");
 
 // Re-export commonly used types
 pub const Epoch = types.Epoch;
@@ -55,6 +57,18 @@ pub const MlsGroupState = struct {
 
 /// Epoch secrets
 pub const EpochSecrets = struct {
+    /// Joiner secret
+    joiner_secret: [32]u8,
+    
+    /// Member secret  
+    member_secret: [32]u8,
+    
+    /// Welcome secret
+    welcome_secret: [32]u8,
+    
+    /// Epoch secret
+    epoch_secret: [32]u8,
+    
     /// Sender data secret
     sender_data_secret: [32]u8,
     
@@ -64,8 +78,8 @@ pub const EpochSecrets = struct {
     /// Exporter secret (used for NIP-44 encryption)
     exporter_secret: [32]u8,
     
-    /// Authentication secret
-    authentication_secret: [32]u8,
+    /// Epoch authenticator
+    epoch_authenticator: [32]u8,
     
     /// External secret
     external_secret: [32]u8,
@@ -205,5 +219,7 @@ test {
     _ = @import("groups.zig");
     _ = @import("welcomes.zig");
     _ = @import("messages.zig");
+    _ = @import("ephemeral.zig");
+    _ = @import("group_messaging.zig");
     _ = @import("test_example.zig");
 }

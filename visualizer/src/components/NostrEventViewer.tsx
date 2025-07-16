@@ -2,10 +2,12 @@ import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { NostrEvent } from './MLSVisualizer';
+import { isEphemeralKey } from '../utils/crypto';
 
 interface NostrEventViewerProps {
   event: NostrEvent;
   onClose: () => void;
+  knownIdentities?: Map<string, any>;
 }
 
 const eventKindNames: Record<number, string> = {
@@ -14,8 +16,9 @@ const eventKindNames: Record<number, string> = {
   445: 'MLS Group Message',
 };
 
-export function NostrEventViewer({ event, onClose }: NostrEventViewerProps) {
+export function NostrEventViewer({ event, onClose, knownIdentities }: NostrEventViewerProps) {
   const eventJson = JSON.stringify(event, null, 2);
+  const isEphemeral = event.kind === 445 && knownIdentities && isEphemeralKey(event.pubkey, knownIdentities);
 
   return (
     <Card>
@@ -43,6 +46,9 @@ export function NostrEventViewer({ event, onClose }: NostrEventViewerProps) {
               <span className="font-semibold">Public Key:</span>
               <div className="font-mono text-xs">
                 {event.pubkey.substring(0, 16)}...{event.pubkey.substring(event.pubkey.length - 16)}
+                {isEphemeral && (
+                  <span className="ml-2 text-green-600 font-normal">[EPHEMERAL]</span>
+                )}
               </div>
             </div>
             <div>
@@ -50,6 +56,16 @@ export function NostrEventViewer({ event, onClose }: NostrEventViewerProps) {
               <div>{event.kind} ({eventKindNames[event.kind] || 'Unknown'})</div>
             </div>
           </div>
+
+          {/* Ephemeral Key Notice */}
+          {isEphemeral && (
+            <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
+              <span className="font-semibold text-green-700">✓ Privacy Protected</span>
+              <p className="text-green-600 mt-1">
+                This message was sent using an ephemeral key pair, ensuring sender privacy.
+              </p>
+            </div>
+          )}
 
           {/* Tags */}
           {event.tags.length > 0 && (

@@ -1,7 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
 const provider = @import("provider.zig");
-const crypto = @import("../crypto.zig");
 const mls_zig = @import("mls_zig");
 
 /// Key package generation parameters

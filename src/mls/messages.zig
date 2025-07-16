@@ -6,6 +6,7 @@ const nip44 = @import("../nip44/mod.zig");
 const crypto = @import("../crypto.zig");
 const nip_ee = @import("nip_ee.zig");
 const mls_zig = @import("mls_zig");
+const ephemeral = @import("ephemeral.zig");
 
 /// Message encryption parameters
 pub const MessageParams = struct {
@@ -205,8 +206,28 @@ pub fn decryptGroupMessage(
     };
 }
 
-/// Create a group message event from encrypted message
+/// Create a group message event from encrypted message with ephemeral keys
 pub fn createGroupMessageEvent(
+    allocator: std.mem.Allocator,
+    encrypted: mls.EncryptedMessage,
+    group_id: types.GroupId,
+) !nip_ee.GroupMessageEvent {
+    // Generate a new ephemeral key pair for this message
+    const ephemeral_key = try ephemeral.EphemeralKeyPair.generate();
+    defer ephemeral_key.clear();
+    
+    return try nip_ee.GroupMessageEvent.create(
+        allocator,
+        ephemeral_key.private_key,
+        group_id,
+        encrypted.epoch,
+        encrypted.message_type,
+        encrypted.nip44_ciphertext,
+    );
+}
+
+/// Create a group message event with a provided ephemeral key (for testing)
+pub fn createGroupMessageEventWithKey(
     allocator: std.mem.Allocator,
     encrypted: mls.EncryptedMessage,
     group_id: types.GroupId,
