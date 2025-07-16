@@ -14,26 +14,11 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
   const { sendMessage, isReady, generateEphemeralKeys } = useWasm();
   
-  // Debug button state
+  // Check if button should be disabled
   const isButtonDisabled = !isReady || !message.trim() || !state.identity || state.groups.size === 0;
-  console.log('MessageComposer render - button disabled:', isButtonDisabled, {
-    isReady,
-    messageLength: message.trim().length,
-    hasIdentity: !!state.identity,
-    groupsSize: state.groups.size
-  });
 
   const handleSend = () => {
-    console.log('handleSend called');
-    console.log('handleSend conditions:', {
-      message: message.trim(),
-      hasIdentity: !!state.identity,
-      groupsSize: state.groups.size,
-      isReady
-    });
-    
     if (!message.trim() || !state.identity || state.groups.size === 0) {
-      console.log('handleSend: Early return due to conditions');
       return;
     }
 
@@ -41,10 +26,8 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
     const group = Array.from(state.groups.values())[0];
     
     try {
-      console.log('About to generate ephemeral keys...');
       // Generate ephemeral key pair for this message using real crypto
       const ephemeralKeys = generateEphemeralKeys();
-      console.log('Successfully generated ephemeral keys:', ephemeralKeys);
       
       // Send encrypted message
       const ciphertext = sendMessage(
@@ -97,20 +80,8 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
       }));
 
       setMessage('');
-      
-      // Log ephemeral key usage for debugging
-      console.log('Message sent with ephemeral key:', {
-        eventId: event.id,
-        ephemeralPubkey: bytesToHex(ephemeralKeys.publicKey),
-        realPubkey: bytesToHex(state.identity.publicKey)
-      });
     } catch (error) {
       console.error('Failed to send message:', error);
-      console.error('Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      });
     }
   };
 
@@ -131,13 +102,6 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
           disabled={isButtonDisabled}
         >
           Send
-        </Button>
-        <Button 
-          onClick={() => console.log('Debug button clicked!')} 
-          size="sm"
-          variant="outline"
-        >
-          Debug
         </Button>
       </div>
     </div>

@@ -3,6 +3,7 @@ const crypto = std.crypto;
 const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 const secp = @import("secp256k1");
 const Nip44Error = @import("mod.zig").Nip44Error;
+const wasm_random = @import("../wasm_random.zig");
 
 /// NIP-44 v2 implementation
 pub const VERSION = 0x02;
@@ -64,7 +65,9 @@ pub fn calcPaddedLen(content_len: usize) usize {
     }
     
     // Exact algorithm from Rust reference
-    const nextpower = @as(usize, 1) << (@as(u6, @intCast(log2RoundDown(content_len - 1) + 1)));
+    const log_val = log2RoundDown(content_len - 1) + 1;
+    const shift_amount = @min(log_val, 31); // Clamp to u5 max value (31)
+    const nextpower = @as(usize, 1) << @as(u5, @intCast(shift_amount));
     const chunk = if (nextpower <= 256) 32 else nextpower / 8;
     
     if (content_len <= 32) {
@@ -197,7 +200,7 @@ pub fn encrypt(
     
     // Generate random nonce
     var nonce: [32]u8 = undefined;
-    crypto.random.bytes(&nonce);
+    wasm_random.secure_random.bytes(&nonce);
     
     // Derive message keys
     const message_keys = try conversation_key.deriveMessageKeys(nonce);

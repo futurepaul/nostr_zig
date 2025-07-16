@@ -441,16 +441,6 @@ class WasmWrapper {
     // Set initial length
     new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0] = maxSize;
     
-    console.log('Calling wasm_send_message with:', {
-      statePtr,
-      stateLength: groupState.length,
-      privateKeyPtr,
-      messagePtr: messageData.ptr,
-      messageLength: messageData.len,
-      outPtr,
-      lenPtr: lenAllocation.alignedPtr
-    });
-
     const success = exports.wasm_send_message(
       statePtr,
       groupState.length,
@@ -463,15 +453,13 @@ class WasmWrapper {
 
     const actualLen = new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0];
     
-    console.log('wasm_send_message result:', { success, actualLen });
-    
     if (!success) {
       exports.wasm_free(statePtr, groupState.length);
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(messageData.ptr, messageData.len);
       exports.wasm_free(outPtr, maxSize);
       this.freeAlignedU32(lenAllocation);
-      throw new Error('WASM sendMessage returned false - check group state and inputs');
+      throw new Error('Failed to send message');
     }
 
     const ciphertext = this.readBytes(outPtr, actualLen);
