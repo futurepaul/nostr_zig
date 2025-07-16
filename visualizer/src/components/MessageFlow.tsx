@@ -1,70 +1,71 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { MLSState, ProtocolStep } from './MLSVisualizer';
+import { MLSState, ProtocolStep, NostrEvent } from './MLSVisualizer';
 
 interface MessageFlowProps {
   aliceState: MLSState;
   bobState: MLSState;
   currentStep: ProtocolStep;
+  events: NostrEvent[];
+  knownIdentities?: Map<string, any>;
 }
 
-export function MessageFlow({ aliceState, bobState, currentStep }: MessageFlowProps) {
+export function MessageFlow({ aliceState, bobState, currentStep, events, knownIdentities }: MessageFlowProps) {
   const flows = [];
 
-  // Key Package Flow
-  if (aliceState.keyPackage && currentStep >= 'keyPackages') {
-    flows.push({
-      id: 'alice-kp',
-      from: 'Alice',
-      to: 'Relay',
-      label: 'Key Package (Kind 443)',
-      icon: '📦',
-    });
-  }
+  // Helper function to get participant name from public key
+  const getParticipantName = (pubkey: string): string => {
+    if (knownIdentities?.has(pubkey)) {
+      return knownIdentities.get(pubkey).name;
+    }
+    return 'Unknown';
+  };
 
-  if (bobState.keyPackage && currentStep >= 'keyPackages') {
-    flows.push({
-      id: 'bob-kp',
-      from: 'Bob',
-      to: 'Relay',
-      label: 'Key Package (Kind 443)',
-      icon: '📦',
-    });
-  }
+  // Process events in chronological order to build flows
+  const sortedEvents = [...events].sort((a, b) => a.created_at - b.created_at);
 
-  // Welcome Flow
-  if (currentStep >= 'welcome' && aliceState.groups.size > 0) {
-    flows.push({
-      id: 'welcome',
-      from: 'Alice',
-      to: 'Bob',
-      label: 'Welcome (Kind 444)',
-      icon: '✉️',
-    });
-  }
-
-  // Message Flow
-  const aliceMessages = aliceState.messages.filter(m => m.sender === 'Alice');
-  const bobMessages = bobState.messages.filter(m => m.sender === 'Bob');
-
-  aliceMessages.forEach((msg, idx) => {
-    flows.push({
-      id: `alice-msg-${idx}`,
-      from: 'Alice',
-      to: 'Bob',
-      label: 'Encrypted Message (Kind 445)',
-      icon: '🔐',
-    });
-  });
-
-  bobMessages.forEach((msg, idx) => {
-    flows.push({
-      id: `bob-msg-${idx}`,
-      from: 'Bob',
-      to: 'Alice',
-      label: 'Encrypted Message (Kind 445)',
-      icon: '🔐',
-    });
+  sortedEvents.forEach((event, index) => {
+    const sender = getParticipantName(event.pubkey);
+    
+    switch (event.kind) {
+      case 443: // Key Package
+        flows.push({
+          id: `kp-${event.id}`,
+          from: sender,
+          to: 'Relay',
+          label: 'Key Package (Kind 443)',
+          icon: '📦',
+          timestamp: event.created_at,
+        });
+        break;
+        
+      case 444: // Welcome
+        // Find the target from p tags
+        const targetPubkey = event.tags.find(tag => tag[0] === 'p')?.[1];
+        const target = targetPubkey ? getParticipantName(targetPubkey) : 'Unknown';
+        flows.push({
+          id: `welcome-${event.id}`,
+          from: sender,
+          to: target,
+          label: 'Welcome (Kind 444)',
+          icon: '✉️',
+          timestamp: event.created_at,
+        });
+        break;
+        
+      case 445: // Group Message
+        // For group messages, the recipient is the other participant
+        const recipient = sender === 'Alice' ? 'Bob' : 'Alice';
+        flows.push({
+          id: `msg-${event.id}`,
+          from: sender,
+          to: recipient,
+          label: 'Encrypted Message (Kind 445)',
+          icon: '🔐',
+          timestamp: event.created_at,
+        });
+        break;
+    }
   });
 
   return (
@@ -102,6 +103,7 @@ export function MessageFlow({ aliceState, bobState, currentStep }: MessageFlowPr
             to={flow.to}
             label={flow.label}
             icon={flow.icon}
+            timestamp={flow.timestamp}
           />
         </motion.div>
       ))}
@@ -123,6 +125,7 @@ interface MessageArrowProps {
   to: string;
   label: string;
   icon: string;
+  timestamp?: number;
 }
 
 function MessageArrow({ from, to, label, icon }: MessageArrowProps) {

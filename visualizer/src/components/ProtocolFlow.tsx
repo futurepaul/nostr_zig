@@ -44,6 +44,8 @@ export function ProtocolFlow({
             aliceState={aliceState}
             bobState={bobState}
             currentStep={currentStep}
+            events={events}
+            knownIdentities={knownIdentities}
           />
         </CardContent>
       </Card>
