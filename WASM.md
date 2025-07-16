@@ -119,6 +119,8 @@ extern fn getRandomValues(buf: [*]u8, len: usize) void;
 zig build wasm
 ```
 
+**✅ Auto-Copy Feature**: The build script automatically copies the WASM file to `visualizer/src/nostr_mls.wasm` - no manual copying needed!
+
 ### Key Build Flags
 ```zig
 // In build.zig
@@ -126,8 +128,15 @@ wasm_lib.defineCMacro("printf(...)", ""); // Disable printf
 wasm_lib.defineCMacro("USE_EXTERNAL_DEFAULT_CALLBACKS", "1");
 ```
 
-### WASM Output Location
-The WASM file is built to: `visualizer/src/nostr_mls.wasm`
+### WASM Output Locations
+- **Primary**: `zig-out/visualizer/src/nostr_mls.wasm` (build output)
+- **Auto-copied**: `visualizer/src/nostr_mls.wasm` (ready for use)
+
+### Build Process
+1. Builds the WASM library with secp256k1 integration
+2. Installs to `zig-out/visualizer/src/nostr_mls.wasm`
+3. Automatically copies to `visualizer/src/nostr_mls.wasm`
+4. Ready for immediate use in the visualizer!
 
 ## Testing Strategy
 

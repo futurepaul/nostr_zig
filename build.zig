@@ -667,6 +667,19 @@ pub fn build(b: *std.Build) void {
     
     b.installArtifact(wasm_lib);
     
-    const wasm_step = b.step("wasm", "Build WASM library");
+    // Copy WASM to visualizer directory
+    const wasm_install_file = b.addInstallFile(wasm_lib.getEmittedBin(), "visualizer/src/nostr_mls.wasm");
+    
+    // Also copy directly to the visualizer source directory (outside zig-out)
+    const copy_wasm_cmd = b.addSystemCommand(&[_][]const u8{
+        "cp", 
+        "zig-out/visualizer/src/nostr_mls.wasm",
+        "visualizer/src/nostr_mls.wasm"
+    });
+    copy_wasm_cmd.step.dependOn(&wasm_install_file.step);
+    
+    const wasm_step = b.step("wasm", "Build WASM library and copy to visualizer");
     wasm_step.dependOn(&wasm_lib.step);
+    wasm_step.dependOn(&wasm_install_file.step);
+    wasm_step.dependOn(&copy_wasm_cmd.step);
 }
