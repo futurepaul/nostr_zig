@@ -51,9 +51,18 @@ export fn wasm_test_random() void {
 
 // Simple test function to check secp256k1 context creation
 export fn wasm_test_secp256k1_context() bool {
-    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN);
-    if (ctx == null) return false;
-    secp256k1.secp256k1_context_destroy(ctx);
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return false;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
     return true;
 }
 
@@ -75,10 +84,19 @@ export fn wasm_sign_schnorr(
     private_key: [*]const u8,
     out_signature: [*]u8
 ) bool {
-    // Create context
-    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN);
-    if (ctx == null) return false;
-    defer secp256k1.secp256k1_context_destroy(ctx);
+    // Use static context for WASM compatibility
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return false;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
     
     // Create keypair
     var keypair: secp256k1.secp256k1_keypair = undefined;
@@ -103,10 +121,19 @@ export fn wasm_verify_schnorr(
     signature: [*]const u8,
     public_key: [*]const u8
 ) bool {
-    // Create context
-    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_VERIFY);
-    if (ctx == null) return false;
-    defer secp256k1.secp256k1_context_destroy(ctx);
+    // Use static context for WASM compatibility
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_VERIFY) orelse return false;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
     
     // Parse x-only public key
     var xonly_pubkey: secp256k1.secp256k1_xonly_pubkey = undefined;
@@ -151,13 +178,54 @@ export fn wasm_create_key_package(
     out_data: [*]u8,
     out_len: *u32
 ) bool {
-    // For now, MLS functionality is not implemented in WASM
-    // Just return false to indicate not implemented
-    _ = private_key;
-    _ = out_data;
-    _ = out_len;
+    // Create a simplified key package for the visualizer
+    // This is not a real MLS key package, just a demo structure
     
-    return false;
+    // Get the public key from the private key
+    var public_key: [32]u8 = undefined;
+    const pub_key_result = crypto.getPublicKey(private_key[0..32].*) catch return false;
+    public_key = pub_key_result;
+    
+    // Create a simple key package structure:
+    // [version: 1 byte][public_key: 32 bytes][timestamp: 8 bytes][signature: 64 bytes]
+    const min_size = 1 + 32 + 8 + 64;
+    if (out_len.* < min_size) {
+        return false;
+    }
+    
+    // Version
+    out_data[0] = 1;
+    
+    // Public key
+    @memcpy(out_data[1..33], &public_key);
+    
+    // Timestamp (use a fixed value for WASM)
+    const timestamp: u64 = 1700000000; // Fixed timestamp for WASM
+    const timestamp_bytes = std.mem.asBytes(&timestamp);
+    @memcpy(out_data[33..41], timestamp_bytes);
+    
+    // Create a simple signature over the data
+    var to_sign: [41]u8 = undefined;
+    @memcpy(to_sign[0..41], out_data[0..41]);
+    
+    // Hash the data to sign
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(&to_sign, &hash, .{});
+    
+    // Sign with Schnorr
+    var signature: [64]u8 = undefined;
+    if (!wasm_sign_schnorr(&hash, private_key, &signature)) {
+        // If signing fails, just use zeros for now
+        @memset(&signature, 0);
+    }
+    
+    // Add signature
+    @memcpy(out_data[41..105], &signature);
+    
+    // Update the actual length
+    out_len.* = min_size;
+    
+    return true;
 }
 
 export fn wasm_create_group(

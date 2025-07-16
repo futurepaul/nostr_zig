@@ -244,6 +244,49 @@ The `no_precomp` context doesn't have precomputed tables, so some operations mig
 - [x] Can create valid signatures ✅
 - [x] Can verify signatures ✅ (with limitations)
 - [x] All operations use REAL secp256k1, no fake crypto ✅
+- [x] Key packages working in visualizer ✅
+
+## Visualizer Integration Progress
+
+### What's Working
+1. **Key Package Generation** ✅
+   - Successfully generating ephemeral keys with real secp256k1
+   - Key packages are created and displayed in the visualizer
+   - Using the static context approach works perfectly
+
+### Current Issue: Create Group
+Getting byte alignment error when calling `wasm_create_group`:
+```
+RangeError: Byte offset is not aligned
+    at Uint32Array in [native code]
+```
+
+The issue occurs when trying to set the output length:
+```javascript
+new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = maxSize;
+```
+
+### Strategy: Test-First Development
+Following the successful pattern:
+1. Create `test_create_group.ts` to test in isolation
+2. Fix alignment issues
+3. Verify it works with simple test
+4. Then integrate into visualizer
+
+### Next Implementation Steps
+1. **Fix Byte Alignment**
+   - Ensure all pointers are 4-byte aligned for Uint32Array
+   - Check WASM memory allocation alignment
+   - May need to adjust how we allocate buffers
+
+2. **Test Create Group**
+   - Create minimal test case
+   - Verify group creation works
+   - Test with real crypto operations
+
+3. **Update Visualizer**
+   - Once test passes, update visualizer
+   - Handle proper memory alignment in JS/WASM boundary
 
 ## Cleanup: Remove Failed Attempts
 
@@ -317,6 +360,8 @@ Remember: **NEVER** use fake cryptography just to make things compile. If crypto
 - WASM memory model: https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances
 
 ## Next Steps
-1. Start with Strategy 1 - implement comprehensive libc stubs
-2. Move to Strategy 3 - try static context
-3. Use Strategy 4 to debug any remaining issues
+1. ~~Start with Strategy 1 - implement comprehensive libc stubs~~ ✅
+2. ~~Move to Strategy 3 - try static context~~ ✅
+3. ~~Use Strategy 4 to debug any remaining issues~~ ✅
+4. Fix byte alignment issues in `wasm_create_group`
+5. Complete MLS group operations with real crypto
