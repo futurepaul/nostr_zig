@@ -130,6 +130,33 @@ class WasmWrapper {
     return new Uint8Array(exports.memory.buffer, ptr, len).slice();
   }
 
+  private allocateAlignedU32(count: number = 1): { ptr: number; alignedPtr: number; size: number } {
+    const exports = this.ensureInitialized();
+    
+    // Try to use native aligned allocation first
+    if (exports.wasm_alloc_u32 && exports.wasm_free_u32) {
+      const ptr = exports.wasm_alloc_u32(count);
+      return { ptr, alignedPtr: ptr, size: count * 4 };
+    }
+    
+    // Fallback: allocate extra space and align manually
+    const extraSize = count * 4 + 4; // Extra 4 bytes for alignment
+    const ptr = exports.wasm_alloc(extraSize);
+    const alignedPtr = (ptr + 3) & ~3; // Align to 4-byte boundary
+    
+    return { ptr, alignedPtr, size: extraSize };
+  }
+
+  private freeAlignedU32(allocation: { ptr: number; alignedPtr: number; size: number }, count: number = 1) {
+    const exports = this.ensureInitialized();
+    
+    if (exports.wasm_alloc_u32 && exports.wasm_free_u32 && allocation.ptr === allocation.alignedPtr) {
+      exports.wasm_free_u32(allocation.ptr, count);
+    } else {
+      exports.wasm_free(allocation.ptr, allocation.size);
+    }
+  }
+
   createIdentity(): { privateKey: Uint8Array; publicKey: Uint8Array } {
     const exports = this.ensureInitialized();
     const privateKeyPtr = exports.wasm_alloc(32);
@@ -402,20 +429,27 @@ class WasmWrapper {
     // Allocate space for output
     const maxSize = 4096;
     const outPtr = exports.wasm_alloc(maxSize);
+    const lenAllocation = this.allocateAlignedU32(1);
     
-    // Allocate extra space for alignment
-    const rawOutLenPtr = exports.wasm_alloc(8);
-    
-    if (!outPtr || !rawOutLenPtr) {
+    if (!outPtr || !lenAllocation.ptr) {
       exports.wasm_free(statePtr, groupState.length);
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(messageData.ptr, messageData.len);
       throw new Error('Failed to allocate memory');
     }
 
-    // Manually align to 4-byte boundary
-    const alignedLenPtr = (rawOutLenPtr + 3) & ~3;
-    new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0] = maxSize;
+    // Set initial length
+    new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0] = maxSize;
+    
+    console.log('Calling wasm_send_message with:', {
+      statePtr,
+      stateLength: groupState.length,
+      privateKeyPtr,
+      messagePtr: messageData.ptr,
+      messageLength: messageData.len,
+      outPtr,
+      lenPtr: lenAllocation.alignedPtr
+    });
 
     const success = exports.wasm_send_message(
       statePtr,
@@ -424,18 +458,20 @@ class WasmWrapper {
       messageData.ptr,
       messageData.len,
       outPtr,
-      alignedLenPtr
+      lenAllocation.alignedPtr
     );
 
-    const actualLen = new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0];
+    const actualLen = new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0];
+    
+    console.log('wasm_send_message result:', { success, actualLen });
     
     if (!success) {
       exports.wasm_free(statePtr, groupState.length);
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(messageData.ptr, messageData.len);
       exports.wasm_free(outPtr, maxSize);
-      exports.wasm_free(rawOutLenPtr, 8);
-      throw new Error('Failed to send message');
+      this.freeAlignedU32(lenAllocation);
+      throw new Error('WASM sendMessage returned false - check group state and inputs');
     }
 
     const ciphertext = this.readBytes(outPtr, actualLen);
@@ -444,7 +480,7 @@ class WasmWrapper {
     exports.wasm_free(privateKeyPtr, 32);
     exports.wasm_free(messageData.ptr, messageData.len);
     exports.wasm_free(outPtr, maxSize);
-    exports.wasm_free(rawOutLenPtr, 8);
+    this.freeAlignedU32(lenAllocation);
 
     return ciphertext;
   }
