@@ -402,7 +402,12 @@ class WasmWrapper {
     // Allocate space for output
     const maxSize = 4096;
     const outPtr = exports.wasm_alloc(maxSize);
-    const outLenPtr = exports.wasm_alloc(4);
+    
+    // Use aligned allocation for the length pointer
+    const outLenPtr = exports.wasm_alloc_u32 ? 
+      exports.wasm_alloc_u32(1) : 
+      exports.wasm_alloc(8); // Allocate extra and align manually
+    
     if (!outPtr || !outLenPtr) {
       exports.wasm_free(statePtr, groupState.length);
       exports.wasm_free(privateKeyPtr, 32);
@@ -410,8 +415,11 @@ class WasmWrapper {
       throw new Error('Failed to allocate memory');
     }
 
-    // Set initial length
-    new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = maxSize;
+    // Set initial length using aligned pointer
+    const alignedLenPtr = exports.wasm_align_ptr ? 
+      exports.wasm_align_ptr(outLenPtr, 4) : 
+      outLenPtr;
+    new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0] = maxSize;
 
     const success = exports.wasm_send_message(
       statePtr,
@@ -420,17 +428,21 @@ class WasmWrapper {
       messageData.ptr,
       messageData.len,
       outPtr,
-      outLenPtr
+      alignedLenPtr
     );
 
-    const actualLen = new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0];
+    const actualLen = new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0];
     
     if (!success) {
       exports.wasm_free(statePtr, groupState.length);
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(messageData.ptr, messageData.len);
       exports.wasm_free(outPtr, maxSize);
-      exports.wasm_free(outLenPtr, 4);
+      if (exports.wasm_alloc_u32 && exports.wasm_free_u32) {
+        exports.wasm_free_u32(outLenPtr, 1);
+      } else {
+        exports.wasm_free(outLenPtr, 8);
+      }
       throw new Error('Failed to send message');
     }
 
@@ -440,7 +452,11 @@ class WasmWrapper {
     exports.wasm_free(privateKeyPtr, 32);
     exports.wasm_free(messageData.ptr, messageData.len);
     exports.wasm_free(outPtr, maxSize);
-    exports.wasm_free(outLenPtr, 4);
+    if (exports.wasm_alloc_u32 && exports.wasm_free_u32) {
+      exports.wasm_free_u32(outLenPtr, 1);
+    } else {
+      exports.wasm_free(outLenPtr, 8);
+    }
 
     return ciphertext;
   }
