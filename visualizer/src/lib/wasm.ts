@@ -403,22 +403,18 @@ class WasmWrapper {
     const maxSize = 4096;
     const outPtr = exports.wasm_alloc(maxSize);
     
-    // Use aligned allocation for the length pointer
-    const outLenPtr = exports.wasm_alloc_u32 ? 
-      exports.wasm_alloc_u32(1) : 
-      exports.wasm_alloc(8); // Allocate extra and align manually
+    // Allocate extra space for alignment
+    const rawOutLenPtr = exports.wasm_alloc(8);
     
-    if (!outPtr || !outLenPtr) {
+    if (!outPtr || !rawOutLenPtr) {
       exports.wasm_free(statePtr, groupState.length);
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(messageData.ptr, messageData.len);
       throw new Error('Failed to allocate memory');
     }
 
-    // Set initial length using aligned pointer
-    const alignedLenPtr = exports.wasm_align_ptr ? 
-      exports.wasm_align_ptr(outLenPtr, 4) : 
-      outLenPtr;
+    // Manually align to 4-byte boundary
+    const alignedLenPtr = (rawOutLenPtr + 3) & ~3;
     new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0] = maxSize;
 
     const success = exports.wasm_send_message(
@@ -438,11 +434,7 @@ class WasmWrapper {
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(messageData.ptr, messageData.len);
       exports.wasm_free(outPtr, maxSize);
-      if (exports.wasm_alloc_u32 && exports.wasm_free_u32) {
-        exports.wasm_free_u32(outLenPtr, 1);
-      } else {
-        exports.wasm_free(outLenPtr, 8);
-      }
+      exports.wasm_free(rawOutLenPtr, 8);
       throw new Error('Failed to send message');
     }
 
@@ -452,11 +444,7 @@ class WasmWrapper {
     exports.wasm_free(privateKeyPtr, 32);
     exports.wasm_free(messageData.ptr, messageData.len);
     exports.wasm_free(outPtr, maxSize);
-    if (exports.wasm_alloc_u32 && exports.wasm_free_u32) {
-      exports.wasm_free_u32(outLenPtr, 1);
-    } else {
-      exports.wasm_free(outLenPtr, 8);
-    }
+    exports.wasm_free(rawOutLenPtr, 8);
 
     return ciphertext;
   }
