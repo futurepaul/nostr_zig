@@ -6,6 +6,9 @@ export interface WasmExports {
   wasm_free: (ptr: number, size: number) => void;
   bytes_to_hex: (bytes: number, bytesLen: number, outHex: number, outHexLen: number) => boolean;
   wasm_create_identity: (outPrivateKey: number, outPublicKey: number) => boolean;
+  wasm_generate_ephemeral_keys: (outPrivateKey: number, outPublicKey: number) => boolean;
+  wasm_sign_schnorr: (messageHash: number, privateKey: number, outSignature: number) => boolean;
+  wasm_verify_schnorr: (messageHash: number, signature: number, publicKey: number) => boolean;
   wasm_create_key_package: (
     privateKey: number,
     outData: number,
@@ -152,6 +155,107 @@ class WasmWrapper {
     exports.wasm_free(publicKeyPtr, 32);
 
     return { privateKey, publicKey };
+  }
+
+  generateEphemeralKeys(): { privateKey: Uint8Array; publicKey: Uint8Array } {
+    const exports = this.ensureInitialized();
+    const privateKeyPtr = exports.wasm_alloc(32);
+    const publicKeyPtr = exports.wasm_alloc(32);
+    
+    if (!privateKeyPtr || !publicKeyPtr) {
+      throw new Error('Failed to allocate memory for ephemeral keys');
+    }
+
+    const success = exports.wasm_generate_ephemeral_keys(privateKeyPtr, publicKeyPtr);
+    if (!success) {
+      exports.wasm_free(privateKeyPtr, 32);
+      exports.wasm_free(publicKeyPtr, 32);
+      throw new Error('Failed to generate ephemeral keys');
+    }
+
+    const privateKey = this.readBytes(privateKeyPtr, 32);
+    const publicKey = this.readBytes(publicKeyPtr, 32);
+    
+    console.log('Generated ephemeral keys:', {
+      publicKey: Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
+    });
+
+    exports.wasm_free(privateKeyPtr, 32);
+    exports.wasm_free(publicKeyPtr, 32);
+
+    return { privateKey, publicKey };
+  }
+
+  signSchnorr(messageHash: Uint8Array, privateKey: Uint8Array): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    if (messageHash.length !== 32) {
+      throw new Error('Message hash must be 32 bytes');
+    }
+    if (privateKey.length !== 32) {
+      throw new Error('Private key must be 32 bytes');
+    }
+
+    const hashPtr = exports.wasm_alloc(32);
+    const keyPtr = exports.wasm_alloc(32);
+    const sigPtr = exports.wasm_alloc(64);
+    
+    if (!hashPtr || !keyPtr || !sigPtr) {
+      throw new Error('Failed to allocate memory');
+    }
+
+    new Uint8Array(exports.memory.buffer, hashPtr, 32).set(messageHash);
+    new Uint8Array(exports.memory.buffer, keyPtr, 32).set(privateKey);
+
+    const success = exports.wasm_sign_schnorr(hashPtr, keyPtr, sigPtr);
+    if (!success) {
+      exports.wasm_free(hashPtr, 32);
+      exports.wasm_free(keyPtr, 32);
+      exports.wasm_free(sigPtr, 64);
+      throw new Error('Failed to sign');
+    }
+
+    const signature = this.readBytes(sigPtr, 64);
+
+    exports.wasm_free(hashPtr, 32);
+    exports.wasm_free(keyPtr, 32);
+    exports.wasm_free(sigPtr, 64);
+
+    return signature;
+  }
+
+  verifySchnorr(messageHash: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean {
+    const exports = this.ensureInitialized();
+    
+    if (messageHash.length !== 32) {
+      throw new Error('Message hash must be 32 bytes');
+    }
+    if (signature.length !== 64) {
+      throw new Error('Signature must be 64 bytes');
+    }
+    if (publicKey.length !== 32) {
+      throw new Error('Public key must be 32 bytes');
+    }
+
+    const hashPtr = exports.wasm_alloc(32);
+    const sigPtr = exports.wasm_alloc(64);
+    const keyPtr = exports.wasm_alloc(32);
+    
+    if (!hashPtr || !sigPtr || !keyPtr) {
+      throw new Error('Failed to allocate memory');
+    }
+
+    new Uint8Array(exports.memory.buffer, hashPtr, 32).set(messageHash);
+    new Uint8Array(exports.memory.buffer, sigPtr, 64).set(signature);
+    new Uint8Array(exports.memory.buffer, keyPtr, 32).set(publicKey);
+
+    const valid = exports.wasm_verify_schnorr(hashPtr, sigPtr, keyPtr);
+
+    exports.wasm_free(hashPtr, 32);
+    exports.wasm_free(sigPtr, 64);
+    exports.wasm_free(keyPtr, 32);
+
+    return valid;
   }
 
   createKeyPackage(privateKey: Uint8Array): Uint8Array {

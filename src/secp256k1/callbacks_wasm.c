@@ -10,18 +10,21 @@ static int string_length(const char* str) {
     return len;
 }
 
-// Default error callback for WASM - logs to console and traps
+// External function to set error state
+extern void abort(void);
+
+// Default error callback for WASM - logs to console and aborts gracefully
 void secp256k1_default_error_callback_fn(const char* str, void* data) {
     (void)data;
     wasm_log_error(str, string_length(str));
-    __builtin_trap(); // WASM trap instead of abort()
+    abort(); // This now sets error state instead of trapping
 }
 
-// Default illegal callback for WASM - logs to console and traps  
+// Default illegal callback for WASM - logs to console and aborts gracefully
 void secp256k1_default_illegal_callback_fn(const char* str, void* data) {
     (void)data;
     wasm_log_error(str, string_length(str));
-    __builtin_trap(); // WASM trap instead of abort()
+    abort(); // This now sets error state instead of trapping
 }
 
 // Provide a dummy stderr for compatibility

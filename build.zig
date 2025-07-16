@@ -607,6 +607,7 @@ pub fn build(b: *std.Build) void {
             "-DUSE_ECMULT_STATIC_PRECOMPUTATION=1",
             "-fvisibility=hidden",
             "-fno-exceptions",
+            "-Dprintf(...)=", // Define printf to nothing like rust-secp256k1
         },
     });
     
@@ -659,9 +660,9 @@ pub fn build(b: *std.Build) void {
     wasm_lib.entry = .disabled;
     wasm_lib.export_memory = true;
     
-    // Skip secp256k1 import for now
-    // wasm_lib.root_module.addImport("secp256k1", secp256k1_wasm_mod);
-    // wasm_lib.linkLibrary(secp256k1_wasm_lib);
+    // Add secp256k1 import for WASM
+    wasm_lib.root_module.addImport("secp256k1", secp256k1_wasm_mod);
+    wasm_lib.linkLibrary(secp256k1_wasm_lib);
     
     
     b.installArtifact(wasm_lib);

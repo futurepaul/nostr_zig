@@ -1,7 +1,5 @@
 const std = @import("std");
-const secp256k1 = @cImport({
-    @cInclude("secp256k1.h");
-});
+const secp256k1 = @import("secp256k1");
 const wasm_random = @import("../wasm_random.zig");
 const crypto = @import("../crypto.zig");
 
@@ -26,10 +24,20 @@ pub const EphemeralKeyPair = struct {
     
     /// Generate a secure private key that's valid for secp256k1
     fn generateSecurePrivateKey() ![32]u8 {
-        const ctx = secp256k1.secp256k1_context_create(
-            secp256k1.SECP256K1_CONTEXT_SIGN
-        ) orelse return error.ContextCreationFailed;
-        defer secp256k1.secp256k1_context_destroy(ctx);
+        const builtin = @import("builtin");
+        const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+            // In WASM, use the static no-precomp context
+            const wasm_ctx = @import("../wasm_secp_context.zig");
+            break :blk wasm_ctx.getStaticContext();
+        } else blk: {
+            // On native platforms, create a context normally
+            break :blk secp256k1.secp256k1_context_create(
+                secp256k1.SECP256K1_CONTEXT_SIGN
+            ) orelse return error.ContextCreationFailed;
+        };
+        defer if (builtin.target.cpu.arch != .wasm32) {
+            secp256k1.secp256k1_context_destroy(ctx);
+        };
         
         var key: [32]u8 = undefined;
         while (true) {

@@ -1,5 +1,7 @@
 const std = @import("std");
-// const wasm_random = @import("wasm_random.zig");
+const crypto = @import("crypto.zig");
+const ephemeral = @import("mls/ephemeral.zig");
+const secp256k1 = @import("secp256k1");
 
 // Declare the external function directly here
 extern fn getRandomValues(buf: [*]u8, len: usize) void;
@@ -47,6 +49,76 @@ export fn wasm_test_random() void {
     // The values should be different each time if randomness is working
 }
 
+// Simple test function to check secp256k1 context creation
+export fn wasm_test_secp256k1_context() bool {
+    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN);
+    if (ctx == null) return false;
+    secp256k1.secp256k1_context_destroy(ctx);
+    return true;
+}
+
+// Generate an ephemeral keypair for group messages
+export fn wasm_generate_ephemeral_keys(out_private_key: [*]u8, out_public_key: [*]u8) bool {
+    // Generate ephemeral keys using the proper module
+    const key_pair = ephemeral.EphemeralKeyPair.generate() catch return false;
+    
+    // Copy to output buffers
+    @memcpy(out_private_key[0..32], &key_pair.private_key);
+    @memcpy(out_public_key[0..32], &key_pair.public_key);
+    
+    return true;
+}
+
+// Sign a message/hash with secp256k1
+export fn wasm_sign_schnorr(
+    message_hash: [*]const u8,
+    private_key: [*]const u8,
+    out_signature: [*]u8
+) bool {
+    // Create context
+    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN);
+    if (ctx == null) return false;
+    defer secp256k1.secp256k1_context_destroy(ctx);
+    
+    // Create keypair
+    var keypair: secp256k1.secp256k1_keypair = undefined;
+    if (secp256k1.secp256k1_keypair_create(ctx, &keypair, private_key) != 1) {
+        return false;
+    }
+    
+    // Sign with Schnorr
+    var signature: [64]u8 = undefined;
+    if (secp256k1.secp256k1_schnorrsig_sign32(ctx, &signature, message_hash, &keypair, null) != 1) {
+        return false;
+    }
+    
+    // Copy to output
+    @memcpy(out_signature[0..64], &signature);
+    return true;
+}
+
+// Verify a Schnorr signature
+export fn wasm_verify_schnorr(
+    message_hash: [*]const u8,
+    signature: [*]const u8,
+    public_key: [*]const u8
+) bool {
+    // Create context
+    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_VERIFY);
+    if (ctx == null) return false;
+    defer secp256k1.secp256k1_context_destroy(ctx);
+    
+    // Parse x-only public key
+    var xonly_pubkey: secp256k1.secp256k1_xonly_pubkey = undefined;
+    if (secp256k1.secp256k1_xonly_pubkey_parse(ctx, &xonly_pubkey, public_key) != 1) {
+        return false;
+    }
+    
+    // Verify signature
+    const result = secp256k1.secp256k1_schnorrsig_verify(ctx, signature, message_hash, 32, &xonly_pubkey);
+    return result == 1;
+}
+
 // Export the secure random function for the wasm_random module
 export fn bytes_to_hex(bytes: [*]const u8, bytes_len: usize, out_hex: [*]u8, out_hex_len: usize) bool {
     // Check output buffer is large enough (2 chars per byte)
@@ -63,9 +135,13 @@ export fn bytes_to_hex(bytes: [*]const u8, bytes_len: usize, out_hex: [*]u8, out
 }
 
 export fn wasm_create_identity(out_private_key: [*]u8, out_public_key: [*]u8) bool {
-    // Generate secure random keys using browser crypto
-    getRandomValues(out_private_key, 32);
-    getRandomValues(out_public_key, 32);
+    // Generate a real secp256k1 keypair
+    const private_key = crypto.generatePrivateKey() catch return false;
+    const public_key = crypto.getPublicKey(private_key) catch return false;
+    
+    // Copy to output buffers
+    @memcpy(out_private_key[0..32], &private_key);
+    @memcpy(out_public_key[0..32], &public_key);
     
     return true;
 }

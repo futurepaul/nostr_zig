@@ -11,8 +11,18 @@ pub fn generatePrivateKey() ![32]u8 {
     wasm_random.secure_random.bytes(&key);
     
     // Verify the generated key is valid for secp256k1
-    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
-    defer secp256k1.secp256k1_context_destroy(ctx);
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
     
     if (secp256k1.secp256k1_ec_seckey_verify(ctx, &key) != 1) {
         // If invalid, generate a new one (very rare case)
@@ -24,9 +34,19 @@ pub fn generatePrivateKey() ![32]u8 {
 
 /// Get public key from private key using secp256k1 (x-only for Nostr)
 pub fn getPublicKey(private_key: [32]u8) ![32]u8 {
-    // Create secp256k1 context
-    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
-    defer secp256k1.secp256k1_context_destroy(ctx);
+    // Use static context for WASM compatibility
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
     
     // Verify the private key
     if (secp256k1.secp256k1_ec_seckey_verify(ctx, &private_key) != 1) {
