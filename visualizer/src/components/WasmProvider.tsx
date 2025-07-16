@@ -6,8 +6,10 @@ interface WasmContextType {
   error: Error | null;
   createIdentity: () => { privateKey: Uint8Array; publicKey: Uint8Array };
   generateEphemeralKeys: () => { privateKey: Uint8Array; publicKey: Uint8Array };
+  generateMLSSigningKeys: () => { privateKey: Uint8Array; publicKey: Uint8Array };
   createKeyPackage: (privateKey: Uint8Array) => Uint8Array;
   createGroup: (creatorPrivateKey: Uint8Array, creatorPublicKey: Uint8Array) => Uint8Array;
+  generateExporterSecret: (groupState: Uint8Array) => Uint8Array;
   sendMessage: (groupState: Uint8Array, senderPrivateKey: Uint8Array, message: string) => Uint8Array;
 }
 
@@ -42,8 +44,10 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
     error,
     createIdentity: () => wasm.createIdentity(),
     generateEphemeralKeys: () => wasm.generateEphemeralKeys(),
+    generateMLSSigningKeys: () => wasm.generateMLSSigningKeys(),
     createKeyPackage: (privateKey) => wasm.createKeyPackage(privateKey),
     createGroup: (creatorPrivateKey, creatorPublicKey) => wasm.createGroup(creatorPrivateKey, creatorPublicKey),
+    generateExporterSecret: (groupState) => wasm.generateExporterSecret(groupState),
     sendMessage: (groupState, senderPrivateKey, message) => wasm.sendMessage(groupState, senderPrivateKey, message),
   };
 

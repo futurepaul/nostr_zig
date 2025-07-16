@@ -34,14 +34,25 @@ This document outlines the comprehensive plan to implement NIP-EE (E2EE Messagin
 
 6. **✅ Visualizer Updates**: The React-based visualizer now properly shows ephemeral keys with visual indicators and **real different random keys**!
 
-### Next Priority: Complete secp256k1 Integration
-With browser crypto working, we can now focus on:
-- **secp256k1 key generation**: Replace random bytes with proper secp256k1 keypairs
-- **Public key derivation**: Implement proper Ed25519/secp256k1 key derivation
-- **Signature verification**: Add real cryptographic signatures to messages
+### 🚨 **CRITICAL GAPS IDENTIFIED (Updated: 2025-07-16)**
 
-### Then: Phase 2 - Core Protocol
-The cryptographic foundation is now in place. The next critical tasks are:
+**Analysis of current visualizer vs NIP-EE spec reveals key missing pieces:**
+
+1. **Real Nostr Event IDs**: Events use placeholder IDs instead of proper 32-byte hex Nostr IDs
+2. **Ephemeral Key Signing**: Group messages must be SIGNED with ephemeral keys, not just use ephemeral pubkey
+3. **Wrong Group ID Tag**: Must use `"h"` tag with nostr_group_id (not current approach)
+4. **Missing Exporter Secret**: Need exporter secret with "nostr" label for NIP-44 encryption layer
+5. **MLS Signing Key Separation**: MLS signing keys must differ from Nostr identity keys
+6. **MLSMessage Serialization**: Group events need proper TLS-style MLSMessage format
+
+### Next Priority: NIP-EE Compliance
+Before proceeding with core protocol features, we must fix spec compliance:
+- **Data structure alignment**: Real IDs, proper tags, correct signing
+- **Double encryption**: MLS + NIP-44 using exporter secret
+- **Key separation**: Distinct MLS signing keys vs Nostr identity keys
+
+### Then: Phase 2 - Core Protocol  
+Once spec-compliant, focus on:
 - Group state management (ratchet tree, epochs)
 - NIP-59 gift-wrapping for Welcome events
 - Commit/Proposal message processing

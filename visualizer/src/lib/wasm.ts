@@ -11,6 +11,7 @@ export interface WasmExports {
   wasm_create_identity: (outPrivateKey: number, outPublicKey: number) => boolean;
   wasm_get_public_key_from_private: (privateKey: number, outPublicKey: number) => boolean;
   wasm_generate_ephemeral_keys: (outPrivateKey: number, outPublicKey: number) => boolean;
+  wasm_generate_mls_signing_keys: (outPrivateKey: number, outPublicKey: number) => boolean;
   wasm_sign_schnorr: (messageHash: number, privateKey: number, outSignature: number) => boolean;
   wasm_verify_schnorr: (messageHash: number, signature: number, publicKey: number) => boolean;
   wasm_create_key_package: (
@@ -23,6 +24,11 @@ export interface WasmExports {
     creatorPublicKey: number,
     outState: number,
     outStateLenPtr: number
+  ) => boolean;
+  wasm_generate_exporter_secret: (
+    groupState: number,
+    groupStateLen: number,
+    outSecret: number
   ) => boolean;
   wasm_send_message: (
     groupState: number,
@@ -207,6 +213,35 @@ class WasmWrapper {
     const publicKey = this.readBytes(publicKeyPtr, 32);
     
     console.log('Generated ephemeral keys:', {
+      publicKey: Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
+    });
+
+    exports.wasm_free(privateKeyPtr, 32);
+    exports.wasm_free(publicKeyPtr, 32);
+
+    return { privateKey, publicKey };
+  }
+
+  generateMLSSigningKeys(): { privateKey: Uint8Array; publicKey: Uint8Array } {
+    const exports = this.ensureInitialized();
+    const privateKeyPtr = exports.wasm_alloc(32);
+    const publicKeyPtr = exports.wasm_alloc(32);
+    
+    if (!privateKeyPtr || !publicKeyPtr) {
+      throw new Error('Failed to allocate memory for MLS signing keys');
+    }
+
+    const success = exports.wasm_generate_mls_signing_keys(privateKeyPtr, publicKeyPtr);
+    if (!success) {
+      exports.wasm_free(privateKeyPtr, 32);
+      exports.wasm_free(publicKeyPtr, 32);
+      throw new Error('Failed to generate MLS signing keys');
+    }
+
+    const privateKey = this.readBytes(privateKeyPtr, 32);
+    const publicKey = this.readBytes(publicKeyPtr, 32);
+    
+    console.log('Generated MLS signing keys:', {
       publicKey: Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
     });
 
@@ -405,6 +440,39 @@ class WasmWrapper {
     }
 
     return groupState;
+  }
+
+  generateExporterSecret(groupState: Uint8Array): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    // Allocate space for group state
+    const statePtr = exports.wasm_alloc(groupState.length);
+    const secretPtr = exports.wasm_alloc(32);
+    
+    if (!statePtr || !secretPtr) {
+      throw new Error('Failed to allocate memory');
+    }
+
+    new Uint8Array(exports.memory.buffer, statePtr, groupState.length).set(groupState);
+
+    const success = exports.wasm_generate_exporter_secret(
+      statePtr,
+      groupState.length,
+      secretPtr
+    );
+
+    if (!success) {
+      exports.wasm_free(statePtr, groupState.length);
+      exports.wasm_free(secretPtr, 32);
+      throw new Error('Failed to generate exporter secret');
+    }
+
+    const secret = this.readBytes(secretPtr, 32);
+
+    exports.wasm_free(statePtr, groupState.length);
+    exports.wasm_free(secretPtr, 32);
+
+    return secret;
   }
 
   sendMessage(

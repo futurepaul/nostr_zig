@@ -93,6 +93,20 @@ export fn wasm_generate_ephemeral_keys(out_private_key: [*]u8, out_public_key: [
     return true;
 }
 
+// Generate a separate MLS signing keypair (different from Nostr identity)
+export fn wasm_generate_mls_signing_keys(out_private_key: [*]u8, out_public_key: [*]u8) bool {
+    // Generate a separate signing keypair for MLS operations
+    // This MUST be different from the user's Nostr identity key per NIP-EE spec
+    const private_key = crypto.generatePrivateKey() catch return false;
+    const public_key = crypto.getPublicKey(private_key) catch return false;
+    
+    // Copy to output buffers
+    @memcpy(out_private_key[0..32], &private_key);
+    @memcpy(out_public_key[0..32], &public_key);
+    
+    return true;
+}
+
 // Sign a message/hash with secp256k1
 export fn wasm_sign_schnorr(
     message_hash: [*]const u8,
@@ -306,6 +320,34 @@ export fn wasm_create_group(
     out_state_len.* = min_size;
     
     return true; // Always return true for now to test
+}
+
+// Generate MLS exporter secret with "nostr" label
+export fn wasm_generate_exporter_secret(
+    group_state: [*]const u8,
+    group_state_len: u32,
+    out_secret: [*]u8
+) bool {
+    // In a real MLS implementation, this would derive the exporter secret
+    // from the current group state using the MLS exporter function with "nostr" label
+    // For now, we'll generate a deterministic secret based on group state
+    
+    if (group_state_len == 0) {
+        return false;
+    }
+    
+    // Hash the group state to create a deterministic 32-byte exporter secret
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update("nostr"); // Add the label as per MLS spec
+    hasher.update(group_state[0..group_state_len]);
+    
+    var secret: [32]u8 = undefined;
+    hasher.final(&secret);
+    
+    // Copy to output buffer
+    @memcpy(out_secret[0..32], &secret);
+    
+    return true;
 }
 
 export fn wasm_send_message(
