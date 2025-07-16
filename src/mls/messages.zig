@@ -7,6 +7,7 @@ const crypto = @import("../crypto.zig");
 const nip_ee = @import("nip_ee.zig");
 const mls_zig = @import("mls_zig");
 const ephemeral = @import("ephemeral.zig");
+const constants = @import("constants.zig");
 
 /// Message encryption parameters
 pub const MessageParams = struct {
@@ -290,24 +291,41 @@ fn getSenderPublicKey(group_state: *const mls.MlsGroupState, sender: types.Sende
 }
 
 fn deriveMlsSigningKey(allocator: std.mem.Allocator, nostr_private_key: [32]u8) ![]u8 {
-    // Same as in key_packages.zig
+    // Derive MLS signing key from Nostr private key using HKDF
     const hkdf = std.crypto.kdf.hkdf.Hkdf(std.crypto.hash.sha2.Sha256);
-    const prk_buf: [32]u8 = undefined;
-    var prk = prk_buf;
-    hkdf.extract(&prk, "nostr-mls-signing", &nostr_private_key);
+    var prk: [32]u8 = undefined;
     
-    const key = try allocator.alloc(u8, 32);
-    hkdf.expand(key, "mls-signing-key", &prk);
+    // HKDF-extract: extract(output, salt, ikm)
+    // Uses domain separation to ensure MLS keys are cryptographically isolated from Nostr keys
+    hkdf.extract(&prk, constants.HKDF_SALT.NOSTR_TO_MLS_SIGNING, &nostr_private_key);
+    
+    // HKDF-expand: expand(output, context, prk)
+    // Further domain separation for the specific use as a signing key
+    const key = try allocator.alloc(u8, constants.KEY_SIZES.HKDF_OUTPUT);
+    hkdf.expand(key, constants.HKDF_INFO.MLS_SIGNING_KEY, &prk);
     return key;
 }
 
 fn deriveMlsPublicKey(allocator: std.mem.Allocator, nostr_pubkey: [32]u8) ![]u8 {
-    // Derive MLS public key from Nostr public key
-    // This is a placeholder - actual implementation would use appropriate crypto
-    _ = nostr_pubkey;
-    const pubkey = try allocator.alloc(u8, 32);
-    @memset(pubkey, 0);
-    return pubkey;
+    // Note: This function derives a deterministic identifier from a Nostr public key.
+    // It does NOT produce a valid Ed25519 public key (that's mathematically impossible).
+    // This is used only as a deterministic identifier in contexts where the actual
+    // Ed25519 public key would be derived from the corresponding MLS private key.
+    
+    // Use HKDF to derive a deterministic identifier
+    const hkdf = std.crypto.kdf.hkdf.Hkdf(std.crypto.hash.sha2.Sha256);
+    var prk: [32]u8 = undefined;
+    
+    // HKDF-extract: extract(output, salt, ikm)
+    // Domain separation for deriving identifiers (not keys) from Nostr public keys
+    hkdf.extract(&prk, constants.HKDF_SALT.NOSTR_TO_MLS_ID, &nostr_pubkey);
+    
+    // HKDF-expand: expand(output, context, prk)
+    // Creates a deterministic 32-byte identifier
+    const identifier = try allocator.alloc(u8, constants.KEY_SIZES.HKDF_OUTPUT);
+    hkdf.expand(identifier, constants.HKDF_INFO.MLS_IDENTIFIER, &prk);
+    
+    return identifier;
 }
 
 fn serializeFramedContentTBS(allocator: std.mem.Allocator, content: types.FramedContent) ![]u8 {

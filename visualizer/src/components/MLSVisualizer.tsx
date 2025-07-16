@@ -37,6 +37,8 @@ export interface Message {
   content: string;
   timestamp: number;
   encrypted: boolean;
+  eventId?: string; // Optional event ID to track the source Nostr event
+  decrypted?: string; // Optional decrypted content
 }
 
 export interface EphemeralKeyInfo {

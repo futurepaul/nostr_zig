@@ -2,6 +2,8 @@ const std = @import("std");
 const types = @import("types.zig");
 const provider = @import("provider.zig");
 const mls_zig = @import("mls_zig");
+const constants = @import("constants.zig");
+const crypto = @import("../crypto.zig");
 
 /// Key package generation parameters
 pub const KeyPackageParams = struct {
@@ -383,23 +385,35 @@ fn isHexString(s: []const u8) bool {
 // Helper functions
 
 fn deriveMlsSigningKey(allocator: std.mem.Allocator, nostr_private_key: [32]u8) ![]u8 {
-    // Derive MLS signing key from Nostr private key using HMAC
-    const Sha256 = std.crypto.hash.sha2.Sha256;
-    const Hmac = std.crypto.auth.hmac.Hmac(Sha256);
+    // Derive MLS signing key from Nostr private key using HKDF
+    const hkdf = std.crypto.kdf.hkdf.Hkdf(std.crypto.hash.sha2.Sha256);
+    var prk: [32]u8 = undefined;
     
-    var prk: [Hmac.mac_length]u8 = undefined;
-    Hmac.create(&prk, &nostr_private_key, "nostr-mls-signing");
+    // HKDF-extract: extract(output, salt, ikm)
+    // Uses domain separation to ensure MLS keys are cryptographically isolated from Nostr keys
+    hkdf.extract(&prk, constants.HKDF_SALT.NOSTR_TO_MLS_SIGNING, &nostr_private_key);
     
-    const key = try allocator.alloc(u8, 32);
-    @memcpy(key, &prk);
+    // HKDF-expand: expand(output, context, prk)
+    // Further domain separation for the specific use as a signing key
+    const key = try allocator.alloc(u8, constants.KEY_SIZES.HKDF_OUTPUT);
+    hkdf.expand(key, constants.HKDF_INFO.MLS_SIGNING_KEY, &prk);
     return key;
 }
 
 fn deriveMlsPublicKey(allocator: std.mem.Allocator, mls_private_key: []const u8) ![]u8 {
-    // This is a placeholder - actual implementation would use appropriate crypto
-    _ = mls_private_key;
+    // Derive Ed25519 public key from private key
+    if (mls_private_key.len != 32) {
+        return error.InvalidKeySize;
+    }
+    
+    // For Ed25519, we need to derive the public key from the private key seed
+    const seed: [32]u8 = mls_private_key[0..32].*;
+    const keypair = try std.crypto.sign.Ed25519.KeyPair.create(seed);
+    
+    // Allocate and return the public key
     const pubkey = try allocator.alloc(u8, 32);
-    @memset(pubkey, 0);
+    @memcpy(pubkey, &keypair.public_key.bytes);
+    
     return pubkey;
 }
 

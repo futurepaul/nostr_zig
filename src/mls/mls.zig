@@ -12,6 +12,7 @@ pub const messages = @import("messages.zig");
 pub const openmls_key_packages = @import("openmls_key_packages.zig");
 pub const ephemeral = @import("ephemeral.zig");
 pub const group_messaging = @import("group_messaging.zig");
+pub const serialization = @import("serialization.zig");
 
 // Re-export commonly used types
 pub const Epoch = types.Epoch;

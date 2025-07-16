@@ -1,4 +1,5 @@
 const std = @import("std");
+const crypto = std.crypto;
 
 // Import the C library functions
 pub const c = @cImport({
@@ -18,6 +19,75 @@ pub const SECP256K1_EC_UNCOMPRESSED = c.SECP256K1_EC_UNCOMPRESSED;
 pub const secp256k1_context = c.secp256k1_context;
 pub const secp256k1_pubkey = c.secp256k1_pubkey;
 pub const secp256k1_keypair = c.secp256k1_keypair;
+
+// High-level API wrapper
+pub const Secp256k1 = struct {
+    ctx: ?*secp256k1_context,
+    
+    pub fn genNew() Secp256k1 {
+        const ctx = c.secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+        return Secp256k1{ .ctx = ctx };
+    }
+    
+    pub fn randomize(self: *Secp256k1, seed: *const [32]u8) void {
+        if (self.ctx) |ctx| {
+            _ = c.secp256k1_context_randomize(ctx, seed);
+        }
+    }
+    
+    pub fn deinit(self: Secp256k1) void {
+        if (self.ctx) |ctx| {
+            c.secp256k1_context_destroy(ctx);
+        }
+    }
+};
+
+pub const SecretKey = struct {
+    data: [32]u8,
+    
+    pub fn fromSlice(bytes: *const [32]u8) !SecretKey {
+        // Create a temporary context for validation
+        const ctx = c.secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+        defer c.secp256k1_context_destroy(ctx);
+        
+        if (ctx == null) return error.ContextCreationFailed;
+        
+        // Verify the key is valid
+        if (c.secp256k1_ec_seckey_verify(ctx, bytes) != 1) {
+            return error.InvalidSecretKey;
+        }
+        
+        return SecretKey{ .data = bytes.* };
+    }
+};
+
+pub const PublicKey = struct {
+    inner: secp256k1_pubkey,
+    
+    pub fn fromSecretKey(secp: Secp256k1, sk: SecretKey) PublicKey {
+        const ctx = secp.ctx orelse {
+            // Return a dummy public key if context is invalid
+            return PublicKey{ .inner = std.mem.zeroes(secp256k1_pubkey) };
+        };
+        
+        var pubkey: secp256k1_pubkey = undefined;
+        if (c.secp256k1_ec_pubkey_create(ctx, &pubkey, &sk.data) != 1) {
+            // Return a dummy public key if creation fails
+            return PublicKey{ .inner = std.mem.zeroes(secp256k1_pubkey) };
+        }
+        
+        return PublicKey{ .inner = pubkey };
+    }
+    
+    pub fn serialize(self: PublicKey) [33]u8 {
+        // This is a simplified version - we'd need the context to serialize properly
+        // For now, return a placeholder
+        var result: [33]u8 = undefined;
+        result[0] = 0x02; // Compressed format
+        @memcpy(result[1..], self.inner.data[0..32]);
+        return result;
+    }
+};
 pub const secp256k1_xonly_pubkey = c.secp256k1_xonly_pubkey;
 
 // Context management

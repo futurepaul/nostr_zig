@@ -12,6 +12,9 @@ export function IdentityCard({ identity }: IdentityCardProps) {
     .join('');
   
   const shortPubkey = `${pubkeyHex.substring(0, 8)}...${pubkeyHex.substring(pubkeyHex.length - 8)}`;
+  
+  // Log the full pubkey for debugging
+  console.log(`${identity.nickname} full pubkey:`, pubkeyHex);
 
   return (
     <Card>

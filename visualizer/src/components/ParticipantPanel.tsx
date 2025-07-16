@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { IdentityCard } from './IdentityCard';
 import { KeyPackageManager } from './KeyPackageManager';
 import { MessageComposer } from './MessageComposer';
 import { useWasm } from './WasmProvider';
-import { MLSState, ProtocolStep } from './MLSVisualizer';
+import { MLSState, ProtocolStep, Message } from './MLSVisualizer';
 
 interface ParticipantPanelProps {
   name: string;
@@ -27,6 +27,30 @@ export function ParticipantPanel({
   isCreator,
 }: ParticipantPanelProps) {
   const { isReady, createIdentity, createKeyPackage, createGroup } = useWasm();
+  
+  // Watch for encrypted messages from the other participant
+  React.useEffect(() => {
+    // Look for kind 445 events from the other participant
+    const otherEvents = otherState.events.filter(e => e.kind === 445);
+    
+    otherEvents.forEach(event => {
+      // Check if we already have this message
+      const hasMessage = state.messages.some(m => m.eventId === event.id);
+      if (!hasMessage) {
+        // Add as encrypted message
+        setState(prev => ({
+          ...prev,
+          messages: [...prev.messages, {
+            sender: otherState.identity?.nickname || 'Unknown',
+            content: event.content, // Base64 encrypted content
+            timestamp: event.created_at * 1000,
+            encrypted: true,
+            eventId: event.id,
+          }]
+        }));
+      }
+    });
+  }, [otherState.events, state.messages, setState, otherState.identity]);
 
   const handleCreateIdentity = () => {
     if (!isReady) return;
@@ -248,17 +272,96 @@ export function ParticipantPanel({
             <h4 className="font-semibold">Messages</h4>
             <div className="max-h-40 overflow-y-auto space-y-1">
               {state.messages.map((msg, idx) => (
-                <div key={idx} className="text-sm bg-gray-100 p-2 rounded">
-                  <div className="font-semibold">{msg.sender}</div>
-                  <div className={msg.encrypted ? 'font-mono text-xs' : ''}>
-                    {msg.content}
-                  </div>
-                </div>
+                <MessageDisplay
+                  key={idx}
+                  message={msg}
+                  state={state}
+                  setState={setState}
+                  otherState={otherState}
+                />
               ))}
             </div>
           </div>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// Message display component with decrypt functionality
+interface MessageDisplayProps {
+  message: Message;
+  state: MLSState;
+  setState: React.Dispatch<React.SetStateAction<MLSState>>;
+  otherState: MLSState;
+}
+
+function MessageDisplay({ message, state, setState, otherState }: MessageDisplayProps) {
+  const [isDecrypting, setIsDecrypting] = useState(false);
+  
+  // Check if this is an encrypted message from the other participant
+  const isEncryptedFromOther = message.sender !== state.identity?.nickname && message.encrypted;
+  const showDecryptButton = isEncryptedFromOther && message.eventId && !message.decrypted;
+  
+  const handleDecrypt = async () => {
+    if (!message.eventId) return;
+    
+    setIsDecrypting(true);
+    
+    // Find the corresponding event
+    const event = [...state.events, ...otherState.events].find(e => e.id === message.eventId);
+    if (!event) {
+      setIsDecrypting(false);
+      return;
+    }
+    
+    try {
+      // In a real implementation, we would decrypt the message using MLS
+      // For now, we'll simulate decryption by showing the original content
+      const originalMessage = otherState.messages.find(m => m.eventId === message.eventId && !m.encrypted);
+      
+      if (originalMessage) {
+        // Update the message with decrypted content
+        setState(prev => ({
+          ...prev,
+          messages: prev.messages.map(m => 
+            m.eventId === message.eventId 
+              ? { ...m, decrypted: originalMessage.content }
+              : m
+          )
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to decrypt message:', error);
+    } finally {
+      setIsDecrypting(false);
+    }
+  };
+  
+  return (
+    <div className="text-sm bg-gray-100 p-2 rounded">
+      <div className="font-semibold">{message.sender}</div>
+      {message.decrypted ? (
+        <div>
+          <div className="text-green-600 text-xs">✓ Decrypted</div>
+          <div>{message.decrypted}</div>
+        </div>
+      ) : (
+        <div className={message.encrypted ? 'font-mono text-xs' : ''}>
+          {message.content}
+        </div>
+      )}
+      {showDecryptButton && (
+        <Button 
+          size="sm" 
+          variant="outline" 
+          className="mt-1"
+          onClick={handleDecrypt}
+          disabled={isDecrypting}
+        >
+          {isDecrypting ? 'Decrypting...' : '🔓 Decrypt'}
+        </Button>
+      )}
+    </div>
   );
 }

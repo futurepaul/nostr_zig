@@ -4,6 +4,7 @@ export interface WasmExports {
   wasm_add: (a: number, b: number) => number;
   wasm_alloc: (size: number) => number;
   wasm_free: (ptr: number, size: number) => void;
+  bytes_to_hex: (bytes: number, bytesLen: number, outHex: number, outHexLen: number) => boolean;
   wasm_create_identity: (outPrivateKey: number, outPublicKey: number) => boolean;
   wasm_create_key_package: (
     privateKey: number,
@@ -45,11 +46,38 @@ class WasmWrapper {
       const wasmModule = await WebAssembly.compile(wasmBuffer);
       
       console.log('Instantiating WASM module...');
-      this.instance = await WebAssembly.instantiate(wasmModule, {
+      
+      // Create a reference that will be updated after instantiation
+      let wasmMemory: WebAssembly.Memory | null = null;
+      
+      // Create imports for WASM including getRandomValues
+      const imports = {
         env: {
-          // Add any imports required by the WASM module
+          // Provide secure randomness from the browser's crypto API
+          getRandomValues: (ptr: number, len: number) => {
+            if (!wasmMemory) {
+              throw new Error('WASM memory not available');
+            }
+            const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
+            crypto.getRandomValues(bytes);
+            console.log('Generated random bytes:', Array.from(bytes).slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join(' '));
+          },
+          // Error logging function for secp256k1
+          wasm_log_error: (strPtr: number, len: number) => {
+            if (!wasmMemory) {
+              throw new Error('WASM memory not available');
+            }
+            const bytes = new Uint8Array(wasmMemory.buffer, strPtr, len);
+            const message = new TextDecoder().decode(bytes);
+            console.error('secp256k1 error:', message);
+          }
         }
-      });
+      };
+      
+      this.instance = await WebAssembly.instantiate(wasmModule, imports);
+      
+      // Now set the memory reference
+      wasmMemory = (this.instance.exports as any).memory;
       
       this.exports = this.instance.exports as WasmExports;
       console.log('Available exports:', Object.keys(this.exports));
@@ -114,6 +142,11 @@ class WasmWrapper {
 
     const privateKey = this.readBytes(privateKeyPtr, 32);
     const publicKey = this.readBytes(publicKeyPtr, 32);
+    
+    console.log('Created identity:', {
+      privateKey: Array.from(privateKey).slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join(' '),
+      publicKey: Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
+    });
 
     exports.wasm_free(privateKeyPtr, 32);
     exports.wasm_free(publicKeyPtr, 32);
@@ -280,6 +313,30 @@ class WasmWrapper {
     exports.wasm_free(outLenPtr, 4);
 
     return ciphertext;
+  }
+
+  // Crypto utilities
+  bytesToHex(bytes: Uint8Array): string {
+    const exports = this.ensureInitialized();
+    const bytesPtr = exports.wasm_alloc(bytes.length);
+    const hexPtr = exports.wasm_alloc(bytes.length * 2);
+    
+    if (!bytesPtr || !hexPtr) throw new Error('Failed to allocate memory');
+    
+    new Uint8Array(exports.memory.buffer, bytesPtr, bytes.length).set(bytes);
+    
+    const success = exports.bytes_to_hex(bytesPtr, bytes.length, hexPtr, bytes.length * 2);
+    if (!success) {
+      exports.wasm_free(bytesPtr, bytes.length);
+      exports.wasm_free(hexPtr, bytes.length * 2);
+      throw new Error('Failed to convert bytes to hex');
+    }
+    
+    const hexStr = this.readString(hexPtr, bytes.length * 2);
+    exports.wasm_free(bytesPtr, bytes.length);
+    exports.wasm_free(hexPtr, bytes.length * 2);
+    
+    return hexStr;
   }
 
   // Test function

@@ -24,13 +24,13 @@ export function ProtocolFlow({
 }: ProtocolFlowProps) {
   return (
     <div className="space-y-4">
-      {/* State Diagram */}
+      {/* Event Timeline - Now at the top */}
       <Card>
         <CardHeader>
-          <CardTitle>Protocol State</CardTitle>
+          <CardTitle>Nostr Events</CardTitle>
         </CardHeader>
         <CardContent>
-          <StateTransitionDiagram currentStep={currentStep} />
+          <EventTimeline events={events} onEventClick={onEventClick} knownIdentities={knownIdentities} />
         </CardContent>
       </Card>
 
@@ -48,13 +48,13 @@ export function ProtocolFlow({
         </CardContent>
       </Card>
 
-      {/* Event Timeline */}
+      {/* State Diagram - Now at the bottom */}
       <Card>
         <CardHeader>
-          <CardTitle>Nostr Events</CardTitle>
+          <CardTitle>Protocol State</CardTitle>
         </CardHeader>
         <CardContent>
-          <EventTimeline events={events} onEventClick={onEventClick} knownIdentities={knownIdentities} />
+          <StateTransitionDiagram currentStep={currentStep} />
         </CardContent>
       </Card>
     </div>

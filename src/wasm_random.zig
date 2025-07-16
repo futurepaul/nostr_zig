@@ -9,7 +9,9 @@ extern fn getRandomValues(buf: [*]u8, len: usize) void;
 
 /// Fill a buffer with cryptographically secure random bytes from the browser
 pub fn fillSecureRandom(buf: []u8) void {
-    if (comptime std.Target.current.isWasm()) {
+    // Always use external random in WASM builds
+    const builtin = @import("builtin");
+    if (builtin.target.cpu.arch == .wasm32) {
         // In WASM, use the browser's crypto API
         getRandomValues(buf.ptr, buf.len);
     } else {

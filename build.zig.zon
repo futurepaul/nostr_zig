@@ -43,6 +43,10 @@
         .mls_zig = .{
             .path = "../mls_zig",
         },
+        .libsecp256k1 = .{
+            .url = "https://github.com/zig-bitcoin/libsecp256k1-zig/archive/refs/heads/main.tar.gz",
+            .hash = "1220033ce912edbae73b5076e8b8db859b31c33e8ac7c6ba8c2c01797dc6e44f38e4",
+        },
     },
     .paths = .{
         "build.zig",

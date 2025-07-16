@@ -576,17 +576,93 @@ pub fn build(b: *std.Build) void {
     publish_test_keypackages_step.dependOn(&run_publish_test_keypackages.step);
     
     // Add WASM library build
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    
+    // Build secp256k1 for WASM
+    const secp256k1_wasm_lib = b.addStaticLibrary(.{
+        .name = "secp256k1_wasm",
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    
+    // Add secp256k1 source files
+    secp256k1_wasm_lib.addCSourceFile(.{
+        .file = b.path("deps/secp256k1/src/secp256k1.c"),
+        .flags = &[_][]const u8{
+            "-DHAVE_CONFIG_H=1",
+            "-DECMULT_WINDOW_SIZE=15",
+            "-DECMULT_GEN_PREC_BITS=4",
+            "-DENABLE_MODULE_ECDH=1",
+            "-DENABLE_MODULE_RECOVERY=1",
+            "-DENABLE_MODULE_EXTRAKEYS=1",
+            "-DENABLE_MODULE_SCHNORRSIG=1",
+            "-DUSE_EXTERNAL_DEFAULT_CALLBACKS=1",
+            "-DUSE_SCALAR_4X64=1",
+            "-DUSE_FIELD_5X52=1",
+            "-DUSE_FIELD_INV_BUILTIN=1",
+            "-DUSE_SCALAR_INV_BUILTIN=1",
+            "-DUSE_ECMULT_STATIC_PRECOMPUTATION=1",
+            "-fvisibility=hidden",
+            "-fno-exceptions",
+        },
+    });
+    
+    // Add precomputed tables
+    secp256k1_wasm_lib.addCSourceFile(.{
+        .file = b.path("deps/secp256k1/src/precomputed_ecmult.c"),
+        .flags = &[_][]const u8{"-DHAVE_CONFIG_H=1"},
+    });
+    secp256k1_wasm_lib.addCSourceFile(.{
+        .file = b.path("deps/secp256k1/src/precomputed_ecmult_gen.c"),
+        .flags = &[_][]const u8{"-DHAVE_CONFIG_H=1"},
+    });
+    
+    // Add WASM-specific callbacks
+    secp256k1_wasm_lib.addCSourceFile(.{
+        .file = b.path("src/secp256k1/callbacks_wasm.c"),
+        .flags = &[_][]const u8{},
+    });
+    
+    // Add minimal libc
+    secp256k1_wasm_lib.addCSourceFile(.{
+        .file = b.path("src/wasm_libc.c"),
+        .flags = &[_][]const u8{},
+    });
+    
+    // Add include directories - put our headers first!
+    secp256k1_wasm_lib.addIncludePath(b.path("src/wasm_headers"));
+    secp256k1_wasm_lib.addIncludePath(b.path("deps/secp256k1"));
+    secp256k1_wasm_lib.addIncludePath(b.path("deps/secp256k1/src"));
+    secp256k1_wasm_lib.addIncludePath(b.path("deps/secp256k1/include"));
+    secp256k1_wasm_lib.addIncludePath(b.path("src/secp256k1"));
+    
+    // Create secp256k1 module for WASM
+    const secp256k1_wasm_mod = b.createModule(.{
+        .root_source_file = b.path("src/secp256k1/secp256k1.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    secp256k1_wasm_mod.addIncludePath(b.path("deps/secp256k1/include"));
+    secp256k1_wasm_mod.addIncludePath(b.path("src/secp256k1"));
+    secp256k1_wasm_mod.linkLibrary(secp256k1_wasm_lib);
+    
     const wasm_lib = b.addExecutable(.{
         .name = "nostr_mls",
         .root_source_file = b.path("src/wasm_exports.zig"),
-        .target = b.resolveTargetQuery(.{
-            .cpu_arch = .wasm32,
-            .os_tag = .freestanding,
-        }),
+        .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
+    wasm_lib.rdynamic = true;
     wasm_lib.entry = .disabled;
     wasm_lib.export_memory = true;
+    
+    // Skip secp256k1 import for now
+    // wasm_lib.root_module.addImport("secp256k1", secp256k1_wasm_mod);
+    // wasm_lib.linkLibrary(secp256k1_wasm_lib);
+    
     
     b.installArtifact(wasm_lib);
     

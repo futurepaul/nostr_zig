@@ -1,7 +1,7 @@
 import React from 'react';
 import { NostrEvent } from './MLSVisualizer';
 import { motion } from 'framer-motion';
-import { isEphemeralKey } from '../utils/crypto';
+import { isEphemeralKey } from '../utils/wasm-crypto';
 
 interface EventTimelineProps {
   events: NostrEvent[];

@@ -3,7 +3,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { useWasm } from './WasmProvider';
 import { MLSState } from './MLSVisualizer';
-import { getRandomBytes, hexToBytes, bytesToHex } from '../utils/crypto';
+import { bytesToHex } from '../utils/wasm-crypto';
 
 interface MessageComposerProps {
   state: MLSState;
@@ -12,7 +12,7 @@ interface MessageComposerProps {
 
 export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
-  const { sendMessage } = useWasm();
+  const { sendMessage, isReady } = useWasm();
 
   const handleSend = () => {
     if (!message.trim() || !state.identity || state.groups.size === 0) return;
@@ -21,11 +21,22 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
     const group = Array.from(state.groups.values())[0];
     
     try {
-      // Generate ephemeral key pair for this message
-      const ephemeralPrivateKey = getRandomBytes(32);
-      // In a real implementation, we'd derive the public key properly
-      // For now, we'll simulate it
-      const ephemeralPublicKey = getRandomBytes(32);
+      // Generate ephemeral key pair for this message using real crypto
+      const ephemeralPrivateKey = new Uint8Array(32);
+      const ephemeralPublicKey = new Uint8Array(32);
+      
+      // WASM is required for real cryptography
+      if (!window.wasmModule?.wasm_create_identity) {
+        throw new Error('WASM module not loaded. Cannot generate secure ephemeral keys.');
+      }
+      
+      const success = window.wasmModule.wasm_create_identity(
+        ephemeralPrivateKey,
+        ephemeralPublicKey
+      );
+      if (!success) {
+        throw new Error('Failed to generate ephemeral key pair');
+      }
       
       // Send encrypted message
       const ciphertext = sendMessage(
@@ -34,6 +45,9 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         message
       );
 
+      // Generate event ID first so we can reference it
+      const eventId = Math.random().toString(36).substring(7);
+      
       // Add to local messages (unencrypted view)
       setState(prev => ({
         ...prev,
@@ -42,12 +56,13 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
           content: message,
           timestamp: Date.now(),
           encrypted: false,
+          eventId: eventId,
         }],
       }));
 
       // Create encrypted message event with ephemeral pubkey
       const event = {
-        id: Math.random().toString(36).substring(7),
+        id: eventId,
         pubkey: bytesToHex(ephemeralPublicKey), // Use ephemeral public key
         created_at: Math.floor(Date.now() / 1000),
         kind: 445,
@@ -93,10 +108,15 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         <Input
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="Type a message..."
-          onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+          placeholder={!isReady ? "WASM not ready..." : "Type a message..."}
+          onKeyPress={(e) => e.key === 'Enter' && isReady && handleSend()}
+          disabled={!isReady}
         />
-        <Button onClick={handleSend} size="sm">
+        <Button 
+          onClick={handleSend} 
+          size="sm"
+          disabled={!isReady || !message.trim() || !state.identity || state.groups.size === 0}
+        >
           Send
         </Button>
       </div>
