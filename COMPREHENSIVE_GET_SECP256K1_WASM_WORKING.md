@@ -254,39 +254,30 @@ The `no_precomp` context doesn't have precomputed tables, so some operations mig
    - Key packages are created and displayed in the visualizer
    - Using the static context approach works perfectly
 
-### Current Issue: Create Group
-Getting byte alignment error when calling `wasm_create_group`:
-```
-RangeError: Byte offset is not aligned
-    at Uint32Array in [native code]
-```
+### Current Issue: Create Group Still Failing
+✅ **FIXED**: Byte alignment issue - no more "Byte offset is not aligned" errors  
+❌ **CURRENT**: `wasm_create_group` returning false, causing "Failed to create group" error
 
-The issue occurs when trying to set the output length:
-```javascript
-new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = maxSize;
-```
+**What We Fixed:**
+- Added `wasm_alloc_u32(count)` for proper 4-byte aligned allocation
+- Added `wasm_free_u32(ptr, count)` for proper cleanup
+- Updated visualizer to use aligned allocation: `exports.wasm_alloc_u32(1)`
+- Updated TypeScript interfaces to match new functions
 
-### Strategy: Test-First Development
-Following the successful pattern:
-1. Create `test_create_group.ts` to test in isolation
-2. Fix alignment issues
-3. Verify it works with simple test
-4. Then integrate into visualizer
+**Current Status:**
+- Bob's public key generation works: `330de1552b8272240ddcd7111538d86cb35d684e1b17b92c60ebac899e24baa9`
+- No alignment errors anymore
+- `wasm_create_group` function is being called but returning `false`
 
-### Next Implementation Steps
-1. **Fix Byte Alignment**
-   - Ensure all pointers are 4-byte aligned for Uint32Array
-   - Check WASM memory allocation alignment
-   - May need to adjust how we allocate buffers
+**Next Debug Steps:**
+1. Check if `wasm_create_group` is getting valid inputs
+2. Verify secp256k1 signing is working inside the function
+3. Test with minimal group creation (skip signing if needed)
+4. Add debug logging to see where exactly it fails
 
-2. **Test Create Group**
-   - Create minimal test case
-   - Verify group creation works
-   - Test with real crypto operations
-
-3. **Update Visualizer**
-   - Once test passes, update visualizer
-   - Handle proper memory alignment in JS/WASM boundary
+**Remaining Implementation:**
+- Debug why `wasm_create_group` returns false
+- Ensure real secp256k1 signing works in group creation context
 
 ## Cleanup: Remove Failed Attempts
 

@@ -3,9 +3,13 @@ export interface WasmExports {
   wasm_init: () => void;
   wasm_add: (a: number, b: number) => number;
   wasm_alloc: (size: number) => number;
+  wasm_alloc_u32: (count: number) => number;
   wasm_free: (ptr: number, size: number) => void;
+  wasm_free_u32: (ptr: number, count: number) => void;
+  wasm_align_ptr: (ptr: number, alignment: number) => number;
   bytes_to_hex: (bytes: number, bytesLen: number, outHex: number, outHexLen: number) => boolean;
   wasm_create_identity: (outPrivateKey: number, outPublicKey: number) => boolean;
+  wasm_get_public_key_from_private: (privateKey: number, outPublicKey: number) => boolean;
   wasm_generate_ephemeral_keys: (outPrivateKey: number, outPublicKey: number) => boolean;
   wasm_sign_schnorr: (messageHash: number, privateKey: number, outSignature: number) => boolean;
   wasm_verify_schnorr: (messageHash: number, signature: number, publicKey: number) => boolean;
@@ -16,8 +20,7 @@ export interface WasmExports {
   ) => boolean;
   wasm_create_group: (
     creatorPrivateKey: number,
-    groupId: number,
-    groupIdLen: number,
+    creatorPublicKey: number,
     outState: number,
     outStateLenPtr: number
   ) => boolean;
@@ -269,27 +272,35 @@ class WasmWrapper {
     // Allocate space for output
     const maxSize = 1024; // Assume max key package size
     const outPtr = exports.wasm_alloc(maxSize);
-    const outLenPtr = exports.wasm_alloc(4);
+    
+    // Use aligned allocation for the length pointer
+    const outLenPtr = exports.wasm_alloc_u32 ? 
+      exports.wasm_alloc_u32(1) : 
+      exports.wasm_alloc(8); // Allocate extra and align manually
+    
     if (!outPtr || !outLenPtr) {
       exports.wasm_free(privateKeyPtr, 32);
       throw new Error('Failed to allocate memory');
     }
 
-    // Set initial length
-    new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = maxSize;
+    // Set initial length using aligned pointer
+    const alignedLenPtr = exports.wasm_align_ptr ? 
+      exports.wasm_align_ptr(outLenPtr, 4) : 
+      outLenPtr;
+    new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0] = maxSize;
 
     const success = exports.wasm_create_key_package(
       privateKeyPtr,
       outPtr,
-      outLenPtr
+      alignedLenPtr
     );
 
-    const actualLen = new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0];
+    const actualLen = new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0];
     
     if (!success) {
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(outPtr, maxSize);
-      exports.wasm_free(outLenPtr, 4);
+      exports.wasm_free(outLenPtr, exports.wasm_alloc_u32 ? 4 : 8);
       throw new Error('Failed to create key package');
     }
 
@@ -297,59 +308,74 @@ class WasmWrapper {
 
     exports.wasm_free(privateKeyPtr, 32);
     exports.wasm_free(outPtr, maxSize);
-    exports.wasm_free(outLenPtr, 4);
+    exports.wasm_free(outLenPtr, exports.wasm_alloc_u32 ? 4 : 8);
 
     return keyPackage;
   }
 
-  createGroup(creatorPrivateKey: Uint8Array, groupId: string): Uint8Array {
+  createGroup(creatorPrivateKey: Uint8Array, creatorPublicKey: Uint8Array): Uint8Array {
     const exports = this.ensureInitialized();
     
-    // Allocate space for private key
+    // Allocate space for keys
     const privateKeyPtr = exports.wasm_alloc(32);
-    if (!privateKeyPtr) throw new Error('Failed to allocate memory');
+    const publicKeyPtr = exports.wasm_alloc(32);
+    if (!privateKeyPtr || !publicKeyPtr) throw new Error('Failed to allocate memory');
+    
     new Uint8Array(exports.memory.buffer, privateKeyPtr, 32).set(creatorPrivateKey);
-
-    // Allocate space for group ID
-    const groupIdData = this.allocateString(groupId);
+    new Uint8Array(exports.memory.buffer, publicKeyPtr, 32).set(creatorPublicKey);
 
     // Allocate space for output
     const maxSize = 4096; // Assume max state size
     const outPtr = exports.wasm_alloc(maxSize);
-    const outLenPtr = exports.wasm_alloc(4);
+    
+    // Use aligned allocation for the length pointer
+    const outLenPtr = exports.wasm_alloc_u32 ? 
+      exports.wasm_alloc_u32(1) : 
+      exports.wasm_alloc(8); // Allocate extra and align manually
+    
     if (!outPtr || !outLenPtr) {
       exports.wasm_free(privateKeyPtr, 32);
-      exports.wasm_free(groupIdData.ptr, groupIdData.len);
+      exports.wasm_free(publicKeyPtr, 32);
       throw new Error('Failed to allocate memory');
     }
 
-    // Set initial length
-    new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = maxSize;
+    // Set initial length using aligned pointer
+    const alignedLenPtr = exports.wasm_align_ptr ? 
+      exports.wasm_align_ptr(outLenPtr, 4) : 
+      outLenPtr;
+    new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0] = maxSize;
 
     const success = exports.wasm_create_group(
       privateKeyPtr,
-      groupIdData.ptr,
-      groupIdData.len,
+      publicKeyPtr,
       outPtr,
-      outLenPtr
+      alignedLenPtr
     );
 
-    const actualLen = new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0];
+    const actualLen = new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0];
     
     if (!success) {
       exports.wasm_free(privateKeyPtr, 32);
-      exports.wasm_free(groupIdData.ptr, groupIdData.len);
+      exports.wasm_free(publicKeyPtr, 32);
       exports.wasm_free(outPtr, maxSize);
-      exports.wasm_free(outLenPtr, 4);
+      if (exports.wasm_alloc_u32 && exports.wasm_free_u32) {
+        exports.wasm_free_u32(outLenPtr, 1);
+      } else {
+        exports.wasm_free(outLenPtr, 8);
+      }
       throw new Error('Failed to create group');
     }
 
     const groupState = this.readBytes(outPtr, actualLen);
 
     exports.wasm_free(privateKeyPtr, 32);
-    exports.wasm_free(groupIdData.ptr, groupIdData.len);
+    exports.wasm_free(publicKeyPtr, 32);
     exports.wasm_free(outPtr, maxSize);
-    exports.wasm_free(outLenPtr, 4);
+    if (exports.wasm_alloc_u32 && exports.wasm_free_u32) {
+      exports.wasm_free_u32(outLenPtr, 1);
+    } else {
+      exports.wasm_free(outLenPtr, 8);
+    }
 
     return groupState;
   }

@@ -7,31 +7,24 @@ const wasmModule = new WebAssembly.Module(wasmBuffer);
 
 const memory = new WebAssembly.Memory({ initial: 256, maximum: 256 });
 
+let callCount = 0;
+
 const imports = {
     env: {
         memory: memory,
         __linear_memory: memory,
         __indirect_function_table: new WebAssembly.Table({ initial: 0, element: "anyfunc" }),
         getRandomValues: (ptr: number, len: number) => {
+            callCount++;
+            if (callCount > 10) {
+                console.error('Too many random calls, stopping test');
+                throw new Error('Infinite loop detected');
+            }
+            
             const bytes = new Uint8Array(memory.buffer, ptr, len);
             // Use Web Crypto API (available in Bun)
             crypto.getRandomValues(bytes);
-            // Only log for small requests to avoid spam
-            if (len <= 32) {
-                console.log(`Generated ${len} random bytes`);
-            }
-        },
-        printhex: (ptr: number, len: number) => {
-            const bytes = new Uint8Array(memory.buffer, ptr, len);
-            console.log('printhex:', Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
-        },
-        printint: (val: number) => {
-            console.log('printint:', val);
-        },
-        log_message: (ptr: number, len: number) => {
-            const bytes = new Uint8Array(memory.buffer, ptr, len);
-            const message = new TextDecoder().decode(bytes);
-            console.log('log:', message);
+            console.log(`Random call ${callCount}: ${len} bytes`);
         },
         wasm_log_error: (strPtr: number, len: number) => {
             const bytes = new Uint8Array(memory.buffer, strPtr, len);
@@ -44,21 +37,29 @@ const imports = {
 const wasmInstance = new WebAssembly.Instance(wasmModule, imports);
 const exports = wasmInstance.exports as any;
 
+console.log('Available exports:', Object.keys(exports).filter(key => key.startsWith('wasm_')));
+
 // Test byte alignment fix
 function ensureAlignment(ptr: number, alignment: number): number {
     const mask = alignment - 1;
     return (ptr + mask) & ~mask;
 }
 
-async function testCreateGroup() {
-    console.log('Testing wasm_create_group with proper alignment...\n');
+async function testCreateGroupSimple() {
+    console.log('Testing wasm_create_group directly...\n');
 
     try {
-        // 1. First create an identity for the group creator
+        // Generate a real keypair using wasm_create_identity
+        console.log('Generating real secp256k1 keypair...');
         const privKeyPtr = exports.wasm_alloc(32);
         const pubKeyPtr = exports.wasm_alloc(32);
         
-        console.log('Creating identity...');
+        if (!privKeyPtr || !pubKeyPtr) {
+            console.error('Failed to allocate memory for keys');
+            return;
+        }
+        
+        // Use wasm_create_identity to generate a proper keypair
         const identityResult = exports.wasm_create_identity(privKeyPtr, pubKeyPtr);
         
         if (!identityResult) {
@@ -68,12 +69,12 @@ async function testCreateGroup() {
 
         const privKey = new Uint8Array(memory.buffer, privKeyPtr, 32);
         const pubKey = new Uint8Array(memory.buffer, pubKeyPtr, 32);
-        
-        console.log('✅ Identity created');
+
+        console.log('Using real keys:');
         console.log('   Private key:', Array.from(privKey).map(b => b.toString(16).padStart(2, '0')).join(''));
         console.log('   Public key:', Array.from(pubKey).map(b => b.toString(16).padStart(2, '0')).join(''));
 
-        // 2. Test create_group with proper alignment
+        // Test create_group with proper alignment
         const maxGroupSize = 4096;
         
         // Allocate output buffer
@@ -141,12 +142,4 @@ async function testCreateGroup() {
     }
 }
 
-// Also test that our WASM exports the alignment helper if needed
-if (exports.wasm_align_ptr) {
-    console.log('WASM exports alignment helper');
-    const testPtr = 13; // Intentionally misaligned
-    const aligned = exports.wasm_align_ptr(testPtr, 4);
-    console.log(`Alignment test: ${testPtr} -> ${aligned} (should be 16)\n`);
-}
-
-testCreateGroup();
+testCreateGroupSimple();
