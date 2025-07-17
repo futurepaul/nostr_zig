@@ -188,7 +188,7 @@ function DecryptorBox() {
   const [stage2Result, setStage2Result] = useState('');
   const [error, setError] = useState('');
   const [currentStage, setCurrentStage] = useState<'none' | 'stage1' | 'stage2'>('none');
-  const { nip44Decrypt } = useWasm();
+  const { nip44Decrypt, deserializeMLSMessage } = useWasm();
 
   const handleStage1Decrypt = async () => {
     setError('');
@@ -257,87 +257,51 @@ function DecryptorBox() {
         throw new Error('Must complete Stage 1 first');
       }
 
-      // Stage 2: Parse MLSMessage from decrypted bytes
-      console.log('🔍 Stage 2: Parsing MLS message from decrypted bytes...');
+      // Stage 2: Deserialize MLSMessage using WASM
+      console.log('🔍 Stage 2: Deserializing MLS message using WASM...');
       
       // The stage1Result is the base64-encoded MLSMessage
       const mlsMessageBytes = Uint8Array.from(atob(stage1Result), c => c.charCodeAt(0));
       console.log('📦 MLS message size:', mlsMessageBytes.length, 'bytes');
       
-      // Parse the TLS wire format to extract the message content
-      let offset = 0;
+      // Use the WASM function to properly deserialize the MLS message
+      const result = deserializeMLSMessage(mlsMessageBytes);
       
-      // Read wire format (2 bytes, big-endian)
-      const wireFormat = (mlsMessageBytes[offset] << 8) | mlsMessageBytes[offset + 1];
-      offset += 2;
-      console.log('📋 Wire format:', wireFormat === 1 ? 'mls_plaintext' : `unknown(${wireFormat})`);
+      console.log('✅ MLS message deserialized successfully:', result);
       
-      // Read group ID (1 byte length prefix + 32 bytes)
-      const groupIdLen = mlsMessageBytes[offset++];
-      const groupId = mlsMessageBytes.slice(offset, offset + groupIdLen);
-      offset += groupIdLen;
-      console.log('🔑 Group ID:', Array.from(groupId.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join('') + '...');
+      // Extract the Nostr event from the application data
+      let finalMessage = result.applicationData;
+      let parsedEvent = null;
       
-      // Read epoch (8 bytes, big-endian)
-      let epoch = 0n;
-      for (let i = 0; i < 8; i++) {
-        epoch = (epoch << 8n) | BigInt(mlsMessageBytes[offset++]);
-      }
-      console.log('📅 Epoch:', epoch.toString());
-      
-      // Read sender type and index
-      const senderType = mlsMessageBytes[offset++];
-      let senderIndex = 0;
-      if (senderType === 1) { // member
-        senderIndex = (mlsMessageBytes[offset] << 24) | (mlsMessageBytes[offset+1] << 16) | 
-                      (mlsMessageBytes[offset+2] << 8) | mlsMessageBytes[offset+3];
-        offset += 4;
-      }
-      console.log('👤 Sender:', senderType === 1 ? `member[${senderIndex}]` : `type ${senderType}`);
-      
-      // Read authenticated data length (4 bytes) and skip
-      const authDataLen = (mlsMessageBytes[offset] << 24) | (mlsMessageBytes[offset+1] << 16) | 
-                         (mlsMessageBytes[offset+2] << 8) | mlsMessageBytes[offset+3];
-      offset += 4 + authDataLen;
-      
-      // Read content type
-      const contentType = mlsMessageBytes[offset++];
-      console.log('📝 Content type:', contentType === 1 ? 'application' : `type ${contentType}`);
-      
-      // Read application data length (4 bytes)
-      const appDataLen = (mlsMessageBytes[offset] << 24) | (mlsMessageBytes[offset+1] << 16) | 
-                        (mlsMessageBytes[offset+2] << 8) | mlsMessageBytes[offset+3];
-      offset += 4;
-      
-      // Read application data (the actual message!)
-      const appData = mlsMessageBytes.slice(offset, offset + appDataLen);
-      const messageJson = new TextDecoder().decode(appData);
-      console.log('💬 Application data:', messageJson);
-      
-      // Try to parse as JSON
-      let finalMessage = messageJson;
       try {
-        const parsed = JSON.parse(messageJson);
-        if (parsed.content) {
-          finalMessage = parsed.content;
+        parsedEvent = JSON.parse(result.applicationData);
+        if (parsedEvent.content) {
+          finalMessage = parsedEvent.content;
         }
       } catch (e) {
         // Not JSON, use as-is
+        console.log('Application data is not JSON, using as plain text');
       }
       
-      setStage2Result(`🔓 Stage 2: MLS Message Decrypted!
+      // Convert arrays to hex for display
+      const groupIdHex = Array.from(result.groupId).map(b => b.toString(16).padStart(2, '0')).join('');
+      const signatureHex = Array.from(result.signature).map(b => b.toString(16).padStart(2, '0')).join('');
+      
+      setStage2Result(`🔓 Stage 2: MLS Message Deserialized!
 
-Wire Format: ${wireFormat === 1 ? 'MLSPlaintext' : 'Unknown'}
-Group ID: ${Array.from(groupId).map(b => b.toString(16).padStart(2, '0')).join('')}
-Epoch: ${epoch}
-Sender: ${senderType === 1 ? `Member ${senderIndex}` : 'Unknown'}
-Content Type: ${contentType === 1 ? 'Application' : 'Unknown'}
+Group ID: ${groupIdHex}
+Epoch: ${result.epoch}
+Sender: Member ${result.senderIndex}
+Signature: ${signatureHex.substring(0, 32)}...
 
-📨 Decrypted Message:
+📨 Recovered Nostr Event:
+${parsedEvent ? JSON.stringify(parsedEvent, null, 2) : finalMessage}
+
+💬 Final Message Content:
 "${finalMessage}"`);
       
       setCurrentStage('stage2');
-      console.log('✅ Stage 2 complete: MLS message parsed and decrypted!');
+      console.log('✅ Stage 2 complete: MLS message deserialized and Nostr event recovered!');
       
     } catch (e) {
       setError('Stage 2 failed: ' + (e as Error).message);
@@ -413,9 +377,9 @@ Content Type: ${contentType === 1 ? 'Application' : 'Unknown'}
             )}
           </div>
 
-          {/* Stage 2: MLS Decryption */}
+          {/* Stage 2: MLS Deserialization */}
           <div className="space-y-3 p-4 border-2 border-purple-200 bg-purple-50 rounded">
-            <h3 className="text-sm font-bold text-purple-800">🔐 Stage 2: MLS Decryption (Inner Layer)</h3>
+            <h3 className="text-sm font-bold text-purple-800">📦 Stage 2: MLS Deserialization (Inner Layer)</h3>
             
             <div className="space-y-2">
               <label className="text-xs font-semibold">MLS Group Secret (64 hex chars):</label>
@@ -434,7 +398,7 @@ Content Type: ${contentType === 1 ? 'Application' : 'Unknown'}
               className="w-full"
               variant={currentStage === 'stage1' ? 'default' : 'outline'}
             >
-              🔐 Decrypt MLS Layer
+              📦 Deserialize MLS Message
             </Button>
             
             {stage2Result && (

@@ -176,6 +176,19 @@ export fn wasm_sign_group_event(
     return true;
 }
 
+// Generate ephemeral keys (simple wrapper around create_identity for compatibility)
+export fn wasm_generate_ephemeral_keys(out_private_key: [*]u8, out_public_key: [*]u8) bool {
+    // Generate a real secp256k1 keypair for ephemeral use
+    const private_key = crypto.generatePrivateKey() catch return false;
+    const public_key = crypto.getPublicKey(private_key) catch return false;
+    
+    // Copy to output buffers
+    @memcpy(out_private_key[0..32], &private_key);
+    @memcpy(out_public_key[0..32], &public_key);
+    
+    return true;
+}
+
 // Generate a separate MLS signing keypair (different from Nostr identity)
 export fn wasm_generate_mls_signing_keys(out_private_key: [*]u8, out_public_key: [*]u8) bool {
     // Generate a separate signing keypair for MLS operations

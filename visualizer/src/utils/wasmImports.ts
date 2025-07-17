@@ -19,6 +19,11 @@ export function createWasmImports(wasmMemory: WebAssembly.Memory) {
       // High-resolution timestamp
       performanceNow: () => {
         return performance.now();
+      },
+      
+      // Current Unix timestamp in seconds
+      getCurrentTimestamp: () => {
+        return BigInt(Math.floor(Date.now() / 1000));
       }
     }
   };

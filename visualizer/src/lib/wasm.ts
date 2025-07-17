@@ -62,6 +62,17 @@ export interface WasmExports {
     outPlaintext: number,
     outLenPtr: number
   ) => boolean;
+  wasm_deserialize_mls_message: (
+    serializedData: number,
+    serializedLen: number,
+    outGroupId: number,
+    outEpoch: number,
+    outSenderIndex: number,
+    outApplicationData: number,
+    outApplicationDataLen: number,
+    outSignature: number,
+    outSignatureLen: number
+  ) => boolean;
 }
 
 class WasmWrapper {
@@ -105,6 +116,10 @@ class WasmWrapper {
             const bytes = new Uint8Array(wasmMemory.buffer, strPtr, len);
             const message = new TextDecoder().decode(bytes);
             console.error('secp256k1 error:', message);
+          },
+          // Current Unix timestamp in seconds
+          getCurrentTimestamp: () => {
+            return BigInt(Math.floor(Date.now() / 1000));
           }
         }
       };
@@ -512,7 +527,8 @@ class WasmWrapper {
     new Uint8Array(exports.memory.buffer, secretPtr, 32).set(exporterSecret);
 
     // Allocate space for output
-    const maxSize = plaintextData.len * 2 + 100; // Generous buffer for NIP-44 overhead
+    // NIP-44 overhead: 1 (version) + 32 (nonce) + 32 (hmac) + padding + base64 encoding (~33% increase)
+    const maxSize = Math.max(1024, (plaintextData.len * 2 + 65) * 2); // Much more generous buffer
     const outPtr = exports.wasm_alloc(maxSize);
     const lenAllocation = this.allocateAlignedU32(1);
     
@@ -766,6 +782,110 @@ class WasmWrapper {
     this.freeAlignedU32(lenAllocation);
 
     return plaintext;
+  }
+
+  deserializeMLSMessage(serializedData: Uint8Array): {
+    groupId: Uint8Array;
+    epoch: bigint;
+    senderIndex: number;
+    applicationData: string;
+    signature: Uint8Array;
+  } {
+    const exports = this.ensureInitialized();
+    
+    console.log('[WASM] deserializeMLSMessage called with:', {
+      dataLength: serializedData.length,
+      dataPreview: Array.from(serializedData.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    });
+    
+    // Allocate space for input
+    const dataPtr = exports.wasm_alloc(serializedData.length);
+    if (!dataPtr) {
+      throw new Error('Failed to allocate memory for serialized data');
+    }
+    new Uint8Array(exports.memory.buffer, dataPtr, serializedData.length).set(serializedData);
+    
+    // Allocate space for outputs
+    const outGroupIdPtr = exports.wasm_alloc(32);
+    const outEpochPtr = exports.wasm_alloc(16); // Extra for 8-byte alignment
+    const alignedOutEpochPtr = (outEpochPtr + 7) & ~7;
+    const outSenderIndexAlloc = this.allocateAlignedU32(1);
+    const outAppDataPtr = exports.wasm_alloc(4096);
+    const outAppDataLenAlloc = this.allocateAlignedU32(1);
+    const outSigPtr = exports.wasm_alloc(256);
+    const outSigLenAlloc = this.allocateAlignedU32(1);
+    
+    if (!outGroupIdPtr || !outEpochPtr || !outSenderIndexAlloc.ptr || 
+        !outAppDataPtr || !outAppDataLenAlloc.ptr || !outSigPtr || !outSigLenAlloc.ptr) {
+      exports.wasm_free(dataPtr, serializedData.length);
+      throw new Error('Failed to allocate memory for outputs');
+    }
+    
+    // Set initial lengths
+    new Uint32Array(exports.memory.buffer, outAppDataLenAlloc.alignedPtr, 1)[0] = 4096;
+    new Uint32Array(exports.memory.buffer, outSigLenAlloc.alignedPtr, 1)[0] = 256;
+    
+    console.log('[WASM] Calling wasm_deserialize_mls_message...');
+    const success = exports.wasm_deserialize_mls_message(
+      dataPtr,
+      serializedData.length,
+      outGroupIdPtr,
+      alignedOutEpochPtr,
+      outSenderIndexAlloc.alignedPtr,
+      outAppDataPtr,
+      outAppDataLenAlloc.alignedPtr,
+      outSigPtr,
+      outSigLenAlloc.alignedPtr
+    );
+    
+    if (!success) {
+      // Cleanup on failure
+      exports.wasm_free(dataPtr, serializedData.length);
+      exports.wasm_free(outGroupIdPtr, 32);
+      exports.wasm_free(outEpochPtr, 16);
+      this.freeAlignedU32(outSenderIndexAlloc);
+      exports.wasm_free(outAppDataPtr, 4096);
+      this.freeAlignedU32(outAppDataLenAlloc);
+      exports.wasm_free(outSigPtr, 256);
+      this.freeAlignedU32(outSigLenAlloc);
+      throw new Error('Failed to deserialize MLS message');
+    }
+    
+    // Read results
+    const groupId = this.readBytes(outGroupIdPtr, 32);
+    const epoch = new BigUint64Array(exports.memory.buffer, alignedOutEpochPtr, 1)[0];
+    const senderIndex = new Uint32Array(exports.memory.buffer, outSenderIndexAlloc.alignedPtr, 1)[0];
+    const appDataLen = new Uint32Array(exports.memory.buffer, outAppDataLenAlloc.alignedPtr, 1)[0];
+    const applicationData = this.readString(outAppDataPtr, appDataLen);
+    const sigLen = new Uint32Array(exports.memory.buffer, outSigLenAlloc.alignedPtr, 1)[0];
+    const signature = this.readBytes(outSigPtr, sigLen);
+    
+    console.log('[WASM] wasm_deserialize_mls_message returned:', {
+      success,
+      groupIdLength: groupId.length,
+      epoch: epoch.toString(),
+      senderIndex,
+      appDataLength: applicationData.length,
+      signatureLength: signature.length
+    });
+    
+    // Cleanup
+    exports.wasm_free(dataPtr, serializedData.length);
+    exports.wasm_free(outGroupIdPtr, 32);
+    exports.wasm_free(outEpochPtr, 16);
+    this.freeAlignedU32(outSenderIndexAlloc);
+    exports.wasm_free(outAppDataPtr, 4096);
+    this.freeAlignedU32(outAppDataLenAlloc);
+    exports.wasm_free(outSigPtr, 256);
+    this.freeAlignedU32(outSigLenAlloc);
+    
+    return {
+      groupId,
+      epoch,
+      senderIndex,
+      applicationData,
+      signature
+    };
   }
 
   // Crypto utilities
