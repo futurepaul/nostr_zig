@@ -53,6 +53,15 @@ export interface WasmExports {
     outCiphertext: number,
     outLenPtr: number
   ) => boolean;
+  wasm_receive_message: (
+    groupState: number,
+    groupStateLen: number,
+    receiverPrivateKey: number,
+    nip44Ciphertext: number,
+    nip44CiphertextLen: number,
+    outPlaintext: number,
+    outLenPtr: number
+  ) => boolean;
 }
 
 class WasmWrapper {
@@ -682,6 +691,81 @@ class WasmWrapper {
     this.freeAlignedU32(lenAllocation);
 
     return ciphertext;
+  }
+
+  receiveMessage(
+    groupState: Uint8Array,
+    receiverPrivateKey: Uint8Array,
+    nip44Ciphertext: string // Base64 encoded
+  ): string {
+    const exports = this.ensureInitialized();
+    
+    console.log('[WASM] receiveMessage called with:', {
+      groupStateLength: groupState.length,
+      privateKeyLength: receiverPrivateKey.length,
+      ciphertextLength: nip44Ciphertext.length,
+      ciphertextPreview: nip44Ciphertext.substring(0, 50) + '...'
+    });
+    
+    // Allocate space for inputs
+    const statePtr = exports.wasm_alloc(groupState.length);
+    const privateKeyPtr = exports.wasm_alloc(32);
+    const ciphertextData = this.allocateString(nip44Ciphertext);
+    
+    if (!statePtr || !privateKeyPtr) {
+      throw new Error('Failed to allocate memory for receiveMessage inputs');
+    }
+
+    new Uint8Array(exports.memory.buffer, statePtr, groupState.length).set(groupState);
+    new Uint8Array(exports.memory.buffer, privateKeyPtr, 32).set(receiverPrivateKey);
+
+    // Allocate space for output
+    const maxSize = 4096;
+    const outPtr = exports.wasm_alloc(maxSize);
+    const lenAllocation = this.allocateAlignedU32(1);
+    
+    if (!outPtr || !lenAllocation.ptr) {
+      exports.wasm_free(statePtr, groupState.length);
+      exports.wasm_free(privateKeyPtr, 32);
+      exports.wasm_free(ciphertextData.ptr, ciphertextData.len);
+      throw new Error('Failed to allocate memory for receiveMessage output');
+    }
+
+    // Set initial length
+    new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0] = maxSize;
+    
+    console.log('[WASM] Calling wasm_receive_message...');
+    const success = exports.wasm_receive_message(
+      statePtr,
+      groupState.length,
+      privateKeyPtr,
+      ciphertextData.ptr,
+      ciphertextData.len,
+      outPtr,
+      lenAllocation.alignedPtr
+    );
+
+    const actualLen = new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0];
+    console.log('[WASM] wasm_receive_message returned:', { success, actualLen });
+    
+    if (!success) {
+      exports.wasm_free(statePtr, groupState.length);
+      exports.wasm_free(privateKeyPtr, 32);
+      exports.wasm_free(ciphertextData.ptr, ciphertextData.len);
+      exports.wasm_free(outPtr, maxSize);
+      this.freeAlignedU32(lenAllocation);
+      throw new Error(`Failed to receive message (wasm_receive_message returned false, actualLen: ${actualLen})`);
+    }
+
+    const plaintext = this.readString(outPtr, actualLen);
+
+    exports.wasm_free(statePtr, groupState.length);
+    exports.wasm_free(privateKeyPtr, 32);
+    exports.wasm_free(ciphertextData.ptr, ciphertextData.len);
+    exports.wasm_free(outPtr, maxSize);
+    this.freeAlignedU32(lenAllocation);
+
+    return plaintext;
   }
 
   // Crypto utilities

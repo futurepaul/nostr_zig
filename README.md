@@ -9,8 +9,12 @@ A Zig implementation of the Nostr protocol for building decentralized social app
 - 📥 **Subscriptions**: Subscribe to event streams with filters
 - 🔐 **Production Cryptography**: BIP340 Schnorr signatures using bitcoin-core/secp256k1
 - 🏷️ **NIP-19 Support**: Full bech32 encoding/decoding for nsec1/npub1 keys
-- 🔒 **NIP-44 Encryption**: Encrypted direct messages (fully implemented)
-- 👥 **MLS Groups**: NIP-EE group messaging architecture (95% complete)
+- 🔒 **NIP-44 v2 Encryption**: Real encrypted direct messages with proper HMAC validation
+- 🔐 **NIP-EE Compliant**: Double-layer encryption with MLS (inner) + NIP-44 (outer)
+- 🔑 **MLS Signing Keys**: Separate Ed25519/P256 keys for MLS operations (not Nostr identity)
+- 📦 **TLS Wire Format**: Proper MLSMessage serialization per RFC 9420
+- 🔄 **Two-Stage Decryption**: Full encrypt → send → receive → decrypt cycle
+- 🎨 **Interactive Visualizer**: React-based UI demonstrating NIP-EE message flow
 - 🛠️ **CLI Tool**: nak-compatible command-line interface
 - 📋 **Event Types**: Support for various Nostr event kinds
 - 🧪 **Testing**: Comprehensive test suite

@@ -462,23 +462,63 @@ function MessageDisplay({ message, state, setState, otherState }: MessageDisplay
     }
     
     try {
-      // In a real implementation, we would decrypt the message using MLS
-      // For now, we'll simulate decryption by showing the original content
-      const originalMessage = otherState.messages.find(m => m.eventId === message.eventId && !m.encrypted);
+      // Use real two-stage decryption: NIP-44 + MLS
+      console.log('Starting two-stage decryption for event:', event.id);
       
-      if (originalMessage) {
+      // Get the encrypted content from the event
+      const encryptedContent = event.content;
+      if (!encryptedContent) {
+        throw new Error('No encrypted content found in event');
+      }
+      
+      // Perform two-stage decryption using WASM
+      const decryptedJson = await wasm.receiveMessage(
+        state.groupState,
+        state.privateKey,
+        encryptedContent
+      );
+      
+      console.log('Decrypted JSON:', decryptedJson);
+      
+      // Parse the decrypted JSON to get the actual message content
+      try {
+        const parsedMessage = JSON.parse(decryptedJson);
+        const messageContent = parsedMessage.content || decryptedJson;
+        
         // Update the message with decrypted content
         setState(prev => ({
           ...prev,
           messages: prev.messages.map(m => 
             m.eventId === message.eventId 
-              ? { ...m, decrypted: originalMessage.content }
+              ? { ...m, decrypted: messageContent }
+              : m
+          )
+        }));
+      } catch (parseError) {
+        // If parsing fails, use the raw decrypted content
+        setState(prev => ({
+          ...prev,
+          messages: prev.messages.map(m => 
+            m.eventId === message.eventId 
+              ? { ...m, decrypted: decryptedJson }
               : m
           )
         }));
       }
     } catch (error) {
       console.error('Failed to decrypt message:', error);
+      // Fallback to simulated decryption for debugging
+      const originalMessage = otherState.messages.find(m => m.eventId === message.eventId && !m.encrypted);
+      if (originalMessage) {
+        setState(prev => ({
+          ...prev,
+          messages: prev.messages.map(m => 
+            m.eventId === message.eventId 
+              ? { ...m, decrypted: `[Fallback] ${originalMessage.content}` }
+              : m
+          )
+        }));
+      }
     } finally {
       setIsDecrypting(false);
     }

@@ -664,6 +664,13 @@ pub fn build(b: *std.Build) void {
     wasm_lib.root_module.addImport("secp256k1", secp256k1_wasm_mod);
     wasm_lib.linkLibrary(secp256k1_wasm_lib);
     
+    // Add mls_zig dependency for WASM
+    const mls_dep_wasm = b.dependency("mls_zig", .{
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const mls_mod_wasm = mls_dep_wasm.module("mls_zig");
+    wasm_lib.root_module.addImport("mls_zig", mls_mod_wasm);
     
     b.installArtifact(wasm_lib);
     
