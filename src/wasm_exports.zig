@@ -53,17 +53,13 @@ fn encryptMLSWithExporterSecret(
     mls_data: []const u8
 ) ![]u8 {
     // Per NIP-EE spec: use the exporter_secret as the private key for NIP-44 encryption
-    // Calculate the corresponding public key
-    var private_key = exporter_secret;
+    const private_key = exporter_secret;
     
-    // Ensure the private key is valid for secp256k1 using robust derivation
-    private_key = crypto.generateValidSecp256k1Key(private_key) catch return error.InvalidKey;
-    
-    // Debug log the private key
-    logError("Generated valid private key (first 8 bytes): {x} {x} {x} {x} {x} {x} {x} {x}", .{
-        private_key[0], private_key[1], private_key[2], private_key[3],
-        private_key[4], private_key[5], private_key[6], private_key[7]
-    });
+    // Validate that the key is valid for secp256k1
+    if (!crypto.validateSecp256k1Key(private_key)) {
+        logError("Invalid exporter secret for NIP-44 encryption", .{});
+        return error.InvalidKey;
+    }
     
     const public_key = crypto.getPublicKeyForNip44(private_key) catch |err| {
         logError("Failed to get public key for NIP-44: {}", .{err});
@@ -730,11 +726,14 @@ export fn wasm_nip44_encrypt(
     const allocator = getAllocator();
     
     // Use exporter secret as private key for NIP-44
-    var private_key = exporter_secret[0..32].*;
+    const private_key = exporter_secret[0..32].*;
     
-    // Ensure the private key is valid for secp256k1 using robust derivation
-    // The secp256k1 curve order is approximately 2^256, but not all 32-byte values are valid
-    private_key = crypto.generateValidSecp256k1Key(private_key) catch return false;
+    // Validate that the key is valid for secp256k1
+    if (!crypto.validateSecp256k1Key(private_key)) {
+        logError("Invalid private key for NIP-44 encryption", .{});
+        return false;
+    }
+    
     const public_key = crypto.getPublicKeyForNip44(private_key) catch {
         logError("Failed to get public key for NIP-44", .{});
         return false;
@@ -776,10 +775,14 @@ export fn wasm_nip44_decrypt(
     const allocator = getAllocator();
     
     // Use exporter secret as private key for NIP-44 (per NIP-EE spec)
-    var private_key = exporter_secret[0..32].*;
+    const private_key = exporter_secret[0..32].*;
     
-    // Ensure the private key is valid for secp256k1 using robust derivation (same approach as encrypt)
-    private_key = crypto.generateValidSecp256k1Key(private_key) catch return false;
+    // Validate that the key is valid for secp256k1
+    if (!crypto.validateSecp256k1Key(private_key)) {
+        logError("Invalid private key for NIP-44 decryption", .{});
+        return false;
+    }
+    
     const public_key = crypto.getPublicKeyForNip44(private_key) catch return false;
     
     // The ciphertext is now raw bytes (not base64) for WASM interop

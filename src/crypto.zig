@@ -113,9 +113,28 @@ pub fn verifyMessageSignature(message: []const u8, signature: [64]u8, public_key
     return result == 1;
 }
 
-/// Generate a valid secp256k1 private key from any 32-byte seed deterministically
-/// This is used for cases where we need to derive keys from exporter secrets
-pub fn generateValidSecp256k1Key(seed: [32]u8) ![32]u8 {
+/// Validate that a key is valid for secp256k1 without modifying it
+pub fn validateSecp256k1Key(key: [32]u8) bool {
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return false;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
+    
+    return secp256k1.secp256k1_ec_seckey_verify(ctx, &key) == 1;
+}
+
+/// Derive a valid secp256k1 private key from any 32-byte seed deterministically
+/// WARNING: This ALWAYS modifies the input - it's a key derivation function, not validation!
+/// Use validateSecp256k1Key() if you just want to check validity
+pub fn deriveValidKeyFromSeed(seed: [32]u8) ![32]u8 {
     const builtin = @import("builtin");
     const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
         // In WASM, use the static no-precomp context
@@ -148,6 +167,10 @@ pub fn generateValidSecp256k1Key(seed: [32]u8) ![32]u8 {
     }
     return error.CannotGenerateValidKey;
 }
+
+/// DEPRECATED: Use deriveValidKeyFromSeed instead
+/// This is kept for compatibility while we update call sites
+pub const generateValidSecp256k1Key = deriveValidKeyFromSeed;
 
 /// Get public key from private key using secp256k1 (x-only for Nostr)
 pub fn getPublicKey(private_key: [32]u8) ![32]u8 {

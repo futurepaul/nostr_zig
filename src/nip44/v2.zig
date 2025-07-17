@@ -163,8 +163,8 @@ fn generateSharedSecret(secret_key: [32]u8, public_key: [32]u8) Nip44Error!([32]
     // Try using secp256k1_ecdh with xonly pubkey directly
     var xonly_pubkey: secp.secp256k1_xonly_pubkey = undefined;
     if (secp.secp256k1_xonly_pubkey_parse(ctx, &xonly_pubkey, &public_key) != 1) {
-        // Debug: log the public key that failed
-        if (builtin.target.cpu.arch == .wasm32) {
+        // Debug: log the public key that failed (only for non-WASM builds)
+        if (builtin.target.cpu.arch != .wasm32) {
             std.debug.print("Failed to parse xonly pubkey. First 8 bytes: {x} {x} {x} {x} {x} {x} {x} {x}\n", .{
                 public_key[0], public_key[1], public_key[2], public_key[3],
                 public_key[4], public_key[5], public_key[6], public_key[7]
@@ -387,10 +387,7 @@ test "calc_padded_len" {
     
     for (test_cases) |case| {
         const result = calcPaddedLen(case.len);
-        std.testing.expect(result == case.expected) catch |err| {
-            std.debug.print("calcPaddedLen({}) = {}, expected {}\n", .{ case.len, result, case.expected });
-            return err;
-        };
+        try std.testing.expect(result == case.expected);
     }
 }
 

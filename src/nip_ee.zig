@@ -77,10 +77,8 @@ fn encryptWithExporterSecret(
     plaintext: []const u8,
 ) ![]u8 {
     // Per NIP-EE spec: use exporter_secret as private key
-    var private_key = exporter_secret;
-    
-    // Ensure valid secp256k1 key
-    private_key = crypto.generateValidSecp256k1Key(private_key) catch return NipEEError.InvalidExporterSecret;
+    // But first derive a valid secp256k1 key from it since exporter secret is just a hash
+    const private_key = crypto.deriveValidKeyFromSeed(exporter_secret) catch return NipEEError.InvalidExporterSecret;
     
     // Calculate public key for self-encryption
     const public_key = crypto.getPublicKeyForNip44(private_key) catch return NipEEError.InvalidExporterSecret;
@@ -96,8 +94,7 @@ fn decryptWithExporterSecret(
     ciphertext: []const u8,
 ) ![]u8 {
     // Same key derivation as encryption
-    var private_key = exporter_secret;
-    private_key = crypto.generateValidSecp256k1Key(private_key) catch return NipEEError.InvalidExporterSecret;
+    const private_key = crypto.deriveValidKeyFromSeed(exporter_secret) catch return NipEEError.InvalidExporterSecret;
     const public_key = crypto.getPublicKeyForNip44(private_key) catch return NipEEError.InvalidExporterSecret;
     
     // Use NIP-44 v2 decryption (raw bytes)
