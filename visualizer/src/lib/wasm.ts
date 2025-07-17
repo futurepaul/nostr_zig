@@ -30,6 +30,20 @@ export interface WasmExports {
     groupStateLen: number,
     outSecret: number
   ) => boolean;
+  wasm_nip44_encrypt: (
+    exporterSecret: number,
+    plaintext: number,
+    plaintextLen: number,
+    outCiphertext: number,
+    outLenPtr: number
+  ) => boolean;
+  wasm_nip44_decrypt: (
+    exporterSecret: number,
+    ciphertext: number,
+    ciphertextLen: number,
+    outPlaintext: number,
+    outLenPtr: number
+  ) => boolean;
   wasm_send_message: (
     groupState: number,
     groupStateLen: number,
@@ -475,6 +489,126 @@ class WasmWrapper {
     return secret;
   }
 
+  nip44Encrypt(exporterSecret: Uint8Array, plaintext: string): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    // Allocate space for inputs
+    const secretPtr = exports.wasm_alloc(32);
+    const plaintextData = this.allocateString(plaintext);
+    
+    if (!secretPtr) {
+      throw new Error('Failed to allocate memory');
+    }
+
+    new Uint8Array(exports.memory.buffer, secretPtr, 32).set(exporterSecret);
+
+    // Allocate space for output
+    const maxSize = plaintextData.len * 2 + 100; // Generous buffer for NIP-44 overhead
+    const outPtr = exports.wasm_alloc(maxSize);
+    const lenAllocation = this.allocateAlignedU32(1);
+    
+    if (!outPtr || !lenAllocation.ptr) {
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(plaintextData.ptr, plaintextData.len);
+      throw new Error('Failed to allocate memory');
+    }
+
+    // Set initial length
+    new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0] = maxSize;
+    
+    const success = exports.wasm_nip44_encrypt(
+      secretPtr,
+      plaintextData.ptr,
+      plaintextData.len,
+      outPtr,
+      lenAllocation.alignedPtr
+    );
+
+    const actualLen = new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0];
+    
+    if (!success) {
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(plaintextData.ptr, plaintextData.len);
+      exports.wasm_free(outPtr, maxSize);
+      this.freeAlignedU32(lenAllocation);
+      throw new Error('Failed to encrypt with NIP-44');
+    }
+
+    const ciphertext = this.readBytes(outPtr, actualLen);
+
+    exports.wasm_free(secretPtr, 32);
+    exports.wasm_free(plaintextData.ptr, plaintextData.len);
+    exports.wasm_free(outPtr, maxSize);
+    this.freeAlignedU32(lenAllocation);
+
+    return ciphertext;
+  }
+
+  nip44Decrypt(exporterSecret: Uint8Array, ciphertext: Uint8Array): string {
+    const exports = this.ensureInitialized();
+    
+    console.log('[WASM] nip44Decrypt called with:', {
+      secretLength: exporterSecret.length,
+      ciphertextLength: ciphertext.length,
+      secretPreview: Array.from(exporterSecret.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' '),
+      ciphertextPreview: Array.from(ciphertext.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    });
+    
+    // Allocate space for inputs
+    const secretPtr = exports.wasm_alloc(32);
+    const ciphertextPtr = exports.wasm_alloc(ciphertext.length);
+    
+    if (!secretPtr || !ciphertextPtr) {
+      throw new Error('Failed to allocate memory');
+    }
+
+    new Uint8Array(exports.memory.buffer, secretPtr, 32).set(exporterSecret);
+    new Uint8Array(exports.memory.buffer, ciphertextPtr, ciphertext.length).set(ciphertext);
+
+    // Allocate space for output
+    const maxSize = ciphertext.length * 2; // Generous buffer
+    const outPtr = exports.wasm_alloc(maxSize);
+    const lenAllocation = this.allocateAlignedU32(1);
+    
+    if (!outPtr || !lenAllocation.ptr) {
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(ciphertextPtr, ciphertext.length);
+      throw new Error('Failed to allocate memory');
+    }
+
+    // Set initial length
+    new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0] = maxSize;
+    
+    console.log('[WASM] Calling wasm_nip44_decrypt...');
+    const success = exports.wasm_nip44_decrypt(
+      secretPtr,
+      ciphertextPtr,
+      ciphertext.length,
+      outPtr,
+      lenAllocation.alignedPtr
+    );
+
+    const actualLen = new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0];
+    console.log('[WASM] wasm_nip44_decrypt returned:', { success, actualLen });
+    
+    if (!success) {
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(ciphertextPtr, ciphertext.length);
+      exports.wasm_free(outPtr, maxSize);
+      this.freeAlignedU32(lenAllocation);
+      throw new Error('Failed to decrypt with NIP-44');
+    }
+
+    const plaintext = this.readString(outPtr, actualLen);
+
+    exports.wasm_free(secretPtr, 32);
+    exports.wasm_free(ciphertextPtr, ciphertext.length);
+    exports.wasm_free(outPtr, maxSize);
+    this.freeAlignedU32(lenAllocation);
+
+    return plaintext;
+  }
+
   sendMessage(
     groupState: Uint8Array,
     senderPrivateKey: Uint8Array,
@@ -482,13 +616,20 @@ class WasmWrapper {
   ): Uint8Array {
     const exports = this.ensureInitialized();
     
+    console.log('[WASM] sendMessage called with:', {
+      groupStateLength: groupState.length,
+      privateKeyLength: senderPrivateKey.length,
+      messageLength: message.length,
+      message: message.substring(0, 50) + (message.length > 50 ? '...' : '')
+    });
+    
     // Allocate space for inputs
     const statePtr = exports.wasm_alloc(groupState.length);
     const privateKeyPtr = exports.wasm_alloc(32);
     const messageData = this.allocateString(message);
     
     if (!statePtr || !privateKeyPtr) {
-      throw new Error('Failed to allocate memory');
+      throw new Error('Failed to allocate memory for sendMessage inputs');
     }
 
     new Uint8Array(exports.memory.buffer, statePtr, groupState.length).set(groupState);
@@ -503,12 +644,13 @@ class WasmWrapper {
       exports.wasm_free(statePtr, groupState.length);
       exports.wasm_free(privateKeyPtr, 32);
       exports.wasm_free(messageData.ptr, messageData.len);
-      throw new Error('Failed to allocate memory');
+      throw new Error('Failed to allocate memory for sendMessage output');
     }
 
     // Set initial length
     new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0] = maxSize;
     
+    console.log('[WASM] Calling wasm_send_message...');
     const success = exports.wasm_send_message(
       statePtr,
       groupState.length,
@@ -520,6 +662,7 @@ class WasmWrapper {
     );
 
     const actualLen = new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0];
+    console.log('[WASM] wasm_send_message returned:', { success, actualLen });
     
     if (!success) {
       exports.wasm_free(statePtr, groupState.length);
@@ -527,7 +670,7 @@ class WasmWrapper {
       exports.wasm_free(messageData.ptr, messageData.len);
       exports.wasm_free(outPtr, maxSize);
       this.freeAlignedU32(lenAllocation);
-      throw new Error('Failed to send message');
+      throw new Error(`Failed to send message (wasm_send_message returned false, actualLen: ${actualLen})`);
     }
 
     const ciphertext = this.readBytes(outPtr, actualLen);

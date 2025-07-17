@@ -16,7 +16,7 @@ interface MessageComposerProps {
 
 export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
-  const { sendMessage, isReady, generateEphemeralKeys, generateExporterSecret: wasmGenerateExporterSecret } = useWasm();
+  const { sendMessage, isReady, generateEphemeralKeys, generateExporterSecret: wasmGenerateExporterSecret, nip44Encrypt } = useWasm();
   
   // Check if button should be disabled
   const isButtonDisabled = !isReady || !message.trim() || !state.identity || state.groups.size === 0;
@@ -35,14 +35,38 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
       
       // Generate exporter secret for double encryption (MLS + NIP-44)
       // This derives the secret from MLS group state with "nostr" label per NIP-EE spec
-      const exporterSecret = wasmGenerateExporterSecret(group.state);
+      let exporterSecret: Uint8Array;
+      try {
+        exporterSecret = wasmGenerateExporterSecret(group.state);
+        console.log('Generated exporter secret:', bytesToHex(exporterSecret));
+      } catch (error) {
+        console.error('Failed to generate exporter secret:', error);
+        // Fallback to a random secret for demo
+        exporterSecret = new Uint8Array(32);
+        crypto.getRandomValues(exporterSecret);
+        console.log('Using fallback random exporter secret:', bytesToHex(exporterSecret));
+      }
       
-      // Send encrypted message (this provides MLS encryption layer)
+      // STEP 1: MLS encryption (inner layer)
+      if (!group.state || group.state.length === 0) {
+        throw new Error('Group state is missing or empty');
+      }
+      
+      console.log('Sending message with group state length:', group.state.length);
       const mlsCiphertext = sendMessage(
         group.state,
         state.identity.privateKey,
         message
       );
+      console.log('MLS ciphertext length:', mlsCiphertext.length);
+
+      // STEP 2: NIP-44 encryption (outer layer) using exporter secret
+      const mlsBase64 = btoa(String.fromCharCode(...mlsCiphertext));
+      const nip44CiphertextBytes = nip44Encrypt(exporterSecret, mlsBase64);
+      // nip44Encrypt returns raw bytes, but the Zig implementation returns base64
+      // So we need to convert the bytes to a string
+      const nip44CiphertextBase64 = new TextDecoder().decode(nip44CiphertextBytes);
+      console.log('NIP-44 ciphertext (base64) length:', nip44CiphertextBase64.length);
 
       // Create event structure first (without ID and signature)
       const eventData = {
@@ -53,9 +77,8 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
           ['h', group.id], // Use 'h' tag for group ID per NIP-EE spec
           ['ephemeral', 'true'] // Mark as ephemeral for visualization
         ],
-        // TODO: Add second layer of NIP-44 encryption using exporter secret
-        // For now, just base64 encode the MLS ciphertext
-        content: btoa(String.fromCharCode(...mlsCiphertext)),
+        // Double encrypted: MLS (inner) + NIP-44 (outer) - already base64
+        content: nip44CiphertextBase64,
       };
 
       // Generate real Nostr event ID according to NIP-01
@@ -96,6 +119,14 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
             messageId: event.id,
             exporterSecret: exporterSecret // Track exporter secret for visualization
           }]
+        ]),
+        // Update group with current exporter secret
+        groups: new Map([
+          ...Array.from(prev.groups),
+          [group.id, { 
+            ...group,
+            exporterSecret: exporterSecret
+          }]
         ])
       }));
 
@@ -104,7 +135,8 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         eventId,
         ephemeralPubkey: bytesToHex(ephemeralKeys.publicKey),
         groupTag: ['h', group.id],
-        hasRealSignature: signature !== 'mock_signature'
+        hasRealSignature: signature !== 'mock_signature',
+        exporterSecretAdded: bytesToHex(exporterSecret)
       });
     } catch (error) {
       console.error('Failed to send message:', error);

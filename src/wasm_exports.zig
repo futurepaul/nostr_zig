@@ -322,6 +322,110 @@ export fn wasm_create_group(
     return true; // Always return true for now to test
 }
 
+// Encrypt with NIP-44 v2 using exporter secret
+export fn wasm_nip44_encrypt(
+    exporter_secret: [*]const u8,
+    plaintext: [*]const u8,
+    plaintext_len: u32,
+    out_ciphertext: [*]u8,
+    out_len: *u32
+) bool {
+    const allocator = getAllocator();
+    
+    // Use exporter secret as private key for NIP-44
+    var private_key = exporter_secret[0..32].*;
+    
+    // Ensure the private key is valid for secp256k1
+    // The secp256k1 curve order is approximately 2^256, but not all 32-byte values are valid
+    // If the key is invalid, we'll derive a valid one deterministically
+    const public_key = crypto.getPublicKey(private_key) catch blk: {
+        // If the exporter secret is not a valid private key, hash it to get a valid one
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        hasher.update("nip44-key-derivation");
+        hasher.update(&private_key);
+        hasher.final(&private_key);
+        
+        // Try again with the hashed value
+        break :blk crypto.getPublicKey(private_key) catch return false;
+    };
+    
+    // Encrypt using NIP-44 v2
+    const plaintext_slice = plaintext[0..plaintext_len];
+    const encrypted = nip44.encrypt(
+        allocator,
+        private_key,
+        public_key, // Self-encryption using exporter secret
+        plaintext_slice
+    ) catch return false;
+    defer allocator.free(encrypted);
+    
+    // Check output buffer size
+    if (out_len.* < encrypted.len) {
+        return false;
+    }
+    
+    // Copy to output buffer
+    @memcpy(out_ciphertext[0..encrypted.len], encrypted);
+    out_len.* = @intCast(encrypted.len);
+    
+    return true;
+}
+
+// Decrypt with NIP-44 v2 using exporter secret
+export fn wasm_nip44_decrypt(
+    exporter_secret: [*]const u8,
+    ciphertext: [*]const u8,
+    ciphertext_len: u32,
+    out_plaintext: [*]u8,
+    out_len: *u32
+) bool {
+    const allocator = getAllocator();
+    
+    // Use exporter secret as private key for NIP-44
+    var private_key = exporter_secret[0..32].*;
+    
+    // Ensure the private key is valid for secp256k1 (same logic as encrypt)
+    const public_key = crypto.getPublicKey(private_key) catch blk: {
+        // If the exporter secret is not a valid private key, hash it to get a valid one
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        hasher.update("nip44-key-derivation");
+        hasher.update(&private_key);
+        hasher.final(&private_key);
+        
+        // Try again with the hashed value
+        break :blk crypto.getPublicKey(private_key) catch return false;
+    };
+    
+    // The ciphertext is base64 encoded, but decryptBytes expects raw bytes
+    // First, decode from base64
+    const ciphertext_slice = ciphertext[0..ciphertext_len];
+    const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(ciphertext_slice) catch return false;
+    const decoded_bytes = allocator.alloc(u8, decoded_size) catch return false;
+    defer allocator.free(decoded_bytes);
+    
+    _ = std.base64.standard.Decoder.decode(decoded_bytes, ciphertext_slice) catch return false;
+    
+    // Now decrypt the raw bytes
+    const decrypted = nip44.decryptBytes(
+        allocator,
+        private_key,
+        public_key, // Self-decryption using exporter secret
+        decoded_bytes
+    ) catch return false;
+    defer allocator.free(decrypted);
+    
+    // Check output buffer size
+    if (out_len.* < decrypted.len) {
+        return false;
+    }
+    
+    // Copy to output buffer
+    @memcpy(out_plaintext[0..decrypted.len], decrypted);
+    out_len.* = @intCast(decrypted.len);
+    
+    return true;
+}
+
 // Generate MLS exporter secret with "nostr" label
 export fn wasm_generate_exporter_secret(
     group_state: [*]const u8,

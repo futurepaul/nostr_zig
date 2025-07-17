@@ -10,6 +10,8 @@ interface WasmContextType {
   createKeyPackage: (privateKey: Uint8Array) => Uint8Array;
   createGroup: (creatorPrivateKey: Uint8Array, creatorPublicKey: Uint8Array) => Uint8Array;
   generateExporterSecret: (groupState: Uint8Array) => Uint8Array;
+  nip44Encrypt: (exporterSecret: Uint8Array, plaintext: string) => Uint8Array;
+  nip44Decrypt: (exporterSecret: Uint8Array, ciphertext: Uint8Array) => string;
   sendMessage: (groupState: Uint8Array, senderPrivateKey: Uint8Array, message: string) => Uint8Array;
 }
 
@@ -48,6 +50,8 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
     createKeyPackage: (privateKey) => wasm.createKeyPackage(privateKey),
     createGroup: (creatorPrivateKey, creatorPublicKey) => wasm.createGroup(creatorPrivateKey, creatorPublicKey),
     generateExporterSecret: (groupState) => wasm.generateExporterSecret(groupState),
+    nip44Encrypt: (exporterSecret, plaintext) => wasm.nip44Encrypt(exporterSecret, plaintext),
+    nip44Decrypt: (exporterSecret, ciphertext) => wasm.nip44Decrypt(exporterSecret, ciphertext),
     sendMessage: (groupState, senderPrivateKey, message) => wasm.sendMessage(groupState, senderPrivateKey, message),
   };
 
