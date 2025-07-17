@@ -575,6 +575,28 @@ pub fn build(b: *std.Build) void {
     const publish_test_keypackages_step = b.step("publish-nak", "Publish test KeyPackages to NAK server");
     publish_test_keypackages_step.dependOn(&run_publish_test_keypackages.step);
     
+    // Add NIP-EE real test
+    const nip_ee_real_test = b.addTest(.{
+        .root_source_file = b.path("tests/test_nip_ee_real.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    nip_ee_real_test.root_module.addImport("websocket", websocket_mod);
+    nip_ee_real_test.root_module.addImport("secp256k1", secp256k1_mod);
+    nip_ee_real_test.root_module.addImport("bech32", bech32_mod);
+    nip_ee_real_test.root_module.addImport("mls_zig", mls_mod);
+    nip_ee_real_test.root_module.addImport("nostr", lib_mod);
+    nip_ee_real_test.linkLibrary(secp256k1_lib);
+    nip_ee_real_test.linkLibrary(bech32_lib);
+    nip_ee_real_test.addIncludePath(b.path("deps/secp256k1/include"));
+    nip_ee_real_test.addIncludePath(b.path("src/secp256k1"));
+    nip_ee_real_test.addIncludePath(b.path("deps/bech32/ref/c"));
+    nip_ee_real_test.linkLibC();
+    
+    const run_nip_ee_real_test = b.addRunArtifact(nip_ee_real_test);
+    const nip_ee_real_step = b.step("test-nip-ee-real", "Run real NIP-EE test");
+    nip_ee_real_step.dependOn(&run_nip_ee_real_test.step);
+
     // Add WASM library build
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,

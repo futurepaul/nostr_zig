@@ -12,6 +12,7 @@ interface WasmContextType {
   generateExporterSecret: (groupState: Uint8Array) => Uint8Array;
   nip44Encrypt: (exporterSecret: Uint8Array, plaintext: string) => Uint8Array;
   nip44Decrypt: (exporterSecret: Uint8Array, ciphertext: Uint8Array) => string;
+  nip44DecryptBytes: (exporterSecret: Uint8Array, ciphertext: Uint8Array) => Uint8Array;
   sendMessage: (groupState: Uint8Array, senderPrivateKey: Uint8Array, message: string) => Uint8Array;
   deserializeMLSMessage: (serializedData: Uint8Array) => {
     groupId: Uint8Array;
@@ -59,6 +60,7 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
     generateExporterSecret: (groupState) => wasm.generateExporterSecret(groupState),
     nip44Encrypt: (exporterSecret, plaintext) => wasm.nip44Encrypt(exporterSecret, plaintext),
     nip44Decrypt: (exporterSecret, ciphertext) => wasm.nip44Decrypt(exporterSecret, ciphertext),
+    nip44DecryptBytes: (exporterSecret, ciphertext) => wasm.nip44DecryptBytes(exporterSecret, ciphertext),
     sendMessage: (groupState, senderPrivateKey, message) => wasm.sendMessage(groupState, senderPrivateKey, message),
     deserializeMLSMessage: (serializedData) => wasm.deserializeMLSMessage(serializedData),
   };

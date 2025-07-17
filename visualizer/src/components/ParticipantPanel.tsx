@@ -507,18 +507,15 @@ function MessageDisplay({ message, state, setState, otherState }: MessageDisplay
       }
     } catch (error) {
       console.error('Failed to decrypt message:', error);
-      // Fallback to simulated decryption for debugging
-      const originalMessage = otherState.messages.find(m => m.eventId === message.eventId && !m.encrypted);
-      if (originalMessage) {
-        setState(prev => ({
-          ...prev,
-          messages: prev.messages.map(m => 
-            m.eventId === message.eventId 
-              ? { ...m, decrypted: `[Fallback] ${originalMessage.content}` }
-              : m
-          )
-        }));
-      }
+      // Show error message instead of fallback
+      setState(prev => ({
+        ...prev,
+        messages: prev.messages.map(m => 
+          m.eventId === message.eventId 
+            ? { ...m, decrypted: `❌ Decryption failed: ${error.message || 'Unknown error'}` }
+            : m
+        )
+      }));
     } finally {
       setIsDecrypting(false);
     }

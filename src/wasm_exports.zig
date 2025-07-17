@@ -3,26 +3,83 @@ const crypto = @import("crypto.zig");
 const ephemeral = @import("mls/ephemeral.zig");
 const mls_signing = @import("mls/mls_signing.zig");
 const mls_messages = @import("mls/mls_messages.zig");
+const nip_ee = @import("nip_ee.zig");
 const secp256k1 = @import("secp256k1");
 const nip44 = @import("nip44/v2.zig");
 const types = @import("mls/types.zig");
 const mls_zig = @import("mls_zig");
 const key_packages = @import("mls/key_packages.zig");
 const provider = @import("mls/provider.zig");
+const wasm_random = @import("wasm_random.zig");
 
 // Declare the external functions directly here
 extern fn getRandomValues(buf: [*]u8, len: usize) void;
 extern fn getCurrentTimestamp() u64;
+extern fn wasm_log_error(str: [*]const u8, len: usize) void;
 
 // Use a simple fixed buffer allocator for WASM
 var buffer: [1024 * 1024]u8 = undefined; // 1MB buffer
 var fba: ?std.heap.FixedBufferAllocator = null;
+
+// Separate buffer for MLS operations to allow for easy cleanup
+var mls_buffer: [512 * 1024]u8 = undefined; // 512KB buffer for MLS operations
+var mls_fba: ?std.heap.FixedBufferAllocator = null;
 
 fn getAllocator() std.mem.Allocator {
     if (fba == null) {
         fba = std.heap.FixedBufferAllocator.init(&buffer);
     }
     return fba.?.allocator();
+}
+
+fn getMLSAllocator() std.mem.Allocator {
+    if (mls_fba == null) {
+        mls_fba = std.heap.FixedBufferAllocator.init(&mls_buffer);
+    }
+    return mls_fba.?.allocator();
+}
+
+fn resetMLSAllocator() void {
+    mls_fba = null;
+}
+
+// Removed createSerializedMLSMessage - now using proper MLS serialization functions
+
+// Encrypt MLS message with exporter secret using NIP-44 spec approach
+fn encryptMLSWithExporterSecret(
+    allocator: std.mem.Allocator,
+    _: [32]u8, // sender_private_key - unused for now
+    exporter_secret: [32]u8,
+    mls_data: []const u8
+) ![]u8 {
+    // Per NIP-EE spec: use the exporter_secret as the private key for NIP-44 encryption
+    // Calculate the corresponding public key
+    var private_key = exporter_secret;
+    
+    // Ensure the private key is valid for secp256k1 using robust derivation
+    private_key = crypto.generateValidSecp256k1Key(private_key) catch return error.InvalidKey;
+    
+    // Debug log the private key
+    logError("Generated valid private key (first 8 bytes): {x} {x} {x} {x} {x} {x} {x} {x}", .{
+        private_key[0], private_key[1], private_key[2], private_key[3],
+        private_key[4], private_key[5], private_key[6], private_key[7]
+    });
+    
+    const public_key = crypto.getPublicKeyForNip44(private_key) catch |err| {
+        logError("Failed to get public key for NIP-44: {}", .{err});
+        return error.InvalidKey;
+    };
+    
+    // Use proper NIP-44 encryption with self-encryption (same key for encrypt and decrypt)
+    // IMPORTANT: Use encryptRaw to get raw bytes for WASM interop
+    const encrypted_bytes = try nip44.encryptRaw(
+        allocator,
+        private_key,
+        public_key, // Self-encryption using the derived keypair
+        mls_data
+    );
+    
+    return encrypted_bytes;
 }
 
 export fn wasm_init() void {
@@ -61,12 +118,13 @@ export fn wasm_align_ptr(ptr: usize, alignment: usize) usize {
 }
 
 // External function for secp256k1 error logging
-export fn wasm_log_error(str: [*]const u8, len: c_int) void {
-    // This will be called from C code if there's an error
-    // For now, we'll just ignore it (the JS side provides the real implementation)
-    _ = str;
-    _ = len;
-}
+// Note: This is now an external function provided by JavaScript, not an export
+// export fn wasm_log_error(str: [*]const u8, len: c_int) void {
+//     // This will be called from C code if there's an error
+//     // For now, we'll just ignore it (the JS side provides the real implementation)
+//     _ = str;
+//     _ = len;
+// }
 
 // Test random generation - this will call the external getRandomValues function
 export fn wasm_test_random() void {
@@ -674,28 +732,25 @@ export fn wasm_nip44_encrypt(
     // Use exporter secret as private key for NIP-44
     var private_key = exporter_secret[0..32].*;
     
-    // Ensure the private key is valid for secp256k1
+    // Ensure the private key is valid for secp256k1 using robust derivation
     // The secp256k1 curve order is approximately 2^256, but not all 32-byte values are valid
-    // If the key is invalid, we'll derive a valid one deterministically
-    const public_key = crypto.getPublicKey(private_key) catch blk: {
-        // If the exporter secret is not a valid private key, hash it to get a valid one
-        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-        hasher.update("nip44-key-derivation");
-        hasher.update(&private_key);
-        hasher.final(&private_key);
-        
-        // Try again with the hashed value
-        break :blk crypto.getPublicKey(private_key) catch return false;
+    private_key = crypto.generateValidSecp256k1Key(private_key) catch return false;
+    const public_key = crypto.getPublicKeyForNip44(private_key) catch {
+        logError("Failed to get public key for NIP-44", .{});
+        return false;
     };
     
     // Encrypt using NIP-44 v2
     const plaintext_slice = plaintext[0..plaintext_len];
-    const encrypted = nip44.encrypt(
+    const encrypted = nip44.encryptRaw(
         allocator,
         private_key,
         public_key, // Self-encryption using exporter secret
         plaintext_slice
-    ) catch return false;
+    ) catch |err| {
+        logError("NIP-44 encrypt failed: {}", .{err});
+        return false;
+    };
     defer allocator.free(encrypted);
     
     // Check output buffer size
@@ -720,36 +775,22 @@ export fn wasm_nip44_decrypt(
 ) bool {
     const allocator = getAllocator();
     
-    // Use exporter secret as private key for NIP-44
+    // Use exporter secret as private key for NIP-44 (per NIP-EE spec)
     var private_key = exporter_secret[0..32].*;
     
-    // Ensure the private key is valid for secp256k1 (same logic as encrypt)
-    const public_key = crypto.getPublicKey(private_key) catch blk: {
-        // If the exporter secret is not a valid private key, hash it to get a valid one
-        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-        hasher.update("nip44-key-derivation");
-        hasher.update(&private_key);
-        hasher.final(&private_key);
-        
-        // Try again with the hashed value
-        break :blk crypto.getPublicKey(private_key) catch return false;
-    };
+    // Ensure the private key is valid for secp256k1 using robust derivation (same approach as encrypt)
+    private_key = crypto.generateValidSecp256k1Key(private_key) catch return false;
+    const public_key = crypto.getPublicKeyForNip44(private_key) catch return false;
     
-    // The ciphertext is base64 encoded, but decryptBytes expects raw bytes
-    // First, decode from base64
+    // The ciphertext is now raw bytes (not base64) for WASM interop
     const ciphertext_slice = ciphertext[0..ciphertext_len];
-    const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(ciphertext_slice) catch return false;
-    const decoded_bytes = allocator.alloc(u8, decoded_size) catch return false;
-    defer allocator.free(decoded_bytes);
     
-    _ = std.base64.standard.Decoder.decode(decoded_bytes, ciphertext_slice) catch return false;
-    
-    // Now decrypt the raw bytes
+    // Use standard NIP-44 decryption with self-decryption keypair
     const decrypted = nip44.decryptBytes(
         allocator,
         private_key,
-        public_key, // Self-decryption using exporter secret
-        decoded_bytes
+        public_key, // Self-decryption using exporter secret derived keypair
+        ciphertext_slice
     ) catch return false;
     defer allocator.free(decrypted);
     
@@ -790,6 +831,28 @@ export fn wasm_generate_exporter_secret(
     // Copy to output buffer
     @memcpy(out_secret[0..32], &secret);
     
+    return true;
+}
+
+// Generate a valid secp256k1 key from any 32-byte seed
+export fn wasm_generate_valid_secp256k1_key(
+    seed: [*]const u8,
+    out_key: [*]u8
+) bool {
+    const seed_array = seed[0..32].*;
+    const valid_key = crypto.generateValidSecp256k1Key(seed_array) catch return false;
+    @memcpy(out_key[0..32], &valid_key);
+    return true;
+}
+
+// Get secp256k1 public key from private key
+export fn wasm_secp256k1_get_public_key(
+    private_key: [*]const u8,
+    out_public_key: [*]u8
+) bool {
+    const priv_key = private_key[0..32].*;
+    const pub_key = crypto.getPublicKey(priv_key) catch return false;
+    @memcpy(out_public_key[0..32], &pub_key);
     return true;
 }
 
@@ -963,95 +1026,198 @@ export fn wasm_receive_message(
     return true;
 }
 
+// Debug helper to log errors from Zig
+fn logError(comptime fmt: []const u8, args: anytype) void {
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    // Call the external JS function
+    wasm_log_error(msg.ptr, msg.len);
+}
+
 export fn wasm_send_message(
     group_state: [*]const u8,
     group_state_len: u32,
-    sender_private_key: [*]const u8,
+    _: [*]const u8, // sender_private_key - unused in simplified version
     message: [*]const u8,
     message_len: u32,
     out_ciphertext: [*]u8,
     out_len: *u32
 ) bool {
-    // Real encrypted messaging implementation using NIP-44 v2
+    // Simplified WASM wrapper using nip_ee module
     
     // Validate inputs
     if (group_state_len == 0 or message_len == 0 or out_len.* == 0) {
+        logError("Invalid inputs: group_state_len={}, message_len={}, out_len={}", .{group_state_len, message_len, out_len.*});
         return false;
     }
     
     const allocator = getAllocator();
     
-    // Get sender keys
-    const sender_priv_key = sender_private_key[0..32].*;
-    const sender_pubkey = crypto.getPublicKey(sender_priv_key) catch return false;
-    
-    // For group messaging, we need a group encryption key
-    // Extract group encryption key from group state (first 32 bytes as group secret)
-    // In a real implementation, this would be properly derived from group state
-    var group_secret: [32]u8 = undefined;
+    // Extract group ID from state (simplified - real implementation would parse MLS state)
+    var group_id: [32]u8 = undefined;
     if (group_state_len >= 32) {
-        @memcpy(&group_secret, group_state[0..32]);
+        @memcpy(&group_id, group_state[0..32]);
     } else {
-        // Fallback: hash the entire group state to get a 32-byte secret
-        std.crypto.hash.sha2.Sha256.hash(group_state[0..group_state_len], &group_secret, .{});
+        std.crypto.hash.sha2.Sha256.hash(group_state[0..group_state_len], &group_id, .{});
     }
     
-    // Create message content from the plaintext
-    const message_content = message[0..message_len];
+    // Generate exporter secret from group state
+    const exporter_secret = nip_ee.generateExporterSecret(allocator, group_state[0..group_state_len]) catch {
+        logError("Failed to generate exporter secret", .{});
+        return false;
+    };
     
-    // Use NIP-44 v2 encryption with group secret as recipient "public key"
-    // In a real group messaging system, you'd encrypt for each member individually
-    // For this demo, we'll use the group secret as a shared encryption key
-    const encrypted_payload = nip44.encrypt(
-        allocator,
-        sender_priv_key,
-        group_secret, // Using group secret as "public key" for demo
-        message_content
-    ) catch return false;
+    // Create and encrypt the message using our clean nip_ee module
+    const epoch: u64 = 0; // Simplified - real implementation would track epoch
+    const sender_index: u32 = 0; // Simplified - real implementation would track sender
+    var signature: [64]u8 = undefined;
+    @memset(&signature, 0); // Simplified - real implementation would sign properly
+    
+    // Reset MLS allocator for clean slate
+    resetMLSAllocator();
+    const mls_allocator = getMLSAllocator();
+    
+    const encrypted_payload = nip_ee.createEncryptedGroupMessage(
+        allocator,          // Main allocator for final result
+        mls_allocator,      // MLS allocator for temporary operations
+        group_id,
+        epoch,
+        sender_index,
+        message[0..message_len],
+        &signature,
+        exporter_secret,
+    ) catch |err| {
+        logError("Failed to create encrypted group message: {}", .{err});
+        return false;
+    };
     defer allocator.free(encrypted_payload);
     
-    // Create group message structure:
-    // [version: 1 byte][group_hash: 32 bytes][sender_pubkey: 32 bytes][nip44_payload: variable][signature: 64 bytes]
-    const header_size = 1 + 32 + 32;
-    const signature_size = 64;
-    const total_size = header_size + encrypted_payload.len + signature_size;
-    
-    if (out_len.* < total_size) {
+    // Return the encrypted payload
+    if (out_len.* < encrypted_payload.len) {
+        logError("Output buffer too small: {} < {}", .{out_len.*, encrypted_payload.len});
         return false;
     }
     
-    // Version
-    out_ciphertext[0] = 0x02; // NIP-44 v2
+    @memcpy(out_ciphertext[0..encrypted_payload.len], encrypted_payload);
+    out_len.* = @intCast(encrypted_payload.len);
     
-    // Group hash (hash the group state)
-    var group_hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(group_state[0..group_state_len], &group_hash, .{});
-    @memcpy(out_ciphertext[1..33], &group_hash);
+    return true;
+}
+
+// ===== NEW THIN WASM WRAPPERS FOLLOWING DEVELOPMENT.md BEST PRACTICES =====
+
+/// Thin wrapper for nip_ee.createEncryptedGroupMessage
+/// Follows DEVELOPMENT.md pattern: minimal logic, just memory management and type conversion
+export fn wasm_nip_ee_create_encrypted_group_message(
+    group_id: [*]const u8,         // 32 bytes
+    epoch: u64,
+    sender_index: u32,
+    message_content: [*]const u8,
+    message_content_len: u32,
+    mls_signature: [*]const u8,
+    mls_signature_len: u32,
+    exporter_secret: [*]const u8,   // 32 bytes
+    out_encrypted: [*]u8,
+    out_len: *u32
+) bool {
+    const allocator = getAllocator();
     
-    // Sender public key
-    @memcpy(out_ciphertext[33..65], &sender_pubkey);
+    // Reset MLS allocator for clean slate
+    resetMLSAllocator();
+    const mls_allocator = getMLSAllocator();
     
-    // NIP-44 encrypted payload
-    const payload_start = header_size;
-    @memcpy(out_ciphertext[payload_start..payload_start + encrypted_payload.len], encrypted_payload);
+    // Type conversions for Zig
+    const group_id_array = group_id[0..32].*;
+    const message_slice = message_content[0..message_content_len];
+    const signature_slice = mls_signature[0..mls_signature_len];
+    const exporter_secret_array = exporter_secret[0..32].*;
     
-    // Create signature over everything except the signature itself
-    const data_to_sign = out_ciphertext[0..payload_start + encrypted_payload.len];
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(data_to_sign, &hash, .{});
+    // Call the pure Zig function with separate allocators
+    const encrypted_payload = nip_ee.createEncryptedGroupMessage(
+        allocator,          // Main allocator for final result
+        mls_allocator,      // MLS allocator for temporary operations
+        group_id_array,
+        epoch,
+        sender_index,
+        message_slice,
+        signature_slice,
+        exporter_secret_array,
+    ) catch return false;
+    defer allocator.free(encrypted_payload);
     
-    // Sign with Schnorr
-    var signature: [64]u8 = undefined;
-    if (!wasm_sign_schnorr(&hash, sender_private_key, &signature)) {
-        return false; // Signing should not fail with real crypto
+    // Buffer size check
+    if (out_len.* < encrypted_payload.len) {
+        out_len.* = @intCast(encrypted_payload.len);
+        return false;
     }
     
-    // Add signature
-    const sig_start = payload_start + encrypted_payload.len;
-    @memcpy(out_ciphertext[sig_start..sig_start + 64], &signature);
+    // Copy result
+    @memcpy(out_encrypted[0..encrypted_payload.len], encrypted_payload);
+    out_len.* = @intCast(encrypted_payload.len);
     
-    // Update the actual length
-    out_len.* = @intCast(total_size);
+    // MLS allocator is reset automatically on next call
+    return true;
+}
+
+/// Thin wrapper for nip_ee.decryptGroupMessage  
+/// Follows DEVELOPMENT.md pattern: minimal logic, just memory management and type conversion
+export fn wasm_nip_ee_decrypt_group_message(
+    encrypted_content: [*]const u8,
+    encrypted_content_len: u32,
+    exporter_secret: [*]const u8,   // 32 bytes
+    out_decrypted: [*]u8,
+    out_len: *u32
+) bool {
+    const allocator = getAllocator();
+    
+    // Reset MLS allocator for clean slate
+    resetMLSAllocator();
+    const mls_allocator = getMLSAllocator();
+    
+    // Type conversions for Zig
+    const encrypted_slice = encrypted_content[0..encrypted_content_len];
+    const exporter_secret_array = exporter_secret[0..32].*;
+    
+    // Call the pure Zig function with separate allocators
+    const decrypted_content = nip_ee.decryptGroupMessage(
+        allocator,          // Main allocator for final result
+        mls_allocator,      // MLS allocator for temporary operations
+        encrypted_slice,
+        exporter_secret_array,
+    ) catch return false;
+    defer allocator.free(decrypted_content);
+    
+    // Buffer size check
+    if (out_len.* < decrypted_content.len) {
+        out_len.* = @intCast(decrypted_content.len);
+        return false;
+    }
+    
+    // Copy result
+    @memcpy(out_decrypted[0..decrypted_content.len], decrypted_content);
+    out_len.* = @intCast(decrypted_content.len);
+    
+    // MLS allocator is reset automatically on next call
+    return true;
+}
+
+/// Thin wrapper for nip_ee.generateExporterSecret
+/// Follows DEVELOPMENT.md pattern: minimal logic, just memory management and type conversion
+export fn wasm_nip_ee_generate_exporter_secret(
+    group_state: [*]const u8,
+    group_state_len: u32,
+    out_secret: [*]u8  // 32 bytes
+) bool {
+    const allocator = getAllocator();
+    
+    // Type conversions for Zig
+    const group_state_slice = group_state[0..group_state_len];
+    
+    // Call the pure Zig function
+    const exporter_secret = nip_ee.generateExporterSecret(allocator, group_state_slice) catch return false;
+    
+    // Copy result (exporter secret is always 32 bytes)
+    @memcpy(out_secret[0..32], &exporter_secret);
     
     return true;
 }

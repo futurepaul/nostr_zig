@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const crypto = std.crypto;
 const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 const secp = @import("secp256k1");
@@ -162,6 +163,13 @@ fn generateSharedSecret(secret_key: [32]u8, public_key: [32]u8) Nip44Error!([32]
     // Try using secp256k1_ecdh with xonly pubkey directly
     var xonly_pubkey: secp.secp256k1_xonly_pubkey = undefined;
     if (secp.secp256k1_xonly_pubkey_parse(ctx, &xonly_pubkey, &public_key) != 1) {
+        // Debug: log the public key that failed
+        if (builtin.target.cpu.arch == .wasm32) {
+            std.debug.print("Failed to parse xonly pubkey. First 8 bytes: {x} {x} {x} {x} {x} {x} {x} {x}\n", .{
+                public_key[0], public_key[1], public_key[2], public_key[3],
+                public_key[4], public_key[5], public_key[6], public_key[7]
+            });
+        }
         return Nip44Error.InvalidPublicKey;
     }
     
@@ -188,7 +196,62 @@ fn generateSharedSecret(secret_key: [32]u8, public_key: [32]u8) Nip44Error!([32]
     return shared_secret;
 }
 
-/// Encrypt content using NIP-44 v2
+/// Encrypt content using NIP-44 v2 and return raw bytes (not base64)
+/// This is the preferred function for WASM interop to avoid encoding confusion
+pub fn encryptRaw(
+    allocator: std.mem.Allocator,
+    secret_key: [32]u8,
+    public_key: [32]u8,
+    content: []const u8,
+) Nip44Error![]u8 {
+    // Generate conversation key
+    const conversation_key = try ConversationKey.fromKeys(secret_key, public_key);
+    
+    // Generate random nonce
+    var nonce: [32]u8 = undefined;
+    wasm_random.secure_random.bytes(&nonce);
+    
+    // Derive message keys
+    const message_keys = try conversation_key.deriveMessageKeys(nonce);
+    
+    // Pad message - CRITICAL for privacy!
+    const padded = try padMessage(allocator, content);
+    defer allocator.free(padded);
+    
+    // Encrypt with ChaCha20
+    const encrypted = try allocator.alloc(u8, padded.len);
+    defer allocator.free(encrypted);
+    
+    // Use real ChaCha20IETF from Zig standard library
+    // ChaCha20 encrypt/decrypt are the same operation (XOR)
+    ChaCha20IETF.xor(encrypted, padded, 0, message_keys.chacha_key, message_keys.chacha_nonce);
+    
+    // Create payload: [version][nonce][encrypted][hmac]
+    const payload_len = 1 + 32 + encrypted.len + 32;
+    const payload = try allocator.alloc(u8, payload_len);
+    // Note: no defer here, we return the payload
+    
+    // Version
+    payload[0] = VERSION;
+    
+    // Nonce
+    @memcpy(payload[1..33], &nonce);
+    
+    // Encrypted data
+    @memcpy(payload[33..33 + encrypted.len], encrypted);
+    
+    // HMAC-SHA256 over nonce + ciphertext (matching NIP-44 spec)
+    var hmac_ctx = crypto.auth.hmac.Hmac(crypto.hash.sha2.Sha256).init(&message_keys.hmac_key);
+    hmac_ctx.update(&nonce); // 32 bytes of nonce
+    hmac_ctx.update(encrypted); // ciphertext only
+    var hmac: [32]u8 = undefined;
+    hmac_ctx.final(&hmac);
+    @memcpy(payload[33 + encrypted.len..], &hmac);
+    
+    return payload;
+}
+
+/// Encrypt content using NIP-44 v2 (returns base64 for text protocols)
 pub fn encrypt(
     allocator: std.mem.Allocator,
     secret_key: [32]u8,

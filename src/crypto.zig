@@ -32,6 +32,123 @@ pub fn generatePrivateKey() ![32]u8 {
     return key;
 }
 
+/// Generate cryptographically secure random bytes
+pub fn generateRandomBytes(buffer: []u8) void {
+    wasm_random.secure_random.bytes(buffer);
+}
+
+/// Convert bytes to hex string (fixed length)
+pub fn bytesToHexFixed(bytes: []const u8) [64]u8 {
+    var hex: [64]u8 = undefined;
+    const charset = "0123456789abcdef";
+    
+    for (bytes, 0..) |b, i| {
+        hex[i * 2] = charset[b >> 4];
+        hex[i * 2 + 1] = charset[b & 0x0f];
+    }
+    
+    return hex;
+}
+
+/// Sign a message with a private key using Schnorr signatures
+pub fn sign(message: []const u8, private_key: [32]u8) ![64]u8 {
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
+    
+    // Hash the message
+    var message_hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(message, &message_hash, .{});
+    
+    // Create keypair
+    var keypair: secp256k1.secp256k1_keypair = undefined;
+    if (secp256k1.secp256k1_keypair_create(ctx, &keypair, &private_key) != 1) {
+        return error.InvalidPrivateKey;
+    }
+    
+    // Sign the message hash
+    var signature: [64]u8 = undefined;
+    var aux_rand: [32]u8 = undefined;
+    generateRandomBytes(&aux_rand);
+    
+    if (secp256k1.secp256k1_schnorrsig_sign32(ctx, &signature, &message_hash, &keypair, &aux_rand) != 1) {
+        return error.SigningFailed;
+    }
+    
+    return signature;
+}
+
+/// Verify a Schnorr signature (message-based)
+pub fn verifyMessageSignature(message: []const u8, signature: [64]u8, public_key: [32]u8) !bool {
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_VERIFY) orelse return error.ContextCreationFailed;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
+    
+    // Hash the message
+    var message_hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(message, &message_hash, .{});
+    
+    // Parse the public key
+    var xonly_pubkey: secp256k1.secp256k1_xonly_pubkey = undefined;
+    if (secp256k1.secp256k1_xonly_pubkey_parse(ctx, &xonly_pubkey, &public_key) != 1) {
+        return error.InvalidPublicKey;
+    }
+    
+    // Verify the signature
+    const result = secp256k1.secp256k1_schnorrsig_verify(ctx, &signature, &message_hash, 32, &xonly_pubkey);
+    return result == 1;
+}
+
+/// Generate a valid secp256k1 private key from any 32-byte seed deterministically
+/// This is used for cases where we need to derive keys from exporter secrets
+pub fn generateValidSecp256k1Key(seed: [32]u8) ![32]u8 {
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
+    
+    // Try different deterministic derivations until we find a valid key
+    var counter: u32 = 0;
+    while (counter < 1000) : (counter += 1) {
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        hasher.update("secp256k1-key-v1");
+        hasher.update(&seed);
+        hasher.update(std.mem.asBytes(&counter));
+        
+        var derived_key: [32]u8 = undefined;
+        hasher.final(&derived_key);
+        
+        // Test if this is a valid secp256k1 private key
+        if (secp256k1.secp256k1_ec_seckey_verify(ctx, &derived_key) == 1) {
+            return derived_key; // Success!
+        }
+        // Continue to next counter value if invalid
+    }
+    return error.CannotGenerateValidKey;
+}
+
 /// Get public key from private key using secp256k1 (x-only for Nostr)
 pub fn getPublicKey(private_key: [32]u8) ![32]u8 {
     // Use static context for WASM compatibility
@@ -73,6 +190,47 @@ pub fn getPublicKey(private_key: [32]u8) ![32]u8 {
     }
     
     return result;
+}
+
+/// Get compressed public key from private key (33 bytes, used for NIP-44)
+pub fn getPublicKeyCompressed(private_key: [32]u8) ![33]u8 {
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
+    
+    // Verify the private key
+    if (secp256k1.secp256k1_ec_seckey_verify(ctx, &private_key) != 1) {
+        return error.InvalidPrivateKey;
+    }
+    
+    // Create public key
+    var pubkey: secp256k1.secp256k1_pubkey = undefined;
+    if (secp256k1.secp256k1_ec_pubkey_create(ctx, &pubkey, &private_key) != 1) {
+        return error.PublicKeyCreationFailed;
+    }
+    
+    // Serialize as compressed public key (33 bytes)
+    var result: [33]u8 = undefined;
+    var output_len: usize = 33;
+    if (secp256k1.secp256k1_ec_pubkey_serialize(ctx, &result, &output_len, &pubkey, secp256k1.SECP256K1_EC_COMPRESSED) != 1) {
+        return error.PublicKeySerializationFailed;
+    }
+    
+    return result;
+}
+
+/// Get regular 32-byte public key for NIP-44 (x-only format)
+pub fn getPublicKeyForNip44(private_key: [32]u8) ![32]u8 {
+    // For NIP-44, we need to get the x-only public key just like we do for Nostr
+    // This ensures it's in the correct format for secp256k1_xonly_pubkey_parse
+    return getPublicKey(private_key);
 }
 
 /// Calculate event ID (SHA256 hash of serialized event)

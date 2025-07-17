@@ -634,6 +634,71 @@ class WasmWrapper {
     return plaintext;
   }
 
+  nip44DecryptBytes(exporterSecret: Uint8Array, ciphertext: Uint8Array): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    console.log('[WASM] nip44DecryptBytes called with:', {
+      secretLength: exporterSecret.length,
+      ciphertextLength: ciphertext.length,
+      secretPreview: Array.from(exporterSecret.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' '),
+      ciphertextPreview: Array.from(ciphertext.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    });
+    
+    // Allocate space for inputs
+    const secretPtr = exports.wasm_alloc(32);
+    const ciphertextPtr = exports.wasm_alloc(ciphertext.length);
+    
+    if (!secretPtr || !ciphertextPtr) {
+      throw new Error('Failed to allocate memory');
+    }
+
+    new Uint8Array(exports.memory.buffer, secretPtr, 32).set(exporterSecret);
+    new Uint8Array(exports.memory.buffer, ciphertextPtr, ciphertext.length).set(ciphertext);
+
+    // Allocate space for output
+    const maxSize = ciphertext.length * 2; // Generous buffer
+    const outPtr = exports.wasm_alloc(maxSize);
+    const lenAllocation = this.allocateAlignedU32(1);
+    
+    if (!outPtr || !lenAllocation.ptr) {
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(ciphertextPtr, ciphertext.length);
+      throw new Error('Failed to allocate memory');
+    }
+
+    // Set initial length
+    new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0] = maxSize;
+    
+    console.log('[WASM] Calling wasm_nip44_decrypt...');
+    const success = exports.wasm_nip44_decrypt(
+      secretPtr,
+      ciphertextPtr,
+      ciphertext.length,
+      outPtr,
+      lenAllocation.alignedPtr
+    );
+
+    const actualLen = new Uint32Array(exports.memory.buffer, lenAllocation.alignedPtr, 1)[0];
+    console.log('[WASM] wasm_nip44_decrypt returned:', { success, actualLen });
+    
+    if (!success) {
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(ciphertextPtr, ciphertext.length);
+      exports.wasm_free(outPtr, maxSize);
+      this.freeAlignedU32(lenAllocation);
+      throw new Error('Failed to decrypt with NIP-44');
+    }
+
+    const decryptedBytes = this.readBytes(outPtr, actualLen);
+
+    exports.wasm_free(secretPtr, 32);
+    exports.wasm_free(ciphertextPtr, ciphertext.length);
+    exports.wasm_free(outPtr, maxSize);
+    this.freeAlignedU32(lenAllocation);
+
+    return decryptedBytes;
+  }
+
   sendMessage(
     groupState: Uint8Array,
     senderPrivateKey: Uint8Array,
@@ -798,11 +863,17 @@ class WasmWrapper {
       dataPreview: Array.from(serializedData.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
     });
     
+    // Check if the WASM function exists
+    if (typeof exports.wasm_deserialize_mls_message !== 'function') {
+      throw new Error('wasm_deserialize_mls_message function not available');
+    }
+    
     // Allocate space for input
     const dataPtr = exports.wasm_alloc(serializedData.length);
     if (!dataPtr) {
       throw new Error('Failed to allocate memory for serialized data');
     }
+    console.log('[WASM] Allocated input data ptr:', dataPtr);
     new Uint8Array(exports.memory.buffer, dataPtr, serializedData.length).set(serializedData);
     
     // Allocate space for outputs
@@ -826,17 +897,36 @@ class WasmWrapper {
     new Uint32Array(exports.memory.buffer, outSigLenAlloc.alignedPtr, 1)[0] = 256;
     
     console.log('[WASM] Calling wasm_deserialize_mls_message...');
-    const success = exports.wasm_deserialize_mls_message(
+    console.log('[WASM] Function call arguments:', {
       dataPtr,
-      serializedData.length,
+      dataLength: serializedData.length,
       outGroupIdPtr,
       alignedOutEpochPtr,
-      outSenderIndexAlloc.alignedPtr,
+      outSenderIndex: outSenderIndexAlloc.alignedPtr,
       outAppDataPtr,
-      outAppDataLenAlloc.alignedPtr,
+      outAppDataLen: outAppDataLenAlloc.alignedPtr,
       outSigPtr,
-      outSigLenAlloc.alignedPtr
-    );
+      outSigLen: outSigLenAlloc.alignedPtr
+    });
+    
+    let success;
+    try {
+      success = exports.wasm_deserialize_mls_message(
+        dataPtr,
+        serializedData.length,
+        outGroupIdPtr,
+        alignedOutEpochPtr,
+        outSenderIndexAlloc.alignedPtr,
+        outAppDataPtr,
+        outAppDataLenAlloc.alignedPtr,
+        outSigPtr,
+        outSigLenAlloc.alignedPtr
+      );
+      console.log('[WASM] wasm_deserialize_mls_message returned:', success);
+    } catch (wasmError) {
+      console.error('[WASM] Error calling wasm_deserialize_mls_message:', wasmError);
+      throw wasmError;
+    }
     
     if (!success) {
       // Cleanup on failure

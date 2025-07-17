@@ -183,12 +183,12 @@ export function MLSVisualizer() {
 function DecryptorBox() {
   const [encryptedData, setEncryptedData] = useState('');
   const [exporterSecret, setExporterSecret] = useState('');
-  const [mlsSecret, setMlsSecret] = useState('');
   const [stage1Result, setStage1Result] = useState('');
   const [stage2Result, setStage2Result] = useState('');
   const [error, setError] = useState('');
   const [currentStage, setCurrentStage] = useState<'none' | 'stage1' | 'stage2'>('none');
-  const { nip44Decrypt, deserializeMLSMessage } = useWasm();
+  const [mlsMessageBytes, setMlsMessageBytes] = useState<Uint8Array | null>(null);
+  const { nip44Decrypt, nip44DecryptBytes, deserializeMLSMessage } = useWasm();
 
   const handleStage1Decrypt = async () => {
     setError('');
@@ -234,13 +234,21 @@ function DecryptorBox() {
 
       // Stage 1: Decrypt NIP-44 layer
       console.log('🔓 Attempting NIP-44 decryption...');
-      const mlsBase64 = nip44Decrypt(secretBytes, nip44CiphertextBytes);
-      console.log('✅ NIP-44 decryption successful! MLS payload length:', mlsBase64.length);
+      const mlsBytes = nip44DecryptBytes(secretBytes, nip44CiphertextBytes);
+      console.log('✅ NIP-44 decryption successful! MLS payload length:', mlsBytes.length);
       
+      // Store bytes directly and convert to base64 for display only
+      setMlsMessageBytes(mlsBytes);
+      const mlsBase64 = btoa(String.fromCharCode(...mlsBytes));
       setStage1Result(mlsBase64);
       setCurrentStage('stage1');
       
       console.log('✅ Stage 1 complete: NIP-44 decrypted, revealed MLS ciphertext');
+      
+      // Automatically trigger Stage 2
+      setTimeout(() => {
+        handleStage2Decrypt();
+      }, 500); // Small delay to let UI update
       
     } catch (e) {
       setError('Stage 1 failed: ' + (e as Error).message);
@@ -248,26 +256,69 @@ function DecryptorBox() {
     }
   };
 
+  const performStage2Decrypt = async () => {
+    // Stage 2: Deserialize MLSMessage using WASM
+    console.log('🔍 Stage 2: Deserializing MLS message using WASM...');
+    
+    if (!mlsMessageBytes) {
+      throw new Error('No MLS message bytes available from Stage 1');
+    }
+    
+    console.log('📦 MLS message size:', mlsMessageBytes.length, 'bytes');
+    
+    // Use the WASM function to properly deserialize the MLS message
+    const result = deserializeMLSMessage(mlsMessageBytes);
+    
+    console.log('✅ MLS message deserialized successfully:', result);
+    
+    // Extract the Nostr event from the application data
+    let finalMessage = result.applicationData;
+    let parsedEvent = null;
+    
+    try {
+      parsedEvent = JSON.parse(result.applicationData);
+      if (parsedEvent.content) {
+        finalMessage = parsedEvent.content;
+      }
+    } catch (e) {
+      // Not JSON, use as-is
+      console.log('Application data is not JSON, using as plain text');
+    }
+    
+    // Convert arrays to hex for display
+    const groupIdHex = Array.from(result.groupId).map(b => b.toString(16).padStart(2, '0')).join('');
+    const signatureHex = Array.from(result.signature).map(b => b.toString(16).padStart(2, '0')).join('');
+    
+    const formattedResult = `🔓 Stage 2: MLS Message Deserialized!
+
+Group ID: ${groupIdHex}
+Epoch: ${result.epoch}
+Sender: Member ${result.senderIndex}
+Signature: ${signatureHex.substring(0, 32)}...
+
+📨 Recovered Nostr Event:
+${parsedEvent ? JSON.stringify(parsedEvent, null, 2) : finalMessage}
+
+💬 Final Message Content:
+"${finalMessage}"`;
+
+    setStage2Result(formattedResult);
+    setCurrentStage('stage2');
+    console.log('✅ Stage 2 complete: MLS message deserialized and Nostr event recovered!');
+    
+    return result;
+  };
+
   const handleStage2Decrypt = async () => {
     setError('');
     setStage2Result('');
     
     try {
-      if (!stage1Result) {
+      if (!stage1Result || !mlsMessageBytes) {
         throw new Error('Must complete Stage 1 first');
       }
 
-      // Stage 2: Deserialize MLSMessage using WASM
-      console.log('🔍 Stage 2: Deserializing MLS message using WASM...');
-      
-      // The stage1Result is the base64-encoded MLSMessage
-      const mlsMessageBytes = Uint8Array.from(atob(stage1Result), c => c.charCodeAt(0));
-      console.log('📦 MLS message size:', mlsMessageBytes.length, 'bytes');
-      
-      // Use the WASM function to properly deserialize the MLS message
-      const result = deserializeMLSMessage(mlsMessageBytes);
-      
-      console.log('✅ MLS message deserialized successfully:', result);
+      const result = await performStage2Decrypt();
       
       // Extract the Nostr event from the application data
       let finalMessage = result.applicationData;
@@ -312,11 +363,11 @@ ${parsedEvent ? JSON.stringify(parsedEvent, null, 2) : finalMessage}
   const clearAll = () => {
     setEncryptedData('');
     setExporterSecret('');
-    setMlsSecret('');
     setStage1Result('');
     setStage2Result('');
     setError('');
     setCurrentStage('none');
+    setMlsMessageBytes(null);
   };
 
   return (
@@ -382,18 +433,14 @@ ${parsedEvent ? JSON.stringify(parsedEvent, null, 2) : finalMessage}
             <h3 className="text-sm font-bold text-purple-800">📦 Stage 2: MLS Deserialization (Inner Layer)</h3>
             
             <div className="space-y-2">
-              <label className="text-xs font-semibold">MLS Group Secret (64 hex chars):</label>
-              <textarea
-                value={mlsSecret}
-                onChange={(e) => setMlsSecret(e.target.value)}
-                placeholder="Paste MLS group secret (simulated for now)..."
-                className="w-full h-16 text-xs font-mono border rounded p-2 resize-none"
-              />
+              <p className="text-xs text-purple-700">
+                🔄 Automatically deserializes the MLS ciphertext from Stage 1 to extract the original message.
+              </p>
             </div>
             
             <Button 
               onClick={handleStage2Decrypt} 
-              disabled={!stage1Result || !mlsSecret || mlsSecret.length !== 64}
+              disabled={!stage1Result}
               size="sm"
               className="w-full"
               variant={currentStage === 'stage1' ? 'default' : 'outline'}
