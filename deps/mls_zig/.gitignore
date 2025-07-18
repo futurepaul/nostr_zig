@@ -1,0 +1,23 @@
+# Zig build artifacts
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Sample code and reference materials
+samples/
+
+# Documentation
+docs/
+
+# Build files
+build/
