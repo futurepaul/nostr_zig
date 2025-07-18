@@ -1,6 +1,7 @@
 import React from 'react';
 import { KeyPackage } from './MLSVisualizer';
 import { Card, CardContent } from './ui/card';
+import { InfoWrapper } from './InfoPanel';
 
 interface KeyPackageManagerProps {
   keyPackage: KeyPackage;
@@ -24,9 +25,11 @@ export function KeyPackageManager({ keyPackage }: KeyPackageManagerProps) {
               </div>
             </div>
           </div>
-          <div className="text-xs text-gray-500">
-            Published at {new Date(keyPackage.timestamp).toLocaleTimeString()}
-          </div>
+          <InfoWrapper tooltip="A KeyPackage contains your MLS credentials and a signing key (different from your Nostr identity key). It allows others to add you to groups asynchronously. The signing key is used for all MLS operations within groups and should be rotated regularly for security.">
+            <div className="text-xs text-gray-500">
+              Published at {new Date(keyPackage.timestamp).toLocaleTimeString()}
+            </div>
+          </InfoWrapper>
         </div>
       </CardContent>
     </Card>

@@ -1,68 +1,91 @@
 # NIP-EE Implementation Plan
 
-## Current Issues
+## ✅ Solved Issues (2025-07-18)
 
-### 1. `generateValidSecp256k1Key` Function is Broken
+### 1. Key Validation Functions Fixed
+- Created separate `validateSecp256k1Key` (validation-only) and `deriveValidKeyFromSeed` (key derivation) functions
+- Fixed `wasm_nip44_encrypt/decrypt` to validate without modifying keys
+- Ensured `generatePrivateKey()` always produces valid secp256k1 keys
 
-**Problem**: The `generateValidSecp256k1Key` function in `crypto.zig` is designed to take a seed and derive a valid key from it using SHA256 hashing. However:
-- It's being misused throughout the codebase as a "validator" for already-valid keys
-- It ALWAYS modifies the input, even if the input is already a valid secp256k1 key
-- This causes valid keys to become invalid when passed through NIP-44 encryption
+### 2. NIP-44 Encryption Working Consistently
+- Removed key modification from encryption/decryption functions
+- Exporter secrets from SHA256 hashes are properly derived to valid keys
+- All encryption tests pass consistently
 
-**Evidence**: 
-- `wasm_nip44_encrypt` calls this function on the exporter secret, modifying it
-- Our debug test shows that keys from `wasm_create_identity` work 80% of the time
-- But after passing through `generateValidSecp256k1Key`, they fail 60% of the time
+### 3. UI Improvements Completed
+- ✅ Messages box uses correct decryption method
+- ✅ Bob gets NIP-44 exporter secret when joining group
+- ✅ Exporter secret shown by default (no hide toggle)
+- ✅ Messaging panels are wider (4-4-4 layout)
+- ✅ Event inspector in center column below Nostr events
+- ✅ Message Flow and Protocol State below message decryptor
+- ✅ Global toast-style info panel replaces inline tooltips
+- ✅ Full width page layout
+- ✅ Group IDs match NIP-EE spec (32-byte hex, no prefix)
+- ✅ Alice sees when Bob joins the group
 
-**Root Cause**: The function is not idempotent - it's a key derivation function, not a validation function.
+## 🚧 TODO: Unimplemented NIP-EE Features
 
-### 2. NIP-44 Encryption Inconsistency
+Based on the NIP-EE specification, the following features are not yet implemented:
 
-**Problem**: NIP-44 encryption fails intermittently with "InvalidPublicKey" errors
-- The `wasm_nip44_encrypt` function modifies the input key before use
-- This modification sometimes produces invalid keys
+### 1. Core MLS Protocol Features
+- [ ] **MLS Protocol Version Support** - Need to handle `mls_protocol_version` tag (currently hardcoded to "1.0")
+- [ ] **Ciphersuite Selection** - Support multiple ciphersuites beyond default (spec mentions "0x0001")
+- [ ] **MLS Extensions Support** - Handle arbitrary extension IDs in KeyPackage events
+- [ ] **Last Resort KeyPackages** - Implement `last_resort` extension to minimize race conditions
 
-## Solutions
+### 2. Group Management
+- [ ] **Group Admin Controls** - Implement `admin_pubkeys` from nostr_group_data extension
+- [ ] **Group Name/Description** - Store and display group metadata from extension
+- [ ] **Relay List Management** - Use relay lists from nostr_group_data extension
+- [ ] **Proposal/Commit Ordering** - Handle race conditions with created_at timestamps
+- [ ] **Epoch Management** - Properly track and advance group epochs
+- [ ] **Member Removal** - Allow admins to remove members from groups
 
-### 1. Replace `generateValidSecp256k1Key` with Proper Functions
+### 3. Key Management
+- [ ] **Signing Key Rotation** - Implement automatic rotation for post-compromise security
+- [ ] **KeyPackage Deletion** - Delete consumed KeyPackages from relays
+- [ ] **Multiple KeyPackages** - Support publishing multiple KeyPackages with different parameters
+- [ ] **KeyPackage Relay List Event** - Implement kind 10051 for KeyPackage discovery
 
-We need TWO separate functions:
-1. `validateSecp256k1Key(key: [32]u8) bool` - Just checks if a key is valid, doesn't modify
-2. `deriveValidKeyFromSeed(seed: [32]u8) ![32]u8` - Derives a valid key from arbitrary seed
+### 4. Message Types
+- [ ] **Welcome Events (kind: 444)** - Implement NIP-59 gift-wrapped welcome messages
+- [ ] **Application Message Types** - Support kind 9 (chat), kind 7 (reactions), etc.
+- [ ] **Unsigned Inner Events** - Ensure inner Nostr events remain unsigned
+- [ ] **Ephemeral Keypairs** - Use new keypair for each Group Event (kind: 445)
 
-### 2. Fix Key Generation Flow
+### 5. Security Features
+- [ ] **Forward Secrecy** - Delete keys immediately after use
+- [ ] **Post-compromise Security** - Regular key rotation
+- [ ] **Device Compromise Protection** - Secure storage recommendations
+- [ ] **Message Authentication** - Verify sender identity matches inner event pubkey
 
-- `generatePrivateKey()` should ALWAYS produce valid secp256k1 keys
-- No need for post-processing or "fixing" keys after generation
-- If a key fails validation, generate a new one, don't try to "fix" it
+### 6. Advanced Features
+- [ ] **Multi-device Support** - Handle multiple clients per user
+- [ ] **Large Group Support** - Handle groups > 150 members (light welcomes)
+- [ ] **Cross-client Compatibility** - Support "client" tag for UX improvements
+- [ ] **Group State Recovery** - Retain previous states for fork recovery
 
-### 3. Fix NIP-44 Encryption
+### 7. Relay Integration
+- [ ] **Relay Acknowledgment** - Wait for relay confirmation before applying commits
+- [ ] **Multi-relay Publishing** - Publish to multiple relays from relay lists
+- [ ] **Protected Events** - Implement NIP-70 protected event support ("-" tag)
 
-- Remove the `generateValidSecp256k1Key` call from `wasm_nip44_encrypt`
-- Trust that the input is already a valid key
-- Add validation without modification if needed
+## 📝 Implementation Priority
 
-## Implementation Steps
+1. **High Priority** - Core functionality needed for basic operation:
+   - Welcome Events (kind: 444)
+   - Last Resort KeyPackages
+   - Signing Key Rotation
+   - Group Admin Controls
 
-1. [x] Create `validateSecp256k1Key` function that only validates
-2. [x] Rename `generateValidSecp256k1Key` to `deriveValidKeyFromSeed` (kept alias for compatibility)
-3. [x] Update `generatePrivateKey` to loop until it generates a valid key (already was doing this)
-4. [x] Remove key modification from `wasm_nip44_encrypt` and `wasm_nip44_decrypt`
-5. [x] Update nip_ee.zig to use `deriveValidKeyFromSeed` for exporter secrets
-6. [x] Test that NIP-44 encryption works consistently
+2. **Medium Priority** - Important for security and UX:
+   - Ephemeral Keypairs for Group Events
+   - KeyPackage Deletion
+   - Epoch Management
+   - Application Message Types
 
-## Results
-
-All tests now pass! The key insights were:
-- `generateValidSecp256k1Key` is a key derivation function, not a validation function
-- Exporter secrets from SHA256 hashes need to be converted to valid keys using derivation
-- Keys from `wasm_create_identity` are already valid and shouldn't be modified
-- Added `validateSecp256k1Key` for non-modifying validation
-- Fixed `wasm_nip44_encrypt/decrypt` to validate without modifying
-- Fixed `encryptWithExporterSecret/decryptWithExporterSecret` to properly derive keys
-
-## Testing Strategy
-
-- Run the same encryption 100 times to ensure consistency
-- Test with keys from different sources (generated, derived, imported)
-- Verify that valid keys remain valid through all operations
+3. **Low Priority** - Advanced features:
+   - Multi-device Support
+   - Large Group Support
+   - Cross-client Compatibility

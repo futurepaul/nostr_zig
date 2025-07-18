@@ -3,6 +3,9 @@ import { WasmProvider, useWasm } from './WasmProvider';
 import { ParticipantPanel } from './ParticipantPanel';
 import { ProtocolFlow } from './ProtocolFlow';
 import { NostrEventViewer } from './NostrEventViewer';
+import { MessageFlow } from './MessageFlow';
+import { StateTransitionDiagram } from './StateTransitionDiagram';
+import { InfoPanelProvider } from './InfoPanel';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 
@@ -112,15 +115,16 @@ export function MLSVisualizer() {
 
   return (
     <WasmProvider>
-      <div className="min-h-screen bg-gray-50 p-4">
-        <div className="max-w-7xl mx-auto">
-          <h1 className="text-3xl font-bold text-center mb-8">
-            NIP-EE MLS Visual Explainer
-          </h1>
+      <InfoPanelProvider>
+        <div className="min-h-screen bg-gray-50 p-4">
+          <div className="w-full">
+            <h1 className="text-3xl font-bold text-center mb-8">
+              NIP-EE MLS Visual Explainer
+            </h1>
           
-          <div className="grid grid-cols-12 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             {/* Alice Panel */}
-            <div className="col-span-3">
+            <div>
               <ParticipantPanel
                 name="Alice"
                 state={aliceState}
@@ -133,7 +137,7 @@ export function MLSVisualizer() {
             </div>
 
             {/* Protocol Flow */}
-            <div className="col-span-6">
+            <div>
               <ProtocolFlow
                 currentStep={currentStep}
                 aliceState={aliceState}
@@ -141,11 +145,13 @@ export function MLSVisualizer() {
                 events={allEvents}
                 onEventClick={setSelectedEvent}
                 knownIdentities={knownIdentities}
+                selectedEvent={selectedEvent}
+                setSelectedEvent={setSelectedEvent}
               />
             </div>
 
             {/* Bob Panel */}
-            <div className="col-span-3">
+            <div>
               <ParticipantPanel
                 name="Bob"
                 state={bobState}
@@ -158,24 +164,72 @@ export function MLSVisualizer() {
             </div>
           </div>
 
-          {/* Event Viewer */}
-          {selectedEvent && (
-            <div className="mt-8">
-              <NostrEventViewer
-                event={selectedEvent}
-                onClose={() => setSelectedEvent(null)}
-                knownIdentities={knownIdentities}
-              />
-            </div>
-          )}
-
           {/* PGP-style Decryptor */}
           <div className="mt-8">
             <DecryptorBox />
           </div>
+
+          {/* Message Flow and Protocol State */}
+          <div className="mt-8 grid grid-cols-2 gap-4">
+            <MessageFlowCard
+              aliceState={aliceState}
+              bobState={bobState}
+              currentStep={currentStep}
+              events={allEvents}
+              knownIdentities={knownIdentities}
+            />
+            <ProtocolStateCard currentStep={currentStep} />
+          </div>
         </div>
       </div>
+      </InfoPanelProvider>
     </WasmProvider>
+  );
+}
+
+// Message Flow Card component
+function MessageFlowCard({
+  aliceState,
+  bobState,
+  currentStep,
+  events,
+  knownIdentities,
+}: {
+  aliceState: MLSState;
+  bobState: MLSState;
+  currentStep: ProtocolStep;
+  events: NostrEvent[];
+  knownIdentities?: Map<string, any>;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Message Flow</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <MessageFlow
+          aliceState={aliceState}
+          bobState={bobState}
+          currentStep={currentStep}
+          events={events}
+          knownIdentities={knownIdentities}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+// Protocol State Card component
+function ProtocolStateCard({ currentStep }: { currentStep: ProtocolStep }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Protocol State</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <StateTransitionDiagram currentStep={currentStep} />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -281,10 +335,9 @@ ${JSON.stringify(parsedEvent, null, 2)}
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-blue-800">
           🔐 Message Decryptor
-          <span className="text-sm font-normal text-blue-600">(PGP-style UI)</span>
         </CardTitle>
         <CardDescription className="text-blue-700">
-          Paste encrypted message data and decryption key to see how NIP-EE double encryption works
+          Paste encrypted message data and exporter secret to decrypt NIP-EE group messages. The content contains a serialized MLS MLSMessage encrypted with NIP-44.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -345,16 +398,6 @@ ${JSON.stringify(parsedEvent, null, 2)}
             <div className="text-sm text-red-600 font-mono">{error}</div>
           </div>
         )}
-
-        {/* Educational Info */}
-        <div className="text-xs text-gray-600 bg-blue-50 p-3 rounded">
-          <div className="font-semibold mb-1">💡 How NIP-EE Double Encryption Works:</div>
-          <div className="space-y-1">
-            <div><strong>Layer 1 (Inner):</strong> MLS encryption using group-derived secrets</div>
-            <div><strong>Layer 2 (Outer):</strong> NIP-44 v2 encryption using exporter secret</div>
-            <div><strong>Result:</strong> Only group members with current keys can decrypt</div>
-          </div>
-        </div>
       </CardContent>
     </Card>
   );

@@ -7,7 +7,7 @@ import { MessageComposer } from './MessageComposer';
 import { useWasm } from './WasmProvider';
 import { MLSState, ProtocolStep, Message, GroupState } from './MLSVisualizer';
 import { bytesToHex, createNostrEventIdSync, signNostrEvent } from '../utils/wasm-crypto';
-import { InfoTooltip } from './InfoTooltip';
+import { InfoWrapper } from './InfoPanel';
 
 interface ParticipantPanelProps {
   name: string;
@@ -28,7 +28,7 @@ export function ParticipantPanel({
   setCurrentStep,
   isCreator,
 }: ParticipantPanelProps) {
-  const { isReady, createIdentity, createKeyPackage, createGroup } = useWasm();
+  const { isReady, createIdentity, createKeyPackage, createGroup, generateExporterSecret } = useWasm();
   
   // Watch for encrypted messages from the other participant
   React.useEffect(() => {
@@ -53,6 +53,26 @@ export function ParticipantPanel({
       }
     });
   }, [otherState.events, state.messages, setState, otherState.identity]);
+
+  // Watch for group membership changes from the other participant
+  React.useEffect(() => {
+    if (!isCreator) return; // Only Alice needs to sync Bob's membership
+    
+    // Check if Bob has joined any groups
+    otherState.groups.forEach((otherGroup, groupId) => {
+      const myGroup = state.groups.get(groupId);
+      if (myGroup && otherGroup.members.includes('Bob') && !myGroup.members.includes('Bob')) {
+        // Update Alice's view to show Bob has joined
+        setState(prev => ({
+          ...prev,
+          groups: new Map(prev.groups).set(groupId, {
+            ...myGroup,
+            members: [...myGroup.members, 'Bob']
+          })
+        }));
+      }
+    });
+  }, [otherState.groups, state.groups, setState, isCreator]);
 
   const handleCreateIdentity = () => {
     if (!isReady) return;
@@ -126,10 +146,15 @@ export function ParticipantPanel({
   const handleCreateGroup = () => {
     if (!isReady || !state.identity || !isCreator) return;
 
-    const groupId = `group_${Date.now()}`;
+    // Generate a random 32-byte group ID as per NIP-EE spec
+    const groupIdBytes = new Uint8Array(32);
+    crypto.getRandomValues(groupIdBytes);
+    const groupId = bytesToHex(groupIdBytes);
+    
     console.log('Creating group with identity:', {
       privateKeyLength: state.identity.privateKey.length,
-      publicKeyLength: state.identity.publicKey.length
+      publicKeyLength: state.identity.publicKey.length,
+      groupId: groupId
     });
     
     const groupStateData = createGroup(state.identity.privateKey, state.identity.publicKey);
@@ -140,10 +165,24 @@ export function ParticipantPanel({
       return;
     }
     
+    // Generate exporter secret when creating the group
+    let exporterSecret: Uint8Array;
+    try {
+      exporterSecret = generateExporterSecret(groupStateData);
+      console.log('Alice generated exporter secret on group creation:', bytesToHex(exporterSecret));
+    } catch (error) {
+      console.error('Failed to generate exporter secret:', error);
+      // Fallback to a random secret for demo
+      exporterSecret = new Uint8Array(32);
+      crypto.getRandomValues(exporterSecret);
+      console.log('Alice using fallback random exporter secret:', bytesToHex(exporterSecret));
+    }
+    
     const groupState = {
       id: groupId,
       state: groupStateData,
       members: [name],
+      exporterSecret,
     };
 
     setState(prev => ({
@@ -222,11 +261,25 @@ export function ParticipantPanel({
     const aliceGroup = Array.from(otherState.groups.values())[0];
     if (!aliceGroup) return;
 
+    // Generate exporter secret for Bob when joining the group
+    let exporterSecret: Uint8Array;
+    try {
+      exporterSecret = generateExporterSecret(aliceGroup.state);
+      console.log('Bob generated exporter secret on join:', bytesToHex(exporterSecret));
+    } catch (error) {
+      console.error('Failed to generate exporter secret:', error);
+      // Fallback to a random secret for demo
+      exporterSecret = new Uint8Array(32);
+      crypto.getRandomValues(exporterSecret);
+      console.log('Bob using fallback random exporter secret:', bytesToHex(exporterSecret));
+    }
+
     setState(prev => ({
       ...prev,
       groups: new Map(prev.groups).set(aliceGroup.id, {
         ...aliceGroup,
         members: [...aliceGroup.members, name],
+        exporterSecret,
       }),
     }));
 
@@ -261,7 +314,7 @@ export function ParticipantPanel({
         {state.identity && currentStep >= 'keyPackages' && (
           <div>
             {!state.keyPackage ? (
-              <InfoTooltip tooltip="KeyPackages contain a signing key (different from Nostr identity) and credentials. They allow asynchronous group invitations. Each user must publish at least one KeyPackage to be reachable for MLS messaging.">
+              <InfoWrapper tooltip="KeyPackages contain a signing key (different from Nostr identity) and credentials. They allow asynchronous group invitations. Each user must publish at least one KeyPackage to be reachable for MLS messaging.">
                 <Button 
                   onClick={handleCreateKeyPackage}
                   disabled={!isReady || currentStep !== 'keyPackages'}
@@ -269,7 +322,7 @@ export function ParticipantPanel({
                 >
                   Publish Key Package
                 </Button>
-              </InfoTooltip>
+              </InfoWrapper>
             ) : (
               <KeyPackageManager keyPackage={state.keyPackage} />
             )}
@@ -300,9 +353,9 @@ export function ParticipantPanel({
         {/* Group Membership */}
         {state.groups.size > 0 && (
           <div className="space-y-2">
-            <InfoTooltip tooltip="Groups are created with a random 32-byte ID that is private to the group. Each group has its own cryptographic state including signing keys and encryption secrets.">
+            <InfoWrapper tooltip="Groups are created with a random 32-byte ID that is private to the group. Each group has its own cryptographic state including signing keys and encryption secrets.">
               <h4 className="font-semibold">Groups</h4>
-            </InfoTooltip>
+            </InfoWrapper>
             {Array.from(state.groups.values()).map(group => (
               <GroupDisplay key={group.id} group={group} />
             ))}
@@ -320,9 +373,9 @@ export function ParticipantPanel({
         {/* Message History */}
         {state.messages.length > 0 && (
           <div className="space-y-2">
-            <InfoTooltip tooltip="Messages are encrypted with double-layer encryption: MLS (inner) + NIP-44 (outer). Each message uses a unique ephemeral key for signing. Group events are published with kind 445.">
+            <InfoWrapper tooltip="Messages are sent as serialized MLS MLSMessage objects, then encrypted with NIP-44 using the group's exporter secret. The MLS format handles framing, authentication, and ordering. Each message should use a unique ephemeral key for privacy. Group events are published with kind 445.">
               <h4 className="font-semibold">Messages</h4>
-            </InfoTooltip>
+            </InfoWrapper>
             <div className="max-h-40 overflow-y-auto space-y-1">
               {state.messages.map((msg, idx) => (
                 <MessageDisplay
@@ -347,8 +400,6 @@ interface GroupDisplayProps {
 }
 
 function GroupDisplay({ group }: GroupDisplayProps) {
-  const [showKeys, setShowKeys] = useState(false);
-
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     console.log(`Copied ${label} to clipboard`);
@@ -356,44 +407,34 @@ function GroupDisplay({ group }: GroupDisplayProps) {
 
   return (
     <div className="text-sm bg-gray-100 p-2 rounded space-y-2">
-      <div className="font-mono text-xs">{group.id}</div>
+      <div className="font-mono text-xs break-all">{group.id}</div>
       <div>Members: {group.members.join(', ')}</div>
       
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={() => setShowKeys(!showKeys)}
-        className="text-xs"
-      >
-        {showKeys ? 'Hide' : 'Show'} Decryption Keys
-      </Button>
-      
-      {showKeys && (
-        <div className="space-y-2 border-t pt-2">
-          {group.exporterSecret && (
-            <div>
-              <InfoTooltip tooltip="The exporter secret is derived from MLS group state with 'nostr' label. It's used as the private key for NIP-44 v2 encryption (outer layer). This secret rotates on each new epoch to provide forward secrecy.">
-                <div className="text-xs font-semibold text-blue-600">NIP-44 Exporter Secret:</div>
-              </InfoTooltip>
-              <div className="font-mono text-xs break-all bg-white p-1 rounded">
-                {bytesToHex(group.exporterSecret)}
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => copyToClipboard(bytesToHex(group.exporterSecret!), 'Exporter Secret')}
-                className="text-xs mt-1"
-              >
-                📋 Copy
-              </Button>
+      <div className="space-y-2 border-t pt-2">
+        {group.exporterSecret && (
+          <div>
+            <InfoWrapper tooltip="The exporter secret is derived from MLS group state with 'nostr' label. It's used as the private key for NIP-44 v2 encryption (outer layer). This secret rotates on each new epoch to provide forward secrecy.">
+              <div className="text-xs font-semibold text-blue-600">NIP-44 Exporter Secret:</div>
+            </InfoWrapper>
+            <div className="font-mono text-xs break-all bg-white p-1 rounded">
+              {bytesToHex(group.exporterSecret)}
             </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => copyToClipboard(bytesToHex(group.exporterSecret!), 'Exporter Secret')}
+              className="text-xs mt-1"
+            >
+              📋 Copy
+            </Button>
+          </div>
           )}
           
           {group.groupSecret && (
             <div>
-              <InfoTooltip tooltip="The MLS group secret is used for the inner encryption layer. It's derived from the MLS ratchet tree and provides the core group encryption. This is separate from the NIP-44 layer.">
+              <InfoWrapper tooltip="The MLS group secret is used for the inner encryption layer. It's derived from the MLS ratchet tree and provides the core group encryption. This is separate from the NIP-44 layer.">
                 <div className="text-xs font-semibold text-green-600">MLS Group Secret:</div>
-              </InfoTooltip>
+              </InfoWrapper>
               <div className="font-mono text-xs break-all bg-white p-1 rounded">
                 {bytesToHex(group.groupSecret)}
               </div>
@@ -408,13 +449,12 @@ function GroupDisplay({ group }: GroupDisplayProps) {
             </div>
           )}
           
-          {!group.exporterSecret && !group.groupSecret && (
-            <div className="text-xs text-gray-500 italic">
-              Decryption keys will appear after sending messages
-            </div>
-          )}
-        </div>
-      )}
+        {!group.exporterSecret && !group.groupSecret && (
+          <div className="text-xs text-gray-500 italic">
+            Decryption keys will appear after sending messages
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -429,6 +469,7 @@ interface MessageDisplayProps {
 
 function MessageDisplay({ message, state, setState, otherState }: MessageDisplayProps) {
   const [isDecrypting, setIsDecrypting] = useState(false);
+  const { decryptGroupMessage } = useWasm();
   
   // Check if this is an encrypted message from the other participant
   const isEncryptedFromOther = message.sender !== state.identity?.nickname && message.encrypted;
@@ -471,12 +512,23 @@ function MessageDisplay({ message, state, setState, otherState }: MessageDisplay
         throw new Error('No encrypted content found in event');
       }
       
+      // Find the group to get the exporter secret
+      const groupId = event.tags.find(tag => tag[0] === 'h')?.[1];
+      if (!groupId) {
+        throw new Error('No group ID found in event');
+      }
+      
+      const group = state.groups.get(groupId);
+      if (!group || !group.exporterSecret) {
+        throw new Error('No group or exporter secret found');
+      }
+      
+      // Decode the base64 encrypted content to bytes
+      const ciphertextBytes = Uint8Array.from(atob(encryptedContent), c => c.charCodeAt(0));
+      
       // Perform two-stage decryption using WASM
-      const decryptedJson = await wasm.receiveMessage(
-        state.groupState,
-        state.privateKey,
-        encryptedContent
-      );
+      const decryptedBytes = decryptGroupMessage(group.exporterSecret, ciphertextBytes);
+      const decryptedJson = new TextDecoder().decode(decryptedBytes);
       
       console.log('Decrypted JSON:', decryptedJson);
       
@@ -546,7 +598,7 @@ function MessageDisplay({ message, state, setState, otherState }: MessageDisplay
           </Button>
         )}
         {isOwnMessage && message.eventId && (
-          <InfoTooltip tooltip="Copies the complete encrypted Nostr event (kind 445) including the double-encrypted content, ephemeral pubkey, group ID tag, and signature. Use this with the decryptor below.">
+          <InfoWrapper tooltip="Copies the complete encrypted Nostr event (kind 445). The content field contains a serialized MLS MLSMessage object that has been encrypted with NIP-44 using the group's exporter secret. The event includes ephemeral pubkey, group ID tag, and signature.">
             <Button 
               size="sm" 
               variant="outline" 
@@ -555,7 +607,7 @@ function MessageDisplay({ message, state, setState, otherState }: MessageDisplay
             >
               📋 Copy Encrypted
             </Button>
-          </InfoTooltip>
+          </InfoWrapper>
         )}
       </div>
     </div>

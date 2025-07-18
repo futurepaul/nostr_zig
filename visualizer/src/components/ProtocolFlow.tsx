@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { StateTransitionDiagram } from './StateTransitionDiagram';
 import { EventTimeline } from './EventTimeline';
 import { MessageFlow } from './MessageFlow';
+import { NostrEventViewer } from './NostrEventViewer';
 import { MLSState, NostrEvent, ProtocolStep } from './MLSVisualizer';
 
 interface ProtocolFlowProps {
@@ -12,6 +13,8 @@ interface ProtocolFlowProps {
   events: NostrEvent[];
   onEventClick: (event: NostrEvent) => void;
   knownIdentities?: Map<string, any>;
+  selectedEvent?: NostrEvent | null;
+  setSelectedEvent?: (event: NostrEvent | null) => void;
 }
 
 export function ProtocolFlow({
@@ -21,7 +24,16 @@ export function ProtocolFlow({
   events,
   onEventClick,
   knownIdentities,
+  selectedEvent,
+  setSelectedEvent,
 }: ProtocolFlowProps) {
+  // Debug logging
+  console.log('ProtocolFlow render:', { 
+    hasSelectedEvent: !!selectedEvent, 
+    hasSetSelectedEvent: !!setSelectedEvent,
+    selectedEventId: selectedEvent?.id 
+  });
+
   return (
     <div className="space-y-4">
       {/* Event Timeline - Now at the top */}
@@ -34,31 +46,14 @@ export function ProtocolFlow({
         </CardContent>
       </Card>
 
-      {/* Message Flow */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Message Flow</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <MessageFlow
-            aliceState={aliceState}
-            bobState={bobState}
-            currentStep={currentStep}
-            events={events}
-            knownIdentities={knownIdentities}
-          />
-        </CardContent>
-      </Card>
-
-      {/* State Diagram - Now at the bottom */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Protocol State</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <StateTransitionDiagram currentStep={currentStep} />
-        </CardContent>
-      </Card>
+      {/* Event Viewer */}
+      {selectedEvent && (
+        <NostrEventViewer
+          event={selectedEvent}
+          onClose={() => setSelectedEvent ? setSelectedEvent(null) : () => {}}
+          knownIdentities={knownIdentities}
+        />
+      )}
     </div>
   );
 }
