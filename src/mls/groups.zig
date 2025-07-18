@@ -357,7 +357,7 @@ fn deriveEpochSecrets(
     @memcpy(&epoch_secrets.sender_data_secret, sender_data_secret[0..32]);
     @memcpy(&epoch_secrets.encryption_secret, encryption_secret[0..32]);
     @memcpy(&epoch_secrets.exporter_secret, exporter_secret[0..32]);
-    @memcpy(&epoch_secrets.authentication_secret, authentication_secret[0..32]);
+    @memcpy(&epoch_secrets.epoch_authenticator, authentication_secret[0..32]);
     @memcpy(&epoch_secrets.external_secret, external_secret[0..32]);
     @memcpy(&epoch_secrets.confirmation_key, confirmation_key[0..32]);
     @memcpy(&epoch_secrets.membership_key, membership_key[0..32]);
@@ -574,6 +574,13 @@ test "group creation with admins" {
     
     const result = try createGroup(allocator, &mls_provider, creator_private_key, params, &.{});
     defer {
+        // Free member identities
+        for (result.state.members) |member| {
+            switch (member.credential) {
+                .basic => |basic| allocator.free(basic.identity),
+                else => {},
+            }
+        }
         allocator.free(result.state.members);
         for (result.state.group_context.extensions) |ext| {
             allocator.free(ext.extension_data);

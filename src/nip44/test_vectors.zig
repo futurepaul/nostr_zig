@@ -360,9 +360,15 @@ pub const TestVectorRunner = struct {
             const payload = try v2.encryptWithNonce(self.allocator, conversation_key, nonce_array, plaintext);
             defer self.allocator.free(payload);
             
-            // Verify payload SHA256
+            // Base64 encode the payload (test checks hash of base64-encoded data)
+            const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
+            const encoded = try self.allocator.alloc(u8, encoded_len);
+            defer self.allocator.free(encoded);
+            _ = std.base64.standard.Encoder.encode(encoded, payload);
+            
+            // Verify payload SHA256 (of base64-encoded data)
             var payload_hash: [32]u8 = undefined;
-            crypto.hash.sha2.Sha256.hash(payload, &payload_hash, .{});
+            crypto.hash.sha2.Sha256.hash(encoded, &payload_hash, .{});
             const payload_hash_hex = try bytesToHex(self.allocator, &payload_hash);
             defer self.allocator.free(payload_hash_hex);
             

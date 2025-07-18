@@ -5,6 +5,7 @@ const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 const secp = @import("secp256k1");
 const Nip44Error = @import("mod.zig").Nip44Error;
 const wasm_random = @import("../wasm_random.zig");
+const hkdf = @import("../crypto/hkdf.zig");
 
 /// NIP-44 v2 implementation
 pub const VERSION = 0x02;
@@ -16,8 +17,10 @@ pub const ConversationKey = struct {
     /// Create conversation key from ECDH shared secret
     pub fn fromSharedSecret(shared_secret: [32]u8) ConversationKey {
         // HKDF-Extract(salt="nip44-v2", ikm=shared_secret)
+        // Use direct HMAC-SHA256 since HKDF standard library has compatibility issues
         const salt = "nip44-v2";
-        const conversation_key = crypto.kdf.hkdf.HkdfSha256.extract(salt, &shared_secret);
+        var conversation_key: [32]u8 = undefined;
+        crypto.auth.hmac.sha2.HmacSha256.create(&conversation_key, &shared_secret, salt);
         return ConversationKey{ .key = conversation_key };
     }
     
@@ -29,13 +32,15 @@ pub const ConversationKey = struct {
     
     /// Derive message keys for encryption/decryption
     pub fn deriveMessageKeys(self: ConversationKey, nonce: [32]u8) Nip44Error!MessageKeys {
-        // HKDF-Expand(conversation_key, nonce, 76 bytes)
+        // HKDF-Expand equivalent using HMAC-SHA256
+        // Use shared HKDF implementation
         var expanded: [76]u8 = undefined;
-        crypto.kdf.hkdf.HkdfSha256.expand(&expanded, &nonce, self.key);
+        hkdf.expandInPlace(&expanded, &self.key, &nonce);
         
         return MessageKeys.fromExpanded(expanded);
     }
 };
+
 
 /// Message-specific keys derived from conversation key and nonce
 pub const MessageKeys = struct {
@@ -119,11 +124,23 @@ pub fn unpadMessage(allocator: std.mem.Allocator, padded: []const u8) Nip44Error
     
     if (content_len > padded.len - 2) return Nip44Error.InvalidPadding;
     
-    // Empty messages (content_len == 0) are allowed
-    const content = try allocator.alloc(u8, content_len);
-    if (content_len > 0) {
-        @memcpy(content, padded[2..2 + content_len]);
+    // NIP-44 padding validation: padded length must equal 2 + calc_padded_len(content_len)
+    const expected_padded_len = 2 + calcPaddedLen(content_len);
+    if (padded.len != expected_padded_len) {
+        return Nip44Error.InvalidPadding;
     }
+    
+    // Verify that all padding bytes are zeros
+    for (2 + content_len..padded.len) |i| {
+        if (padded[i] != 0) {
+            return Nip44Error.InvalidPadding;
+        }
+    }
+    
+    // Empty messages (content_len == 0) are allowed in padding tests
+    
+    const content = try allocator.alloc(u8, content_len);
+    @memcpy(content, padded[2..2 + content_len]);
     
     return content;
 }
@@ -165,10 +182,10 @@ fn generateSharedSecret(secret_key: [32]u8, public_key: [32]u8) Nip44Error!([32]
     if (secp.secp256k1_xonly_pubkey_parse(ctx, &xonly_pubkey, &public_key) != 1) {
         // Debug: log the public key that failed (only for non-WASM builds)
         if (builtin.target.cpu.arch != .wasm32) {
-            std.debug.print("Failed to parse xonly pubkey. First 8 bytes: {x} {x} {x} {x} {x} {x} {x} {x}\n", .{
-                public_key[0], public_key[1], public_key[2], public_key[3],
-                public_key[4], public_key[5], public_key[6], public_key[7]
-            });
+            // std.debug.print("Failed to parse xonly pubkey. First 8 bytes: {x} {x} {x} {x} {x} {x} {x} {x}\n", .{
+            //     public_key[0], public_key[1], public_key[2], public_key[3],
+            //     public_key[4], public_key[5], public_key[6], public_key[7]
+            // });
         }
         return Nip44Error.InvalidPublicKey;
     }

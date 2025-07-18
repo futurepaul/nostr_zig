@@ -25,6 +25,7 @@
 - WASM exports should be simple function calls to the pure Zig implementation
 - Create corresponding tests in `wasm_tests/the_new_feature.ts` that mirror the pure Zig tests
 - Avoid business logic in WASM exports - they should only handle memory management and type conversion
+- Always use WASM-safe abstractions for time (`wasm_time.zig`) and randomness (`wasm_random.zig`)
 
 ### 5. **Visualizer Last**
 - Only update the visualizer after both pure Zig and WASM tests are passing
@@ -45,7 +46,11 @@ src/
 ├── nip44/v2.zig         # NIP-44 encryption implementation
 ├── mls/*.zig            # MLS protocol logic using mls_zig
 ├── wasm_exports.zig     # Thin WASM wrappers
-└── crypto.zig           # Cryptographic utilities
+├── crypto.zig           # Cryptographic utilities
+├── wasm_random.zig      # WASM-safe random number generation
+├── wasm_time.zig        # WASM-safe timestamp abstraction
+└── crypto/
+    └── hkdf.zig         # Shared HKDF implementation
 
 tests/                   # Pure Zig tests
 wasm_tests/             # WASM-specific tests
@@ -200,6 +205,23 @@ fn processBuffer(comptime is_wasm: bool, buffer: []u8) void {
 }
 ```
 
+### WASM-Safe Abstractions
+```zig
+// Good: Abstract POSIX dependencies
+const wasm_time = @import("wasm_time.zig");
+const now = wasm_time.timestamp(); // Works in both native and WASM
+
+// Bad: Direct POSIX usage
+const now = std.time.timestamp(); // Fails in WASM
+
+// Good: WASM-safe randomness
+const wasm_random = @import("wasm_random.zig");
+wasm_random.secure_random.bytes(&buffer);
+
+// Bad: std crypto random
+std.crypto.random.bytes(&buffer); // Fails in WASM
+```
+
 ## File Structure
 
 ```
@@ -250,12 +272,19 @@ wasm_tests/            # WASM-specific tests
 - Don't ignore secp256k1 function return values
 - Don't use ECDSA functions for Schnorr signatures
 - Don't forget to validate private keys before use
+- Don't duplicate HKDF/HMAC implementations - use shared modules
 
 ### Testing
 - Don't rely only on WASM tests for correctness
 - Don't skip error path testing
 - Don't use fake or placeholder cryptography in tests
 - Don't forget to test complete round-trips
+
+### WASM/POSIX Compatibility
+- Don't use `std.debug.print` in WASM-compiled code (causes POSIX errors)
+- Don't use `std.time.timestamp()` directly - abstract it for WASM
+- Don't use `std.crypto.random` - use `wasm_random` module instead
+- Don't use `std.Random` PRNG - it depends on POSIX functionality
 
 ## Migration Strategy
 

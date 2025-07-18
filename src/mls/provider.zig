@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const mls_zig = @import("mls_zig");
 const wasm_random = @import("../wasm_random.zig");
+const wasm_time = @import("../wasm_time.zig");
 
 /// MLS Provider interface for cryptographic operations
 pub const MlsProvider = struct {
@@ -256,7 +257,7 @@ fn defaultRandomFill(buffer: []u8) void {
 }
 
 fn defaultNow() u64 {
-    return @intCast(std.time.timestamp());
+    return @intCast(wasm_time.timestamp());
 }
 
 test "provider initialization" {

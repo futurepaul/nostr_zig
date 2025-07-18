@@ -221,6 +221,9 @@ fn freeKeyPackage(allocator: std.mem.Allocator, kp: mls.types.KeyPackage) void {
     allocator.free(kp.leaf_node.capabilities.proposals);
     allocator.free(kp.leaf_node.capabilities.credentials);
     
+    // Free the extensions array
+    allocator.free(kp.extensions);
+    
     for (kp.leaf_node.extensions) |ext| {
         allocator.free(ext.extension_data);
     }
@@ -259,9 +262,22 @@ test "MLS workflow example" {
     const allocator = std.testing.allocator;
     var mls_provider = mls.provider.MlsProvider.init(allocator);
     
-    // Generate test keys
-    const alice_key: [32]u8 = [_]u8{1} ** 32;
-    const bob_key: [32]u8 = [_]u8{2} ** 32;
+    // Generate test keys - use SHA256 of known strings as seeds for deterministic tests
+    const alice_seed_str = "alice_test_seed_for_mls_workflow";
+    const bob_seed_str = "bob_test_seed_for_mls_workflow";
+    
+    var alice_seed: [32]u8 = undefined;
+    var bob_seed: [32]u8 = undefined;
+    
+    std.crypto.hash.sha2.Sha256.hash(alice_seed_str, &alice_seed, .{});
+    std.crypto.hash.sha2.Sha256.hash(bob_seed_str, &bob_seed, .{});
+    
+    const alice_key = try crypto.deriveValidKeyFromSeed(alice_seed);
+    const bob_key = try crypto.deriveValidKeyFromSeed(bob_seed);
+    
+    // Verify the keys are valid secp256k1 keys
+    _ = try crypto.getPublicKey(alice_key);
+    _ = try crypto.getPublicKey(bob_key);
     
     // Bob generates a key package
     const bob_kp = try mls.key_packages.generateKeyPackage(

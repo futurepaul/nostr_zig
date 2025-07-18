@@ -395,7 +395,7 @@ fn decryptGroupInfo(
     };
 }
 
-fn freeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) void {
+pub fn freeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) void {
     for (welcome.secrets) |secrets| {
         allocator.free(secrets.new_member);
         allocator.free(secrets.encrypted_group_secrets);
@@ -430,7 +430,7 @@ fn createGroupSecrets(allocator: std.mem.Allocator, group_state: *const mls.MlsG
     try buf.appendSlice(&group_state.epoch_secrets.sender_data_secret);
     try buf.appendSlice(&group_state.epoch_secrets.encryption_secret);
     try buf.appendSlice(&group_state.epoch_secrets.exporter_secret);
-    try buf.appendSlice(&group_state.epoch_secrets.authentication_secret);
+    try buf.appendSlice(&group_state.epoch_secrets.epoch_authenticator);
     try buf.appendSlice(&group_state.epoch_secrets.external_secret);
     try buf.appendSlice(&group_state.epoch_secrets.confirmation_key);
     try buf.appendSlice(&group_state.epoch_secrets.membership_key);
@@ -457,7 +457,7 @@ fn reconstructEpochSecrets(allocator: std.mem.Allocator, data: []const u8) !mls.
     offset += 32;
     @memcpy(&secrets.exporter_secret, data[offset..offset + 32]);
     offset += 32;
-    @memcpy(&secrets.authentication_secret, data[offset..offset + 32]);
+    @memcpy(&secrets.epoch_authenticator, data[offset..offset + 32]);
     offset += 32;
     @memcpy(&secrets.external_secret, data[offset..offset + 32]);
     offset += 32;
@@ -500,10 +500,14 @@ test "create group secrets" {
         .ratchet_tree = &.{},
         .interim_transcript_hash = [_]u8{0} ** 32,
         .epoch_secrets = mls.EpochSecrets{
+            .joiner_secret = [_]u8{0} ** 32,
+            .member_secret = [_]u8{0} ** 32,
+            .welcome_secret = [_]u8{0} ** 32,
+            .epoch_secret = [_]u8{0} ** 32,
             .sender_data_secret = [_]u8{1} ** 32,
             .encryption_secret = [_]u8{2} ** 32,
             .exporter_secret = [_]u8{3} ** 32,
-            .authentication_secret = [_]u8{4} ** 32,
+            .epoch_authenticator = [_]u8{4} ** 32,
             .external_secret = [_]u8{5} ** 32,
             .confirmation_key = [_]u8{6} ** 32,
             .membership_key = [_]u8{7} ** 32,

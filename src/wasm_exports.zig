@@ -11,6 +11,7 @@ const mls_zig = @import("mls_zig");
 const key_packages = @import("mls/key_packages.zig");
 const provider = @import("mls/provider.zig");
 const wasm_random = @import("wasm_random.zig");
+const hkdf = @import("crypto/hkdf.zig");
 
 // Declare the external functions directly here
 extern fn getRandomValues(buf: [*]u8, len: usize) void;
@@ -490,10 +491,8 @@ export fn wasm_derive_exporter_secret(
     // This follows the MLS exporter secret generation pattern
     const info = nostr_label ++ &epoch_bytes;
     
-    // HKDF-Expand(group_secret, info, 32)
-    const hkdf = std.crypto.kdf.hkdf;
-    const group_secret_array = group_secret[0..32].*;
-    hkdf.HkdfSha256.expand(out_exporter_secret[0..32], info, group_secret_array);
+    // HKDF-Expand(group_secret, info, 32) - Use shared implementation
+    hkdf.expandInPlace(out_exporter_secret[0..32], group_secret[0..32], info);
     
     return true;
 }
@@ -1215,6 +1214,257 @@ export fn wasm_nip_ee_generate_exporter_secret(
     
     // Copy result (exporter secret is always 32 bytes)
     @memcpy(out_secret[0..32], &exporter_secret);
+    
+    return true;
+}
+
+
+// Welcome Events (NIP-EE kind: 444) exports
+
+const welcome_events = @import("mls/welcome_events.zig");
+const nip59 = @import("mls/nip59.zig");
+
+/// Create a gift-wrapped Welcome Event
+/// Returns gift-wrapped event JSON string
+export fn wasm_create_welcome_event(
+    sender_privkey: [*]const u8,    // 32 bytes
+    recipient_pubkey: [*]const u8,  // 32 bytes  
+    mls_welcome_data: [*]const u8,
+    mls_welcome_data_len: u32,
+    key_package_event_id: [*]const u8,
+    key_package_event_id_len: u32,
+    relays_json: [*]const u8,       // JSON array of relay URLs
+    relays_json_len: u32,
+    out_event_json: [*]u8,
+    out_len: *u32,
+) bool {
+    const allocator = getAllocator();
+    
+    // Parse inputs
+    const sender_key = sender_privkey[0..32].*;
+    const recipient_key = recipient_pubkey[0..32].*;
+    const welcome_data = mls_welcome_data[0..mls_welcome_data_len];
+    const keypackage_id = key_package_event_id[0..key_package_event_id_len];
+    const relays_str = relays_json[0..relays_json_len];
+    
+    // Parse relay URLs from JSON
+    const parsed = std.json.parseFromSlice(
+        [][]const u8,
+        allocator,
+        relays_str,
+        .{}
+    ) catch return false;
+    defer parsed.deinit();
+    
+    // Parse MLS Welcome message
+    const mls_welcome = @import("mls/welcomes.zig").parseWelcome(
+        allocator,
+        welcome_data,
+    ) catch return false;
+    defer @import("mls/welcomes.zig").freeWelcome(allocator, mls_welcome);
+    
+    // Create Welcome Event
+    const wrapped_event = welcome_events.WelcomeEvent.create(
+        allocator,
+        sender_key,
+        recipient_key,
+        mls_welcome,
+        keypackage_id,
+        parsed.value,
+    ) catch return false;
+    defer wrapped_event.deinit(allocator);
+    
+    // Serialize to JSON
+    const event_json = wrapped_event.toJson(allocator) catch return false;
+    defer allocator.free(event_json);
+    
+    // Check buffer size
+    if (out_len.* < event_json.len) {
+        out_len.* = @intCast(event_json.len);
+        return false;
+    }
+    
+    // Copy result
+    @memcpy(out_event_json[0..event_json.len], event_json);
+    out_len.* = @intCast(event_json.len);
+    
+    return true;
+}
+
+/// Parse a gift-wrapped Welcome Event
+/// Returns the parsed Welcome data and metadata
+export fn wasm_parse_welcome_event(
+    wrapped_event_json: [*]const u8,
+    wrapped_event_json_len: u32,
+    recipient_privkey: [*]const u8,  // 32 bytes
+    out_mls_welcome: [*]u8,
+    out_mls_welcome_len: *u32,
+    out_keypackage_id: [*]u8,
+    out_keypackage_id_len: *u32,
+    out_relays_json: [*]u8,
+    out_relays_json_len: *u32,
+) bool {
+    const allocator = getAllocator();
+    
+    // Parse inputs
+    const recipient_key = recipient_privkey[0..32].*;
+    const event_json = wrapped_event_json[0..wrapped_event_json_len];
+    
+    // Parse event from JSON
+    const wrapped_event = @import("nostr/event.zig").Event.fromJson(
+        allocator,
+        event_json,
+    ) catch return false;
+    defer wrapped_event.deinit(allocator);
+    
+    // Parse Welcome Event
+    const parsed_welcome = welcome_events.WelcomeEvent.parse(
+        allocator,
+        wrapped_event,
+        recipient_key,
+    ) catch return false;
+    defer parsed_welcome.deinit(allocator);
+    
+    // Serialize MLS Welcome back to bytes
+    const mls_welcome_bytes = @import("mls/welcomes.zig").serializeWelcome(
+        allocator,
+        parsed_welcome.mls_welcome,
+    ) catch return false;
+    defer allocator.free(mls_welcome_bytes);
+    
+    // Serialize relays to JSON
+    const relays_json = std.json.stringifyAlloc(
+        allocator,
+        parsed_welcome.relays,
+        .{},
+    ) catch return false;
+    defer allocator.free(relays_json);
+    
+    // Check buffer sizes and copy outputs
+    if (out_mls_welcome_len.* < mls_welcome_bytes.len) {
+        out_mls_welcome_len.* = @intCast(mls_welcome_bytes.len);
+        return false;
+    }
+    if (out_keypackage_id_len.* < parsed_welcome.key_package_event_id.len) {
+        out_keypackage_id_len.* = @intCast(parsed_welcome.key_package_event_id.len);
+        return false;
+    }
+    if (out_relays_json_len.* < relays_json.len) {
+        out_relays_json_len.* = @intCast(relays_json.len);
+        return false;
+    }
+    
+    // Copy results
+    @memcpy(out_mls_welcome[0..mls_welcome_bytes.len], mls_welcome_bytes);
+    out_mls_welcome_len.* = @intCast(mls_welcome_bytes.len);
+    
+    @memcpy(out_keypackage_id[0..parsed_welcome.key_package_event_id.len], parsed_welcome.key_package_event_id);
+    out_keypackage_id_len.* = @intCast(parsed_welcome.key_package_event_id.len);
+    
+    @memcpy(out_relays_json[0..relays_json.len], relays_json);
+    out_relays_json_len.* = @intCast(relays_json.len);
+    
+    return true;
+}
+
+/// Helper: Create a gift-wrapped event from any rumor (unsigned event)
+/// General-purpose NIP-59 gift wrapping
+export fn wasm_create_gift_wrap(
+    sender_privkey: [*]const u8,    // 32 bytes
+    recipient_pubkey: [*]const u8,  // 32 bytes
+    rumor_json: [*]const u8,        // Unsigned event JSON
+    rumor_json_len: u32,
+    out_wrapped_json: [*]u8,
+    out_len: *u32,
+) bool {
+    const allocator = getAllocator();
+    
+    // Parse inputs
+    const sender_key = sender_privkey[0..32].*;
+    const recipient_key = recipient_pubkey[0..32].*;
+    const rumor_str = rumor_json[0..rumor_json_len];
+    
+    // Parse rumor from JSON
+    const rumor = @import("nostr/event.zig").Event.fromJson(
+        allocator,
+        rumor_str,
+    ) catch return false;
+    defer rumor.deinit(allocator);
+    
+    // Ensure it's unsigned
+    if (rumor.sig.len > 0) {
+        return false; // Must be unsigned rumor
+    }
+    
+    // Create gift wrap
+    const wrapped = nip59.createGiftWrappedEvent(
+        allocator,
+        sender_key,
+        recipient_key,
+        rumor,
+    ) catch return false;
+    defer wrapped.deinit(allocator);
+    
+    // Serialize to JSON
+    const wrapped_json = wrapped.toJson(allocator) catch return false;
+    defer allocator.free(wrapped_json);
+    
+    // Check buffer size
+    if (out_len.* < wrapped_json.len) {
+        out_len.* = @intCast(wrapped_json.len);
+        return false;
+    }
+    
+    // Copy result
+    @memcpy(out_wrapped_json[0..wrapped_json.len], wrapped_json);
+    out_len.* = @intCast(wrapped_json.len);
+    
+    return true;
+}
+
+/// Helper: Unwrap a gift-wrapped event
+/// General-purpose NIP-59 gift unwrapping
+export fn wasm_unwrap_gift_wrap(
+    wrapped_json: [*]const u8,
+    wrapped_json_len: u32,
+    recipient_privkey: [*]const u8,  // 32 bytes
+    out_rumor_json: [*]u8,
+    out_len: *u32,
+) bool {
+    const allocator = getAllocator();
+    
+    // Parse inputs
+    const recipient_key = recipient_privkey[0..32].*;
+    const wrapped_str = wrapped_json[0..wrapped_json_len];
+    
+    // Parse wrapped event from JSON
+    const wrapped_event = @import("nostr/event.zig").Event.fromJson(
+        allocator,
+        wrapped_str,
+    ) catch return false;
+    defer wrapped_event.deinit(allocator);
+    
+    // Unwrap to get rumor
+    const rumor = nip59.GiftWrap.unwrapAndDecrypt(
+        allocator,
+        wrapped_event,
+        recipient_key,
+    ) catch return false;
+    defer rumor.deinit(allocator);
+    
+    // Serialize rumor to JSON
+    const rumor_json = rumor.toJson(allocator) catch return false;
+    defer allocator.free(rumor_json);
+    
+    // Check buffer size
+    if (out_len.* < rumor_json.len) {
+        out_len.* = @intCast(rumor_json.len);
+        return false;
+    }
+    
+    // Copy result
+    @memcpy(out_rumor_json[0..rumor_json.len], rumor_json);
+    out_len.* = @intCast(rumor_json.len);
     
     return true;
 }

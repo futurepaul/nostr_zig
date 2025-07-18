@@ -91,6 +91,13 @@ pub const Sender = union(enum) {
 pub const ApplicationData = struct {
     data: []const u8,
     
+    /// Create ApplicationData with owned memory
+    pub fn init(allocator: Allocator, data: []const u8) !ApplicationData {
+        const owned_data = try allocator.alloc(u8, data.len);
+        @memcpy(owned_data, data);
+        return ApplicationData{ .data = owned_data };
+    }
+    
     pub fn tlsSerialize(self: ApplicationData, writer: anytype) !void {
         try writer.writeVarBytes(u32, self.data);
     }
@@ -282,7 +289,7 @@ pub const MLSMessage = struct {
         signature: []const u8,
     ) !MLSMessage {
         const sender = Sender{ .member = sender_index };
-        const app_data = ApplicationData{ .data = application_data };
+        const app_data = try ApplicationData.init(allocator, application_data);
         const content = Content{ .application = app_data };
         
         const plaintext = try MLSPlaintext.init(

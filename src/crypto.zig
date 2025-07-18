@@ -215,6 +215,22 @@ pub fn getPublicKey(private_key: [32]u8) ![32]u8 {
     return result;
 }
 
+/// Convert hex string to public key bytes
+pub fn hexToPubkey(hex: []const u8) ![32]u8 {
+    if (hex.len != 64) {
+        return error.InvalidHexLength;
+    }
+    
+    var pubkey: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&pubkey, hex);
+    return pubkey;
+}
+
+/// Convert public key bytes to hex string
+pub fn pubkeyToHex(allocator: std.mem.Allocator, pubkey: [32]u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&pubkey)});
+}
+
 /// Get compressed public key from private key (33 bytes, used for NIP-44)
 pub fn getPublicKeyCompressed(private_key: [32]u8) ![33]u8 {
     const builtin = @import("builtin");

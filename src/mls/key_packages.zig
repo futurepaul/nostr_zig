@@ -4,6 +4,7 @@ const provider = @import("provider.zig");
 const mls_zig = @import("mls_zig");
 const constants = @import("constants.zig");
 const crypto = @import("../crypto.zig");
+const crypto_utils = @import("crypto_utils.zig");
 
 /// Key package generation parameters
 pub const KeyPackageParams = struct {
@@ -384,20 +385,10 @@ fn isHexString(s: []const u8) bool {
 
 // Helper functions
 
+
 fn deriveMlsSigningKey(allocator: std.mem.Allocator, nostr_private_key: [32]u8) ![]u8 {
-    // Derive MLS signing key from Nostr private key using HKDF
-    const hkdf = std.crypto.kdf.hkdf.Hkdf(std.crypto.hash.sha2.Sha256);
-    var prk: [32]u8 = undefined;
-    
-    // HKDF-extract: extract(output, salt, ikm)
-    // Uses domain separation to ensure MLS keys are cryptographically isolated from Nostr keys
-    hkdf.extract(&prk, constants.HKDF_SALT.NOSTR_TO_MLS_SIGNING, &nostr_private_key);
-    
-    // HKDF-expand: expand(output, context, prk)
-    // Further domain separation for the specific use as a signing key
-    const key = try allocator.alloc(u8, constants.KEY_SIZES.HKDF_OUTPUT);
-    hkdf.expand(key, constants.HKDF_INFO.MLS_SIGNING_KEY, &prk);
-    return key;
+    // Use the shared crypto utilities for consistent key derivation
+    return try crypto_utils.deriveMlsSigningKey(allocator, nostr_private_key);
 }
 
 fn deriveMlsPublicKey(allocator: std.mem.Allocator, mls_private_key: []const u8) ![]u8 {
@@ -408,7 +399,7 @@ fn deriveMlsPublicKey(allocator: std.mem.Allocator, mls_private_key: []const u8)
     
     // For Ed25519, we need to derive the public key from the private key seed
     const seed: [32]u8 = mls_private_key[0..32].*;
-    const keypair = try std.crypto.sign.Ed25519.KeyPair.create(seed);
+    const keypair = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch |err| return err;
     
     // Allocate and return the public key
     const pubkey = try allocator.alloc(u8, 32);
@@ -774,9 +765,37 @@ test "key package serialization roundtrip" {
     
     // Parse back
     const parsed = try parseKeyPackage(allocator, serialized);
+    defer freeKeyPackage(allocator, parsed);
     
     // Check key fields match
     try std.testing.expectEqual(original.version, parsed.version);
     try std.testing.expectEqual(original.cipher_suite, parsed.cipher_suite);
     try std.testing.expect(original.init_key.eql(parsed.init_key));
+}
+
+fn freeKeyPackage(allocator: std.mem.Allocator, kp: types.KeyPackage) void {
+    allocator.free(kp.init_key.data);
+    allocator.free(kp.leaf_node.encryption_key.data);
+    allocator.free(kp.leaf_node.signature_key.data);
+    
+    switch (kp.leaf_node.credential) {
+        .basic => |basic| allocator.free(basic.identity),
+        else => {},
+    }
+    
+    allocator.free(kp.leaf_node.capabilities.versions);
+    allocator.free(kp.leaf_node.capabilities.ciphersuites);
+    allocator.free(kp.leaf_node.capabilities.extensions);
+    allocator.free(kp.leaf_node.capabilities.proposals);
+    allocator.free(kp.leaf_node.capabilities.credentials);
+    
+    // Free the extensions array
+    allocator.free(kp.extensions);
+    
+    for (kp.leaf_node.extensions) |ext| {
+        allocator.free(ext.extension_data);
+    }
+    allocator.free(kp.leaf_node.extensions);
+    allocator.free(kp.leaf_node.signature);
+    allocator.free(kp.signature);
 }

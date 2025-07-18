@@ -158,10 +158,7 @@ pub const EphemeralKeyStats = struct {
 test "group messenger sends with ephemeral keys" {
     const allocator = std.testing.allocator;
     
-    var mls_provider = provider.MlsProvider{
-        .crypto = undefined, // Would be properly initialized in real usage
-        .allocator = allocator,
-    };
+    var mls_provider = provider.MlsProvider.init(allocator);
     
     var messenger = GroupMessenger.init(allocator, &mls_provider);
     defer messenger.deinit();
@@ -172,7 +169,7 @@ test "group messenger sends with ephemeral keys" {
         .epoch = 0,
         .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
         .group_context = .{
-            .protocol_version = .mls10,
+            .version = .mls10,
             .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
             .group_id = types.GroupId.init([_]u8{1} ** 32),
             .epoch = 0,
