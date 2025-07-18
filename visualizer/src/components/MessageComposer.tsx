@@ -16,12 +16,12 @@ interface MessageComposerProps {
 
 export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
-  const { sendMessage, isReady, generateEphemeralKeys, generateExporterSecret: wasmGenerateExporterSecret, nip44Encrypt } = useWasm();
+  const { createEncryptedGroupMessage, isReady, generateEphemeralKeys, generateExporterSecret: wasmGenerateExporterSecret, signSchnorr } = useWasm();
   
   // Check if button should be disabled
   const isButtonDisabled = !isReady || !message.trim() || !state.identity || state.groups.size === 0;
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!message.trim() || !state.identity || state.groups.size === 0) {
       return;
     }
@@ -47,26 +47,40 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         console.log('Using fallback random exporter secret:', bytesToHex(exporterSecret));
       }
       
-      // STEP 1: MLS encryption (inner layer)
-      if (!group.state || group.state.length === 0) {
-        throw new Error('Group state is missing or empty');
+      // Create a proper MLS signature for the message
+      // In a real implementation, this would sign the MLS tree hash or commit
+      // For now, we'll sign the message content
+      const messageBytes = new TextEncoder().encode(message);
+      const messageHash = await crypto.subtle.digest('SHA-256', messageBytes);
+      const mlsSignature = signSchnorr(new Uint8Array(messageHash), state.identity.privateKey);
+      
+      // Extract group ID from state (first 32 bytes)
+      const groupId = new Uint8Array(32);
+      if (group.state.length >= 32) {
+        groupId.set(group.state.slice(0, 32));
+      } else {
+        // Hash the state to get a group ID
+        const stateHash = await crypto.subtle.digest('SHA-256', group.state);
+        groupId.set(new Uint8Array(stateHash));
       }
       
-      console.log('Sending message with group state length:', group.state.length);
-      const mlsCiphertext = sendMessage(
-        group.state,
-        state.identity.privateKey,
-        message
+      // Create encrypted group message using the same function as tests
+      const epoch = BigInt(0); // Simplified - real implementation would track epoch
+      const senderIndex = 0; // Simplified - real implementation would track sender
+      
+      const encryptedPayload = createEncryptedGroupMessage(
+        groupId,
+        epoch,
+        senderIndex,
+        message,
+        mlsSignature,
+        exporterSecret
       );
-      console.log('MLS ciphertext length:', mlsCiphertext.length);
-
-      // STEP 2: NIP-44 encryption (outer layer) using exporter secret
-      const mlsBase64 = btoa(String.fromCharCode(...mlsCiphertext));
-      const nip44CiphertextBytes = nip44Encrypt(exporterSecret, mlsBase64);
-      // nip44Encrypt returns raw bytes, but the Zig implementation returns base64
-      // So we need to convert the bytes to a string
-      const nip44CiphertextBase64 = new TextDecoder().decode(nip44CiphertextBytes);
-      console.log('NIP-44 ciphertext (base64) length:', nip44CiphertextBase64.length);
+      console.log('Encrypted payload length:', encryptedPayload.length);
+      
+      // The encrypted payload is already the complete NIP-44 ciphertext
+      // Convert to base64 for Nostr event content
+      const nip44CiphertextBase64 = btoa(String.fromCharCode(...encryptedPayload));
 
       // Create event structure first (without ID and signature)
       const eventData = {
@@ -151,7 +165,7 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder={!isReady ? "WASM not ready..." : "Type a message..."}
-          onKeyPress={(e) => e.key === 'Enter' && isReady && handleSend()}
+          onKeyPress={(e) => { if (e.key === 'Enter' && isReady) handleSend(); }}
           disabled={!isReady}
         />
         <Button 

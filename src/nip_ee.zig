@@ -71,7 +71,7 @@ pub fn decryptGroupMessage(
 }
 
 /// Encrypt data with NIP-44 using exporter secret as per NIP-EE spec
-fn encryptWithExporterSecret(
+pub fn encryptWithExporterSecret(
     allocator: std.mem.Allocator,
     exporter_secret: [32]u8,
     plaintext: []const u8,
@@ -88,7 +88,7 @@ fn encryptWithExporterSecret(
 }
 
 /// Decrypt data with NIP-44 using exporter secret
-fn decryptWithExporterSecret(
+pub fn decryptWithExporterSecret(
     allocator: std.mem.Allocator,
     exporter_secret: [32]u8,
     ciphertext: []const u8,

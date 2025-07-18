@@ -7,6 +7,7 @@ interface WasmContextType {
   createIdentity: () => { privateKey: Uint8Array; publicKey: Uint8Array };
   generateEphemeralKeys: () => { privateKey: Uint8Array; publicKey: Uint8Array };
   generateMLSSigningKeys: () => { privateKey: Uint8Array; publicKey: Uint8Array };
+  signSchnorr: (messageHash: Uint8Array, privateKey: Uint8Array) => Uint8Array;
   createKeyPackage: (privateKey: Uint8Array) => Uint8Array;
   createGroup: (creatorPrivateKey: Uint8Array, creatorPublicKey: Uint8Array) => Uint8Array;
   generateExporterSecret: (groupState: Uint8Array) => Uint8Array;
@@ -14,6 +15,14 @@ interface WasmContextType {
   nip44Decrypt: (exporterSecret: Uint8Array, ciphertext: Uint8Array) => string;
   nip44DecryptBytes: (exporterSecret: Uint8Array, ciphertext: Uint8Array) => Uint8Array;
   sendMessage: (groupState: Uint8Array, senderPrivateKey: Uint8Array, message: string) => Uint8Array;
+  createEncryptedGroupMessage: (
+    groupId: Uint8Array,
+    epoch: bigint,
+    senderIndex: number,
+    messageContent: string,
+    mlsSignature: Uint8Array,
+    exporterSecret: Uint8Array
+  ) => Uint8Array;
   deserializeMLSMessage: (serializedData: Uint8Array) => {
     groupId: Uint8Array;
     epoch: bigint;
@@ -21,6 +30,7 @@ interface WasmContextType {
     applicationData: string;
     signature: Uint8Array;
   };
+  decryptGroupMessage: (exporterSecret: Uint8Array, encryptedData: Uint8Array) => Uint8Array;
 }
 
 const WasmContext = createContext<WasmContextType | null>(null);
@@ -55,6 +65,7 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
     createIdentity: () => wasm.createIdentity(),
     generateEphemeralKeys: () => wasm.generateEphemeralKeys(),
     generateMLSSigningKeys: () => wasm.generateMLSSigningKeys(),
+    signSchnorr: (messageHash, privateKey) => wasm.signSchnorr(messageHash, privateKey),
     createKeyPackage: (privateKey) => wasm.createKeyPackage(privateKey),
     createGroup: (creatorPrivateKey, creatorPublicKey) => wasm.createGroup(creatorPrivateKey, creatorPublicKey),
     generateExporterSecret: (groupState) => wasm.generateExporterSecret(groupState),
@@ -62,7 +73,10 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
     nip44Decrypt: (exporterSecret, ciphertext) => wasm.nip44Decrypt(exporterSecret, ciphertext),
     nip44DecryptBytes: (exporterSecret, ciphertext) => wasm.nip44DecryptBytes(exporterSecret, ciphertext),
     sendMessage: (groupState, senderPrivateKey, message) => wasm.sendMessage(groupState, senderPrivateKey, message),
+    createEncryptedGroupMessage: (groupId, epoch, senderIndex, messageContent, mlsSignature, exporterSecret) => 
+      wasm.createEncryptedGroupMessage(groupId, epoch, senderIndex, messageContent, mlsSignature, exporterSecret),
     deserializeMLSMessage: (serializedData) => wasm.deserializeMLSMessage(serializedData),
+    decryptGroupMessage: (exporterSecret, encryptedData) => wasm.decryptGroupMessage(exporterSecret, encryptedData),
   };
 
   return (

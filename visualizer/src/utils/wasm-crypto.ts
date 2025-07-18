@@ -40,28 +40,12 @@ export async function createNostrEventId(event: {
   return bytesToHex(hashArray);
 }
 
-// Synchronous hash function using a simple SHA-256 implementation
+// Synchronous hash function using WASM
 export function sha256Sync(data: Uint8Array): Uint8Array {
-  // For browser compatibility, we'll use a simple implementation
-  // In production, you'd want to use the WASM crypto module for this too
-  
-  // Simple synchronous hash - in reality this should use WASM
-  // For now, generate a deterministic "hash" based on the data
-  const hash = new Uint8Array(32);
-  let h = 0;
-  for (let i = 0; i < data.length; i++) {
-    h = ((h * 31) + data[i]) & 0xffffffff;
-  }
-  
-  // Fill hash with deterministic pattern based on data
-  for (let i = 0; i < 32; i++) {
-    hash[i] = ((h + i) * 7919) & 0xff;
-  }
-  
-  return hash;
+  return wasm.sha256(data);
 }
 
-// Create Nostr event ID synchronously (simplified for demo)
+// Create Nostr event ID synchronously using WASM
 export function createNostrEventIdSync(event: {
   pubkey: string;
   created_at: number;
@@ -69,22 +53,15 @@ export function createNostrEventIdSync(event: {
   tags: string[][];
   content: string;
 }): string {
-  // Serialize event according to NIP-01 spec
-  const serialized = JSON.stringify([
-    0, // Reserved for future use
+  // Use WASM function for proper event ID generation
+  const eventId = wasm.createNostrEventId(
     event.pubkey,
     event.created_at,
     event.kind,
     event.tags,
     event.content
-  ]);
-  
-  // Hash with simple deterministic function for demo
-  const encoder = new TextEncoder();
-  const data = encoder.encode(serialized);
-  const hash = sha256Sync(data);
-  
-  return bytesToHex(hash);
+  );
+  return bytesToHex(eventId);
 }
 
 // Sign Nostr event with WASM crypto

@@ -183,16 +183,13 @@ export function MLSVisualizer() {
 function DecryptorBox() {
   const [encryptedData, setEncryptedData] = useState('');
   const [exporterSecret, setExporterSecret] = useState('');
-  const [stage1Result, setStage1Result] = useState('');
   const [stage2Result, setStage2Result] = useState('');
   const [error, setError] = useState('');
-  const [currentStage, setCurrentStage] = useState<'none' | 'stage1' | 'stage2'>('none');
-  const [mlsMessageBytes, setMlsMessageBytes] = useState<Uint8Array | null>(null);
-  const { nip44Decrypt, nip44DecryptBytes, deserializeMLSMessage } = useWasm();
+  const [currentStage, setCurrentStage] = useState<'none' | 'stage2'>('none');
+  const { decryptGroupMessage } = useWasm();
 
   const handleStage1Decrypt = async () => {
     setError('');
-    setStage1Result('');
     setStage2Result('');
     
     try {
@@ -232,23 +229,37 @@ function DecryptorBox() {
       console.log('📝 NIP-44 ciphertext (as UTF-8 bytes) length:', nip44CiphertextBytes.length, 'bytes');
       console.log('📝 First 16 bytes (UTF-8 of base64):', Array.from(nip44CiphertextBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
 
-      // Stage 1: Decrypt NIP-44 layer
-      console.log('🔓 Attempting NIP-44 decryption...');
-      const mlsBytes = nip44DecryptBytes(secretBytes, nip44CiphertextBytes);
-      console.log('✅ NIP-44 decryption successful! MLS payload length:', mlsBytes.length);
+      // Use the NIP-EE decrypt function that handles both layers
+      console.log('🔓 Attempting NIP-EE decryption (both layers)...');
       
-      // Store bytes directly and convert to base64 for display only
-      setMlsMessageBytes(mlsBytes);
-      const mlsBase64 = btoa(String.fromCharCode(...mlsBytes));
-      setStage1Result(mlsBase64);
-      setCurrentStage('stage1');
+      // First decode the base64 ciphertext to raw bytes
+      const ciphertextBytes = Uint8Array.from(atob(nip44CiphertextBase64), c => c.charCodeAt(0));
+      console.log('📦 Ciphertext bytes length:', ciphertextBytes.length);
       
-      console.log('✅ Stage 1 complete: NIP-44 decrypted, revealed MLS ciphertext');
+      // Decrypt using the combined function
+      const decryptedBytes = decryptGroupMessage(secretBytes, ciphertextBytes);
+      console.log('✅ NIP-EE decryption successful! Decrypted length:', decryptedBytes.length);
       
-      // Automatically trigger Stage 2
-      setTimeout(() => {
-        handleStage2Decrypt();
-      }, 500); // Small delay to let UI update
+      // The result is the decrypted Nostr event JSON
+      const decryptedText = new TextDecoder().decode(decryptedBytes);
+      setStage2Result(decryptedText);
+      setCurrentStage('stage2');
+      
+      // Parse and format the result
+      try {
+        const parsedEvent = JSON.parse(decryptedText);
+        const formattedResult = `🔓 NIP-EE Message Decrypted!
+
+📨 Recovered Nostr Event:
+${JSON.stringify(parsedEvent, null, 2)}
+
+💬 Final Message Content:
+"${parsedEvent.content || decryptedText}"`;
+        setStage2Result(formattedResult);
+      } catch (e) {
+        // Not JSON, just show as text
+        setStage2Result(`🔓 Decrypted Message:\n\n${decryptedText}`);
+      }
       
     } catch (e) {
       setError('Stage 1 failed: ' + (e as Error).message);
@@ -256,118 +267,13 @@ function DecryptorBox() {
     }
   };
 
-  const performStage2Decrypt = async () => {
-    // Stage 2: Deserialize MLSMessage using WASM
-    console.log('🔍 Stage 2: Deserializing MLS message using WASM...');
-    
-    if (!mlsMessageBytes) {
-      throw new Error('No MLS message bytes available from Stage 1');
-    }
-    
-    console.log('📦 MLS message size:', mlsMessageBytes.length, 'bytes');
-    
-    // Use the WASM function to properly deserialize the MLS message
-    const result = deserializeMLSMessage(mlsMessageBytes);
-    
-    console.log('✅ MLS message deserialized successfully:', result);
-    
-    // Extract the Nostr event from the application data
-    let finalMessage = result.applicationData;
-    let parsedEvent = null;
-    
-    try {
-      parsedEvent = JSON.parse(result.applicationData);
-      if (parsedEvent.content) {
-        finalMessage = parsedEvent.content;
-      }
-    } catch (e) {
-      // Not JSON, use as-is
-      console.log('Application data is not JSON, using as plain text');
-    }
-    
-    // Convert arrays to hex for display
-    const groupIdHex = Array.from(result.groupId).map(b => b.toString(16).padStart(2, '0')).join('');
-    const signatureHex = Array.from(result.signature).map(b => b.toString(16).padStart(2, '0')).join('');
-    
-    const formattedResult = `🔓 Stage 2: MLS Message Deserialized!
-
-Group ID: ${groupIdHex}
-Epoch: ${result.epoch}
-Sender: Member ${result.senderIndex}
-Signature: ${signatureHex.substring(0, 32)}...
-
-📨 Recovered Nostr Event:
-${parsedEvent ? JSON.stringify(parsedEvent, null, 2) : finalMessage}
-
-💬 Final Message Content:
-"${finalMessage}"`;
-
-    setStage2Result(formattedResult);
-    setCurrentStage('stage2');
-    console.log('✅ Stage 2 complete: MLS message deserialized and Nostr event recovered!');
-    
-    return result;
-  };
-
-  const handleStage2Decrypt = async () => {
-    setError('');
-    setStage2Result('');
-    
-    try {
-      if (!stage1Result || !mlsMessageBytes) {
-        throw new Error('Must complete Stage 1 first');
-      }
-
-      const result = await performStage2Decrypt();
-      
-      // Extract the Nostr event from the application data
-      let finalMessage = result.applicationData;
-      let parsedEvent = null;
-      
-      try {
-        parsedEvent = JSON.parse(result.applicationData);
-        if (parsedEvent.content) {
-          finalMessage = parsedEvent.content;
-        }
-      } catch (e) {
-        // Not JSON, use as-is
-        console.log('Application data is not JSON, using as plain text');
-      }
-      
-      // Convert arrays to hex for display
-      const groupIdHex = Array.from(result.groupId).map(b => b.toString(16).padStart(2, '0')).join('');
-      const signatureHex = Array.from(result.signature).map(b => b.toString(16).padStart(2, '0')).join('');
-      
-      setStage2Result(`🔓 Stage 2: MLS Message Deserialized!
-
-Group ID: ${groupIdHex}
-Epoch: ${result.epoch}
-Sender: Member ${result.senderIndex}
-Signature: ${signatureHex.substring(0, 32)}...
-
-📨 Recovered Nostr Event:
-${parsedEvent ? JSON.stringify(parsedEvent, null, 2) : finalMessage}
-
-💬 Final Message Content:
-"${finalMessage}"`);
-      
-      setCurrentStage('stage2');
-      console.log('✅ Stage 2 complete: MLS message deserialized and Nostr event recovered!');
-      
-    } catch (e) {
-      setError('Stage 2 failed: ' + (e as Error).message);
-      console.error('Stage 2 error:', e);
-    }
-  };
 
   const clearAll = () => {
     setEncryptedData('');
     setExporterSecret('');
-    setStage1Result('');
     setStage2Result('');
     setError('');
     setCurrentStage('none');
-    setMlsMessageBytes(null);
   };
 
   return (
@@ -393,87 +299,37 @@ ${parsedEvent ? JSON.stringify(parsedEvent, null, 2) : finalMessage}
           />
         </div>
 
-        {/* Two Stage Decryption */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Stage 1: NIP-44 Decryption */}
-          <div className="space-y-3 p-4 border-2 border-orange-200 bg-orange-50 rounded">
-            <h3 className="text-sm font-bold text-orange-800">🔓 Stage 1: NIP-44 Decryption (Outer Layer)</h3>
-            
-            <div className="space-y-2">
-              <label className="text-xs font-semibold">Exporter Secret (64 hex chars):</label>
-              <textarea
-                value={exporterSecret}
-                onChange={(e) => setExporterSecret(e.target.value)}
-                placeholder="Paste exporter secret from Groups section..."
-                className="w-full h-16 text-xs font-mono border rounded p-2 resize-none"
-              />
-            </div>
-            
-            <Button 
-              onClick={handleStage1Decrypt} 
-              disabled={!encryptedData || !exporterSecret || exporterSecret.length !== 64}
-              size="sm"
-              className="w-full"
-            >
-              🔓 Decrypt NIP-44 Layer
-            </Button>
-            
-            {stage1Result && (
-              <div className="space-y-2">
-                <label className="text-xs font-semibold text-green-700">✅ NIP-44 Decrypted (MLS Ciphertext):</label>
-                <div className="p-2 bg-green-50 border border-green-200 rounded max-h-32 overflow-y-auto">
-                  <pre className="text-xs text-green-800 whitespace-pre-wrap break-all">{stage1Result}</pre>
-                </div>
-              </div>
-            )}
+        {/* NIP-EE Decryption */}
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-semibold">Exporter Secret (64 hex chars):</label>
+            <textarea
+              value={exporterSecret}
+              onChange={(e) => setExporterSecret(e.target.value)}
+              placeholder="Paste exporter secret from Groups section..."
+              className="w-full h-16 text-xs font-mono border rounded p-2 resize-none"
+            />
           </div>
-
-          {/* Stage 2: MLS Deserialization */}
-          <div className="space-y-3 p-4 border-2 border-purple-200 bg-purple-50 rounded">
-            <h3 className="text-sm font-bold text-purple-800">📦 Stage 2: MLS Deserialization (Inner Layer)</h3>
-            
+          
+          <Button 
+            onClick={handleStage1Decrypt} 
+            disabled={!encryptedData || !exporterSecret || exporterSecret.length !== 64}
+            size="sm"
+            className="w-full"
+          >
+            🔓 Decrypt NIP-EE Message
+          </Button>
+          
+          {stage2Result && (
             <div className="space-y-2">
-              <p className="text-xs text-purple-700">
-                🔄 Automatically deserializes the MLS ciphertext from Stage 1 to extract the original message.
-              </p>
-            </div>
-            
-            <Button 
-              onClick={handleStage2Decrypt} 
-              disabled={!stage1Result}
-              size="sm"
-              className="w-full"
-              variant={currentStage === 'stage1' ? 'default' : 'outline'}
-            >
-              📦 Deserialize MLS Message
-            </Button>
-            
-            {stage2Result && (
-              <div className="space-y-2">
-                <label className="text-xs font-semibold text-green-700">✅ Final Result:</label>
-                <div className="p-2 bg-green-50 border border-green-200 rounded max-h-32 overflow-y-auto">
-                  <pre className="text-xs text-green-800 whitespace-pre-wrap">{stage2Result}</pre>
-                </div>
+              <label className="text-xs font-semibold text-green-700">✅ Decrypted Result:</label>
+              <div className="p-2 bg-green-50 border border-green-200 rounded max-h-48 overflow-y-auto">
+                <pre className="text-xs text-green-800 whitespace-pre-wrap">{stage2Result}</pre>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
-        {/* Progress Indicator */}
-        <div className="flex items-center justify-center space-x-4 py-2">
-          <div className={`px-3 py-1 rounded text-xs font-semibold ${
-            currentStage === 'none' ? 'bg-gray-200 text-gray-600' :
-            currentStage === 'stage1' ? 'bg-orange-200 text-orange-800' : 'bg-green-200 text-green-800'
-          }`}>
-            Stage 1: NIP-44
-          </div>
-          <div className="text-xl">→</div>
-          <div className={`px-3 py-1 rounded text-xs font-semibold ${
-            currentStage !== 'stage2' ? 'bg-gray-200 text-gray-600' : 'bg-green-200 text-green-800'
-          }`}>
-            Stage 2: MLS
-          </div>
-        </div>
 
         {/* Clear Button */}
         <div className="flex justify-center">

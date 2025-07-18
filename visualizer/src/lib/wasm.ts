@@ -73,6 +73,41 @@ export interface WasmExports {
     outSignature: number,
     outSignatureLen: number
   ) => boolean;
+  wasm_sha256: (data: number, dataLen: number, outHash: number) => boolean;
+  wasm_create_nostr_event_id: (
+    pubkey: number,
+    createdAt: bigint,
+    kind: number,
+    tagsJson: number,
+    tagsJsonLen: number,
+    content: number,
+    contentLen: number,
+    outEventId: number
+  ) => boolean;
+  wasm_nip_ee_create_encrypted_group_message: (
+    groupId: number,
+    epoch: bigint,
+    senderIndex: number,
+    messageContent: number,
+    messageContentLen: number,
+    mlsSignature: number,
+    mlsSignatureLen: number,
+    exporterSecret: number,
+    outEncrypted: number,
+    outLen: number
+  ) => boolean;
+  wasm_nip_ee_generate_exporter_secret: (
+    groupState: number,
+    groupStateLen: number,
+    outSecret: number
+  ) => boolean;
+  wasm_nip_ee_decrypt_group_message: (
+    encryptedData: number,
+    encryptedDataLen: number,
+    exporterSecret: number,
+    outDecrypted: number,
+    outLen: number
+  ) => boolean;
 }
 
 class WasmWrapper {
@@ -1006,6 +1041,217 @@ class WasmWrapper {
   add(a: number, b: number): number {
     const exports = this.ensureInitialized();
     return exports.wasm_add(a, b);
+  }
+
+  // SHA-256 hash function
+  sha256(data: Uint8Array): Uint8Array {
+    const exports = this.ensureInitialized();
+    const dataPtr = exports.wasm_alloc(data.length);
+    const hashPtr = exports.wasm_alloc(32);
+    
+    if (!dataPtr || !hashPtr) {
+      throw new Error('Failed to allocate memory for SHA-256');
+    }
+    
+    new Uint8Array(exports.memory.buffer, dataPtr, data.length).set(data);
+    
+    const success = exports.wasm_sha256(dataPtr, data.length, hashPtr);
+    if (!success) {
+      exports.wasm_free(dataPtr, data.length);
+      exports.wasm_free(hashPtr, 32);
+      throw new Error('Failed to compute SHA-256');
+    }
+    
+    const hash = this.readBytes(hashPtr, 32);
+    exports.wasm_free(dataPtr, data.length);
+    exports.wasm_free(hashPtr, 32);
+    
+    return hash;
+  }
+
+  // Create Nostr event ID
+  createNostrEventId(
+    pubkey: string,
+    createdAt: number,
+    kind: number,
+    tags: string[][],
+    content: string
+  ): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    // Validate pubkey is 64 hex chars
+    if (pubkey.length !== 64) {
+      throw new Error('Pubkey must be 64 hex characters');
+    }
+    
+    // Allocate for pubkey hex string
+    const pubkeyPtr = exports.wasm_alloc(64);
+    if (!pubkeyPtr) throw new Error('Failed to allocate memory');
+    
+    // Copy pubkey hex string
+    const encoder = new TextEncoder();
+    const pubkeyBytes = encoder.encode(pubkey);
+    new Uint8Array(exports.memory.buffer, pubkeyPtr, 64).set(pubkeyBytes);
+    
+    // Convert tags to JSON
+    const tagsJson = JSON.stringify(tags);
+    const tagsData = this.allocateString(tagsJson);
+    
+    // Allocate content
+    const contentData = this.allocateString(content);
+    
+    // Allocate output
+    const eventIdPtr = exports.wasm_alloc(32);
+    if (!eventIdPtr) {
+      exports.wasm_free(pubkeyPtr, 64);
+      exports.wasm_free(tagsData.ptr, tagsData.len);
+      exports.wasm_free(contentData.ptr, contentData.len);
+      throw new Error('Failed to allocate memory for event ID');
+    }
+    
+    const success = exports.wasm_create_nostr_event_id(
+      pubkeyPtr,
+      BigInt(createdAt),
+      kind,
+      tagsData.ptr,
+      tagsData.len,
+      contentData.ptr,
+      contentData.len,
+      eventIdPtr
+    );
+    
+    if (!success) {
+      exports.wasm_free(pubkeyPtr, 64);
+      exports.wasm_free(tagsData.ptr, tagsData.len);
+      exports.wasm_free(contentData.ptr, contentData.len);
+      exports.wasm_free(eventIdPtr, 32);
+      throw new Error('Failed to create Nostr event ID');
+    }
+    
+    const eventId = this.readBytes(eventIdPtr, 32);
+    
+    exports.wasm_free(pubkeyPtr, 64);
+    exports.wasm_free(tagsData.ptr, tagsData.len);
+    exports.wasm_free(contentData.ptr, contentData.len);
+    exports.wasm_free(eventIdPtr, 32);
+    
+    return eventId;
+  }
+
+  // Create encrypted group message using NIP-EE
+  createEncryptedGroupMessage(
+    groupId: Uint8Array,
+    epoch: bigint,
+    senderIndex: number,
+    messageContent: string,
+    mlsSignature: Uint8Array,
+    exporterSecret: Uint8Array
+  ): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    // Allocate inputs
+    const groupIdPtr = exports.wasm_alloc(32);
+    new Uint8Array(exports.memory.buffer, groupIdPtr, 32).set(groupId);
+    
+    const messageData = this.allocateString(messageContent);
+    
+    const signaturePtr = exports.wasm_alloc(mlsSignature.length);
+    new Uint8Array(exports.memory.buffer, signaturePtr, mlsSignature.length).set(mlsSignature);
+    
+    const secretPtr = exports.wasm_alloc(32);
+    new Uint8Array(exports.memory.buffer, secretPtr, 32).set(exporterSecret);
+    
+    // Allocate output
+    const maxSize = 4096;
+    const outPtr = exports.wasm_alloc(maxSize);
+    const outLenPtr = exports.wasm_alloc_u32(1);
+    new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = maxSize;
+    
+    const success = exports.wasm_nip_ee_create_encrypted_group_message(
+      groupIdPtr,
+      epoch,
+      senderIndex,
+      messageData.ptr,
+      messageData.len,
+      signaturePtr,
+      mlsSignature.length,
+      secretPtr,
+      outPtr,
+      outLenPtr
+    );
+    
+    const actualLen = new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0];
+    
+    if (!success) {
+      exports.wasm_free(groupIdPtr, 32);
+      exports.wasm_free(messageData.ptr, messageData.len);
+      exports.wasm_free(signaturePtr, mlsSignature.length);
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(outPtr, maxSize);
+      exports.wasm_free_u32(outLenPtr, 1);
+      throw new Error('Failed to create encrypted group message');
+    }
+    
+    const result = this.readBytes(outPtr, actualLen);
+    
+    // Clean up
+    exports.wasm_free(groupIdPtr, 32);
+    exports.wasm_free(messageData.ptr, messageData.len);
+    exports.wasm_free(signaturePtr, mlsSignature.length);
+    exports.wasm_free(secretPtr, 32);
+    exports.wasm_free(outPtr, maxSize);
+    exports.wasm_free_u32(outLenPtr, 1);
+    
+    return result;
+  }
+
+  // Decrypt group message using NIP-EE (handles both NIP-44 and MLS layers)
+  decryptGroupMessage(
+    exporterSecret: Uint8Array,
+    encryptedData: Uint8Array
+  ): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    // Allocate inputs
+    const secretPtr = exports.wasm_alloc(32);
+    new Uint8Array(exports.memory.buffer, secretPtr, 32).set(exporterSecret);
+    
+    const encryptedPtr = exports.wasm_alloc(encryptedData.length);
+    new Uint8Array(exports.memory.buffer, encryptedPtr, encryptedData.length).set(encryptedData);
+    
+    // Allocate output
+    const maxSize = 4096;
+    const outPtr = exports.wasm_alloc(maxSize);
+    const outLenPtr = exports.wasm_alloc_u32(1);
+    new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = maxSize;
+    
+    const success = exports.wasm_nip_ee_decrypt_group_message(
+      encryptedPtr,
+      encryptedData.length,
+      secretPtr,
+      outPtr,
+      outLenPtr
+    );
+    
+    const actualLen = new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0];
+    
+    if (!success) {
+      exports.wasm_free(secretPtr, 32);
+      exports.wasm_free(encryptedPtr, encryptedData.length);
+      exports.wasm_free(outPtr, maxSize);
+      exports.wasm_free_u32(outLenPtr, 1);
+      throw new Error('Failed to decrypt group message');
+    }
+    
+    const result = this.readBytes(outPtr, actualLen);
+    
+    // Clean up
+    exports.wasm_free(secretPtr, 32);
+    exports.wasm_free(encryptedPtr, encryptedData.length);
+    exports.wasm_free(outPtr, maxSize);
+    exports.wasm_free_u32(outLenPtr, 1);
+    
+    return result;
   }
 }
 

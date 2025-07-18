@@ -53,13 +53,11 @@ fn encryptMLSWithExporterSecret(
     mls_data: []const u8
 ) ![]u8 {
     // Per NIP-EE spec: use the exporter_secret as the private key for NIP-44 encryption
-    const private_key = exporter_secret;
-    
-    // Validate that the key is valid for secp256k1
-    if (!crypto.validateSecp256k1Key(private_key)) {
-        logError("Invalid exporter secret for NIP-44 encryption", .{});
+    // But first derive a valid secp256k1 key from it since exporter secret is just a hash
+    const private_key = crypto.deriveValidKeyFromSeed(exporter_secret) catch |err| {
+        logError("Failed to derive valid key from exporter secret: {}", .{err});
         return error.InvalidKey;
-    }
+    };
     
     const public_key = crypto.getPublicKeyForNip44(private_key) catch |err| {
         logError("Failed to get public key for NIP-44: {}", .{err});
@@ -725,41 +723,35 @@ export fn wasm_nip44_encrypt(
 ) bool {
     const allocator = getAllocator();
     
-    // Use exporter secret as private key for NIP-44
-    const private_key = exporter_secret[0..32].*;
-    
-    // Validate that the key is valid for secp256k1
-    if (!crypto.validateSecp256k1Key(private_key)) {
-        logError("Invalid private key for NIP-44 encryption", .{});
-        return false;
-    }
-    
-    const public_key = crypto.getPublicKeyForNip44(private_key) catch {
-        logError("Failed to get public key for NIP-44", .{});
-        return false;
-    };
-    
-    // Encrypt using NIP-44 v2
+    // Use the proven nip_ee function
+    const exporter_array = exporter_secret[0..32].*;
     const plaintext_slice = plaintext[0..plaintext_len];
-    const encrypted = nip44.encryptRaw(
+    
+    // Use encryptWithExporterSecret from nip_ee - it handles key derivation correctly
+    const encrypted_raw = nip_ee.encryptWithExporterSecret(
         allocator,
-        private_key,
-        public_key, // Self-encryption using exporter secret
+        exporter_array,
         plaintext_slice
     ) catch |err| {
         logError("NIP-44 encrypt failed: {}", .{err});
         return false;
     };
-    defer allocator.free(encrypted);
+    defer allocator.free(encrypted_raw);
+    
+    // Convert to base64 for consistency with existing API
+    const encoded_len = std.base64.standard.Encoder.calcSize(encrypted_raw.len);
+    const encoded = allocator.alloc(u8, encoded_len) catch return false;
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, encrypted_raw);
     
     // Check output buffer size
-    if (out_len.* < encrypted.len) {
+    if (out_len.* < encoded.len) {
         return false;
     }
     
     // Copy to output buffer
-    @memcpy(out_ciphertext[0..encrypted.len], encrypted);
-    out_len.* = @intCast(encrypted.len);
+    @memcpy(out_ciphertext[0..encoded.len], encoded);
+    out_len.* = @intCast(encoded.len);
     
     return true;
 }
@@ -774,26 +766,28 @@ export fn wasm_nip44_decrypt(
 ) bool {
     const allocator = getAllocator();
     
-    // Use exporter secret as private key for NIP-44 (per NIP-EE spec)
-    const private_key = exporter_secret[0..32].*;
-    
-    // Validate that the key is valid for secp256k1
-    if (!crypto.validateSecp256k1Key(private_key)) {
-        logError("Invalid private key for NIP-44 decryption", .{});
-        return false;
-    }
-    
-    const public_key = crypto.getPublicKeyForNip44(private_key) catch return false;
-    
-    // The ciphertext is now raw bytes (not base64) for WASM interop
+    // The ciphertext is base64 encoded string passed as bytes
     const ciphertext_slice = ciphertext[0..ciphertext_len];
     
-    // Use standard NIP-44 decryption with self-decryption keypair
-    const decrypted = nip44.decryptBytes(
+    // First decode the base64 string
+    const decoder = std.base64.standard.Decoder;
+    const decoded_len = decoder.calcSizeForSlice(ciphertext_slice) catch return false;
+    const decoded = allocator.alloc(u8, decoded_len) catch return false;
+    defer allocator.free(decoded);
+    
+    decoder.decode(decoded, ciphertext_slice) catch {
+        logError("Failed to decode base64 ciphertext", .{});
+        return false;
+    };
+    
+    // Use the proven nip_ee function
+    const exporter_array = exporter_secret[0..32].*;
+    
+    // Use decryptWithExporterSecret from nip_ee - it handles key derivation correctly
+    const decrypted = nip_ee.decryptWithExporterSecret(
         allocator,
-        private_key,
-        public_key, // Self-decryption using exporter secret derived keypair
-        ciphertext_slice
+        exporter_array,
+        decoded
     ) catch return false;
     defer allocator.free(decrypted);
     
