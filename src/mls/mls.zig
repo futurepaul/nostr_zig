@@ -13,6 +13,11 @@ pub const openmls_key_packages = @import("openmls_key_packages.zig");
 pub const ephemeral = @import("ephemeral.zig");
 pub const group_messaging = @import("group_messaging.zig");
 pub const serialization = @import("serialization.zig");
+pub const state_machine = @import("state_machine.zig");
+pub const mls_messages = @import("mls_messages.zig");
+pub const crypto_utils = @import("crypto_utils.zig");
+pub const welcome_events = @import("welcome_events.zig");
+pub const nip59 = @import("nip59.zig");
 
 // Re-export commonly used types
 pub const Epoch = types.Epoch;
@@ -222,5 +227,6 @@ test {
     _ = @import("messages.zig");
     _ = @import("ephemeral.zig");
     _ = @import("group_messaging.zig");
+    _ = @import("state_machine.zig");
     _ = @import("test_example.zig");
 }

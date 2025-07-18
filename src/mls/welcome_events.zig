@@ -30,41 +30,85 @@ pub const WelcomeEvent = struct {
         key_package_event_id: []const u8,
         group_relays: []const []const u8,
     ) !event.Event {
+        // Validate inputs
+        if (key_package_event_id.len == 0) {
+            return error.InvalidKeyPackageEventId;
+        }
+        if (group_relays.len == 0) {
+            return error.NoRelaysProvided;
+        }
+        
         // Serialize the MLS Welcome message
         const welcome_bytes = try welcomes.serializeWelcome(allocator, mls_welcome);
         defer allocator.free(welcome_bytes);
         
-        // Create tags
+        // Create tags with proper error handling
         var tags_list = std.ArrayList([]const []const u8).init(allocator);
         defer tags_list.deinit();
         
+        // Track allocations for cleanup
+        var allocated_strings = std.ArrayList([]u8).init(allocator);
+        defer {
+            for (allocated_strings.items) |str| {
+                allocator.free(str);
+            }
+            allocated_strings.deinit();
+        }
+        
         // Add e tag for KeyPackage Event reference
         const e_tag = try allocator.alloc([]const u8, 2);
-        e_tag[0] = try allocator.dupe(u8, "e");
-        e_tag[1] = try allocator.dupe(u8, key_package_event_id);
+        errdefer allocator.free(e_tag);
+        
+        const e_tag_name = try allocator.dupe(u8, "e");
+        try allocated_strings.append(e_tag_name);
+        e_tag[0] = e_tag_name;
+        
+        const e_tag_value = try allocator.dupe(u8, key_package_event_id);
+        try allocated_strings.append(e_tag_value);
+        e_tag[1] = e_tag_value;
+        
         try tags_list.append(e_tag);
         
         // Add relays tag
         const relay_tag = try allocator.alloc([]const u8, 1 + group_relays.len);
-        relay_tag[0] = try allocator.dupe(u8, "relays");
+        errdefer allocator.free(relay_tag);
+        
+        const relay_tag_name = try allocator.dupe(u8, "relays");
+        try allocated_strings.append(relay_tag_name);
+        relay_tag[0] = relay_tag_name;
+        
         for (group_relays, 1..) |relay, i| {
-            relay_tag[i] = try allocator.dupe(u8, relay);
+            const relay_copy = try allocator.dupe(u8, relay);
+            try allocated_strings.append(relay_copy);
+            relay_tag[i] = relay_copy;
         }
         try tags_list.append(relay_tag);
         
         const tags = try tags_list.toOwnedSlice();
+        errdefer {
+            for (tags) |tag| {
+                allocator.free(tag);
+            }
+            allocator.free(tags);
+        }
         
         // Create the inner Welcome Event rumor (kind: 444)
         // As per NIP-59, this must be an unsigned rumor
         const sender_pubkey_hex = try crypto.pubkeyToHex(allocator, try crypto.getPublicKey(sender_privkey));
-        defer allocator.free(sender_pubkey_hex);
+        errdefer allocator.free(sender_pubkey_hex);
+        try allocated_strings.append(@constCast(sender_pubkey_hex));
         
         // Convert welcome_bytes to hex string for content
         const content_hex = try std.fmt.allocPrint(allocator, "{}", .{std.fmt.fmtSliceHexLower(welcome_bytes)});
-        defer allocator.free(content_hex);
+        errdefer allocator.free(content_hex);
+        try allocated_strings.append(content_hex);
+        
+        const event_id = try generateEventId(allocator);
+        errdefer allocator.free(event_id);
+        try allocated_strings.append(@constCast(event_id));
         
         const welcome_rumor = event.Event{
-            .id = try generateEventId(allocator), 
+            .id = event_id, 
             .pubkey = sender_pubkey_hex,
             .created_at = wasm_time.timestamp(),
             .kind = 444,
@@ -74,12 +118,19 @@ pub const WelcomeEvent = struct {
         };
         
         // Gift-wrap the Welcome Event rumor
-        return try nip59.createGiftWrappedEvent(
+        // If this succeeds, ownership of allocated memory transfers to the result
+        const result = try nip59.createGiftWrappedEvent(
             allocator,
             sender_privkey,
             recipient_pubkey,
             welcome_rumor,
         );
+        
+        // Clear the allocated_strings list to prevent double-free
+        // since ownership has been transferred
+        allocated_strings.clearRetainingCapacity();
+        
+        return result;
     }
     
     /// Parse a gift-wrapped Welcome Event
@@ -103,11 +154,22 @@ pub const WelcomeEvent = struct {
         
         // Extract KeyPackage Event ID from e tag
         var key_package_id: ?[]const u8 = null;
+        errdefer if (key_package_id) |id| allocator.free(id);
+        
         var relays = std.ArrayList([]const u8).init(allocator);
-        defer relays.deinit();
+        errdefer {
+            for (relays.items) |relay| {
+                allocator.free(relay);
+            }
+            relays.deinit();
+        }
         
         for (inner_event.tags) |tag| {
             if (tag.len >= 2 and std.mem.eql(u8, tag[0], "e")) {
+                if (key_package_id != null) {
+                    // Multiple e tags is an error
+                    return error.DuplicateKeyPackageId;
+                }
                 key_package_id = try allocator.dupe(u8, tag[1]);
             } else if (tag.len >= 1 and std.mem.eql(u8, tag[0], "relays")) {
                 for (tag[1..]) |relay| {
@@ -120,6 +182,11 @@ pub const WelcomeEvent = struct {
             return error.MissingKeyPackageId;
         }
         
+        // Validate hex content length
+        if (inner_event.content.len == 0 or inner_event.content.len % 2 != 0) {
+            return error.InvalidHexContent;
+        }
+        
         // Decode hex content back to bytes
         const welcome_bytes = try allocator.alloc(u8, inner_event.content.len / 2);
         defer allocator.free(welcome_bytes);
@@ -128,12 +195,26 @@ pub const WelcomeEvent = struct {
         
         // Parse the MLS Welcome message
         const mls_welcome = try welcomes.parseWelcome(allocator, welcome_bytes);
+        errdefer welcomes.freeWelcome(allocator, mls_welcome);
         
+        // Parse sender pubkey
+        const sender_pubkey = try crypto.hexToPubkey(inner_event.pubkey);
+        
+        // Take ownership of relays array
+        const relays_owned = try relays.toOwnedSlice();
+        errdefer {
+            for (relays_owned) |relay| {
+                allocator.free(relay);
+            }
+            allocator.free(relays_owned);
+        }
+        
+        // Success - transfer ownership to ParsedWelcome
         return ParsedWelcome{
             .mls_welcome = mls_welcome,
             .key_package_event_id = key_package_id.?,
-            .relays = try relays.toOwnedSlice(),
-            .sender_pubkey = try crypto.hexToPubkey(inner_event.pubkey),
+            .relays = relays_owned,
+            .sender_pubkey = sender_pubkey,
         };
     }
 };
@@ -165,6 +246,14 @@ pub fn sendWelcomeToNewMember(
     new_member_key_package: types.KeyPackage,
     key_package_event_id: []const u8,
 ) !event.Event {
+    // Validate inputs
+    if (group_metadata.relays.len == 0) {
+        return error.NoGroupRelays;
+    }
+    if (key_package_event_id.len == 0) {
+        return error.InvalidKeyPackageEventId;
+    }
+    
     // Create MLS Welcome message
     const mls_welcome = try welcomes.createWelcome(
         allocator,
@@ -177,7 +266,13 @@ pub fn sendWelcomeToNewMember(
     
     // Get recipient's public key from their KeyPackage credential
     const recipient_pubkey = switch (new_member_key_package.leaf_node.credential) {
-        .basic => |basic| try crypto.hexToPubkey(basic.identity),
+        .basic => |basic| blk: {
+            // Validate identity format
+            if (basic.identity.len != 64) {
+                return error.InvalidCredentialIdentity;
+            }
+            break :blk try crypto.hexToPubkey(basic.identity);
+        },
         else => return error.UnsupportedCredentialType,
     };
     
@@ -199,9 +294,19 @@ pub fn processWelcomeEvent(
     wrapped_welcome: event.Event,
     recipient_privkey: [32]u8,
 ) !mls.JoinResult {
+    // Validate input event
+    if (wrapped_welcome.kind != 1059) {
+        return error.NotGiftWrappedEvent;
+    }
+    
     // Parse the Welcome Event
     const parsed = try WelcomeEvent.parse(allocator, wrapped_welcome, recipient_privkey);
     defer parsed.deinit(allocator);
+    
+    // Validate parsed data
+    if (parsed.relays.len == 0) {
+        return error.NoRelaysInWelcome;
+    }
     
     // Extract MLS Welcome data
     const welcome_bytes = try welcomes.serializeWelcome(allocator, parsed.mls_welcome);

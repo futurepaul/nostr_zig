@@ -773,7 +773,7 @@ test "key package serialization roundtrip" {
     try std.testing.expect(original.init_key.eql(parsed.init_key));
 }
 
-fn freeKeyPackage(allocator: std.mem.Allocator, kp: types.KeyPackage) void {
+pub fn freeKeyPackage(allocator: std.mem.Allocator, kp: types.KeyPackage) void {
     allocator.free(kp.init_key.data);
     allocator.free(kp.leaf_node.encryption_key.data);
     allocator.free(kp.leaf_node.signature_key.data);

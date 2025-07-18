@@ -133,12 +133,14 @@
 - [ ] **Last Resort KeyPackages** - Implement `last_resort` extension to minimize race conditions
 
 ### 2. Group Management
+- ✅ **Basic Member Management** - Add/remove/update members with proposals
+- ✅ **Epoch Management** - Properly track and advance group epochs
+- ✅ **Proposal/Commit System** - Queue and batch state changes
 - [ ] **Group Admin Controls** - Implement `admin_pubkeys` from nostr_group_data extension
 - [ ] **Group Name/Description** - Store and display group metadata from extension
 - [ ] **Relay List Management** - Use relay lists from nostr_group_data extension
 - [ ] **Proposal/Commit Ordering** - Handle race conditions with created_at timestamps
-- [ ] **Epoch Management** - Properly track and advance group epochs
-- [ ] **Member Removal** - Allow admins to remove members from groups
+- [ ] **Admin-only Member Removal** - Restrict removals to admin users
 
 ### 3. Key Management
 - [ ] **Signing Key Rotation** - Implement automatic rotation for post-compromise security

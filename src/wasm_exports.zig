@@ -1240,6 +1240,11 @@ export fn wasm_create_welcome_event(
 ) bool {
     const allocator = getAllocator();
     
+    // Validate inputs
+    if (mls_welcome_data_len == 0 or key_package_event_id_len == 0 or relays_json_len == 0) {
+        return false;
+    }
+    
     // Parse inputs
     const sender_key = sender_privkey[0..32].*;
     const recipient_key = recipient_pubkey[0..32].*;
@@ -1255,6 +1260,11 @@ export fn wasm_create_welcome_event(
         .{}
     ) catch return false;
     defer parsed.deinit();
+    
+    // Validate relay array is not empty
+    if (parsed.value.len == 0) {
+        return false;
+    }
     
     // Parse MLS Welcome message
     const mls_welcome = @import("mls/welcomes.zig").parseWelcome(
@@ -1306,6 +1316,11 @@ export fn wasm_parse_welcome_event(
 ) bool {
     const allocator = getAllocator();
     
+    // Validate inputs
+    if (wrapped_event_json_len == 0) {
+        return false;
+    }
+    
     // Parse inputs
     const recipient_key = recipient_privkey[0..32].*;
     const event_json = wrapped_event_json[0..wrapped_event_json_len];
@@ -1316,6 +1331,11 @@ export fn wasm_parse_welcome_event(
         event_json,
     ) catch return false;
     defer wrapped_event.deinit(allocator);
+    
+    // Validate it's a gift-wrapped event
+    if (wrapped_event.kind != 1059) {
+        return false;
+    }
     
     // Parse Welcome Event
     const parsed_welcome = welcome_events.WelcomeEvent.parse(
