@@ -145,7 +145,7 @@ fn defaultHpkeSeal(allocator: std.mem.Allocator, public_key: []const u8, info: [
     const hpke = mls_zig.hpke;
     
     // Create X25519 HPKE suite - this matches the MLS cipher suite
-    const suite = try hpke.Suite.init(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
+    const SuiteType = try hpke.createSuite(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
     
     // Validate public key length
     if (public_key.len != 32) {
@@ -153,7 +153,7 @@ fn defaultHpkeSeal(allocator: std.mem.Allocator, public_key: []const u8, info: [
     }
     
     // Create client context and get encapsulated secret
-    const client_and_secret = try suite.createClientContext(public_key, info, null, null);
+    const client_and_secret = try SuiteType.createClientContext(public_key, info, null, null, wasm_random.fillSecureRandom);
     var client_ctx = client_and_secret.client_ctx;
     
     // Calculate ciphertext length including tag
@@ -177,7 +177,7 @@ fn defaultHpkeOpen(allocator: std.mem.Allocator, private_key: []const u8, info: 
     const hpke = mls_zig.hpke;
     
     // Create X25519 HPKE suite - this matches the MLS cipher suite
-    const suite = try hpke.Suite.init(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
+    const SuiteType = try hpke.createSuite(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
     
     // Validate private key length
     if (private_key.len != 32) {
@@ -185,10 +185,10 @@ fn defaultHpkeOpen(allocator: std.mem.Allocator, private_key: []const u8, info: 
     }
     
     // Create server key pair from private key
-    const server_kp = try suite.kem.deterministicKeyPairFn(private_key);
+    const server_kp = try SuiteType.deterministicKeyPair(private_key);
     
     // Create server context from encapsulated secret
-    var server_ctx = try suite.createServerContext(ciphertext.kem_output, server_kp, info, null);
+    var server_ctx = try SuiteType.createServerContext(ciphertext.kem_output, server_kp, info, null);
     
     // Calculate plaintext length (ciphertext length minus tag)
     const plaintext_len = ciphertext.ciphertext.len - server_ctx.tagLength();
@@ -205,10 +205,14 @@ fn defaultHpkeGenerateKeyPair(allocator: std.mem.Allocator) anyerror!HpkeKeyPair
     const hpke = mls_zig.hpke;
     
     // Create X25519 HPKE suite - this matches the MLS cipher suite
-    const suite = try hpke.Suite.init(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
+    const SuiteType = try hpke.createSuite(0x0020, 0x0001, 0x0001); // X25519, HKDF-SHA256, AES-128-GCM
     
-    // Generate a key pair
-    const keypair = try suite.generateKeyPair();
+    // Generate deterministic seed using WASM-safe randomness
+    var seed: [32]u8 = undefined;
+    wasm_random.secure_random.bytes(&seed);
+    
+    // Generate a key pair deterministically from the seed
+    const keypair = try SuiteType.deterministicKeyPair(&seed);
     
     // Copy the keys to return them
     const private_key = try allocator.dupe(u8, keypair.secret_key.constSlice());

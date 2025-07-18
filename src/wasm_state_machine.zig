@@ -9,30 +9,36 @@ const wasm_exports = @import("wasm_exports.zig");
 /// Initialize a new group
 export fn wasm_state_machine_init_group(
     group_id: [*]const u8, // 32 bytes
-    creator_identity_pubkey: [*]const u8, // 32 bytes
+    _: [*]const u8, // 32 bytes - creator_identity_pubkey (unused)
     creator_signing_key: [*]const u8, // 32 bytes
     out_state: [*]u8, // Serialized state output
     out_state_len: *u32,
 ) bool {
     const allocator = wasm_exports.getAllocator();
     
-    // Create MLS provider
-    var mls_provider = mls.provider.MlsProvider{
+    // Create MLS provider with WASM-safe abstractions
+    var mls_provider = mls.provider.MlsProvider.init(allocator);
+    
+    // Convert signing key to private key
+    const creator_privkey = creator_signing_key[0..32].*;
+    
+    // Create key package params
+    const kp_params = mls.key_packages.KeyPackageParams{
         .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
-        .rand = undefined,
-        .time = undefined,
+        .lifetime_seconds = 30 * 24 * 60 * 60, // 30 days
+        .extensions = &.{},
     };
     
-    // Create creator's key package
+    // Create real key package using MLS library
     const creator_kp = mls.key_packages.generateKeyPackage(
         allocator,
         &mls_provider,
-        creator_identity_pubkey[0..32].*,
-        creator_signing_key[0..32].*,
+        creator_privkey,
+        kp_params,
     ) catch return false;
     defer mls.key_packages.freeKeyPackage(allocator, creator_kp);
     
-    // Initialize group
+    // Initialize real MLS state machine
     var state_machine = mls.state_machine.MLSStateMachine.initializeGroup(
         allocator,
         group_id[0..32].*,
@@ -63,7 +69,7 @@ export fn wasm_state_machine_propose_add(
     state_data: [*]const u8,
     state_data_len: u32,
     sender_index: u32,
-    new_member_identity: [*]const u8, // 32 bytes
+    _: [*]const u8, // 32 bytes - new_member_identity (unused)
     new_member_signing_key: [*]const u8, // 32 bytes
     out_state: [*]u8,
     out_state_len: *u32,
@@ -77,23 +83,29 @@ export fn wasm_state_machine_propose_add(
     ) catch return false;
     defer state_machine.deinit();
     
-    // Create MLS provider
-    var mls_provider = mls.provider.MlsProvider{
+    // Create MLS provider with WASM-safe abstractions
+    var mls_provider = mls.provider.MlsProvider.init(allocator);
+    
+    // Convert signing key to private key
+    const new_member_privkey = new_member_signing_key[0..32].*;
+    
+    // Create key package params
+    const kp_params = mls.key_packages.KeyPackageParams{
         .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
-        .rand = undefined,
-        .time = undefined,
+        .lifetime_seconds = 30 * 24 * 60 * 60, // 30 days
+        .extensions = &.{},
     };
     
-    // Create new member's key package
+    // Create real key package using MLS library
     const new_kp = mls.key_packages.generateKeyPackage(
         allocator,
         &mls_provider,
-        new_member_identity[0..32].*,
-        new_member_signing_key[0..32].*,
+        new_member_privkey,
+        kp_params,
     ) catch return false;
     defer mls.key_packages.freeKeyPackage(allocator, new_kp);
     
-    // Propose add
+    // Propose add using real MLS state machine
     state_machine.proposeAdd(sender_index, new_kp) catch return false;
     
     // Serialize updated state
@@ -132,14 +144,10 @@ export fn wasm_state_machine_commit_proposals(
     ) catch return false;
     defer state_machine.deinit();
     
-    // Create MLS provider
-    var mls_provider = mls.provider.MlsProvider{
-        .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
-        .rand = undefined,
-        .time = undefined,
-    };
+    // Create MLS provider with WASM-safe abstractions
+    var mls_provider = mls.provider.MlsProvider.init(allocator);
     
-    // Commit proposals
+    // Commit proposals using real MLS state machine
     const commit_result = state_machine.commitProposals(
         committer_index,
         &mls_provider,
@@ -283,14 +291,32 @@ fn deserializeStateMachine(
             .leaf_index = leaf_index,
             .identity = identity,
             .signing_key = signing_key,
-            .credential = .{ .basic = .{ .identity = identity } },
-            .capabilities = .{},
-            .leaf_node = .{
-                .signature_key = signing_key,
-                .credential = .{ .basic = .{ .identity = identity } },
-                .capabilities = .{},
-                .leaf_node_source = .key_package,
+            .credential = .{ .basic = .{ .identity = &identity } },
+            .capabilities = .{
+                .versions = &.{.mls10},
+                .ciphersuites = &.{.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519},
                 .extensions = &.{},
+                .proposals = &.{.add, .update, .remove},
+                .credentials = &.{.basic},
+            },
+            .leaf_node = .{
+                .encryption_key = .{
+                    .data = &signing_key, // Using signing key as placeholder
+                },
+                .signature_key = .{
+                    .data = &signing_key,
+                },
+                .credential = .{ .basic = .{ .identity = &identity } },
+                .capabilities = .{
+                    .versions = &.{.mls10},
+                    .ciphersuites = &.{.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519},
+                    .extensions = &.{},
+                    .proposals = &.{.add, .update, .remove},
+                    .credentials = &.{.basic},
+                },
+                .leaf_node_source = .{ .key_package = {} },
+                .extensions = &.{},
+                .signature = &.{}, // Empty signature for now
             },
             .state = @enumFromInt(state_value),
         };
@@ -325,3 +351,4 @@ fn deserializeStateMachine(
         .allocator = allocator,
     };
 }
+

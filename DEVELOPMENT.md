@@ -27,6 +27,29 @@
 - Avoid business logic in WASM exports - they should only handle memory management and type conversion
 - Always use WASM-safe abstractions for time (`wasm_time.zig`) and randomness (`wasm_random.zig`)
 
+### 🚨 **NEVER CREATE FAKE/DUMMY/SIMPLIFIED IMPLEMENTATIONS** 🚨
+**This is a critical rule that must never be broken:**
+
+- **NO PLACEHOLDERS**: Never create "dummy", "fake", "simplified", or "minimal" implementations
+- **NO SHORTCUTS**: If real cryptography is hard to implement, STOP and ask for help - don't fake it
+- **REAL CRYPTO ONLY**: Always use proper cryptographic implementations, never XOR, zeros, or fake data
+- **NO STUBS**: Don't create stub functions that return fake data "for now"
+- **PROPER RANDOM**: We have `wasm_random.zig` - use it for all randomness, never fake random data
+- **PROPER TIME**: We have `wasm_time.zig` - use it for all timestamps, never fake time
+- **FIND ROOT CAUSE**: If something doesn't work, debug the real issue, don't work around it with fakes
+
+**Why this matters:**
+- Fake implementations are extremely hard to find and remove later
+- They create security vulnerabilities and false test results
+- They violate the "real cryptography" principle fundamental to this project
+- They make it impossible to trust the system's security properties
+
+**What to do instead:**
+- If you encounter POSIX issues, fix the abstraction layer (`wasm_random.zig`, `wasm_time.zig`)
+- If MLS operations are complex, implement them properly using `mls_zig`
+- If something is missing from `mls_zig`, contribute the real implementation there
+- If you're stuck, ask for help - never fake your way around the problem
+
 ### 5. **Visualizer Last**
 - Only update the visualizer after both pure Zig and WASM tests are passing
 - This ensures the underlying implementation is solid before adding UI complexity

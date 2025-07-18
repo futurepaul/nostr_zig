@@ -12,6 +12,7 @@ const key_packages = @import("mls/key_packages.zig");
 const provider = @import("mls/provider.zig");
 const wasm_random = @import("wasm_random.zig");
 const hkdf = @import("crypto/hkdf.zig");
+const wasm_state_machine = @import("wasm_state_machine.zig");
 
 // Declare the external functions directly here
 extern fn getRandomValues(buf: [*]u8, len: usize) void;
@@ -26,7 +27,7 @@ var fba: ?std.heap.FixedBufferAllocator = null;
 var mls_buffer: [512 * 1024]u8 = undefined; // 512KB buffer for MLS operations
 var mls_fba: ?std.heap.FixedBufferAllocator = null;
 
-fn getAllocator() std.mem.Allocator {
+pub fn getAllocator() std.mem.Allocator {
     if (fba == null) {
         fba = std.heap.FixedBufferAllocator.init(&buffer);
     }
@@ -1488,4 +1489,7 @@ export fn wasm_unwrap_gift_wrap(
     
     return true;
 }
+
+// Re-export state machine functions
+pub usingnamespace wasm_state_machine;
 

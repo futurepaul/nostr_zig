@@ -41,7 +41,7 @@
             .hash = "websocket-0.1.0-ZPISdbZVAwAgDzIxt0cpiG4hjPVq92ALsEPLSCPbMQqv",
         },
         .mls_zig = .{
-            .path = "../mls_zig",
+            .path = "deps/mls_zig",
         },
         .libsecp256k1 = .{
             .url = "https://github.com/zig-bitcoin/libsecp256k1-zig/archive/refs/heads/main.tar.gz",
@@ -52,6 +52,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "deps",
         // For example...
         //"LICENSE",
         //"README.md",
