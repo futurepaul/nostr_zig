@@ -539,12 +539,9 @@ test "MLS state machine - group creation" {
     var mls_provider = provider.MlsProvider.init(allocator);
     
     // Create creator's key package with a valid private key
-    var creator_privkey: [32]u8 = undefined;
-    @memcpy(&creator_privkey, &[_]u8{0x01} ** 32);
-    // Ensure it's a valid secp256k1 key by using the actual key generation
-    creator_privkey = crypto.deriveValidKeyFromSeed(creator_privkey) catch {
+    const creator_privkey = crypto.deriveValidKeyFromSeed([_]u8{0x01} ** 32) catch blk: {
         // If that fails, generate a real key
-        creator_privkey = try crypto.generatePrivateKey();
+        break :blk try crypto.generatePrivateKey();
     };
     
     const creator_kp = try key_packages.generateKeyPackage(

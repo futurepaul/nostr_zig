@@ -32,6 +32,9 @@ pub const secure_random = struct {
     }
 };
 
+/// Function type for random number generation
+pub const RandomFunction = fn (buf: []u8) void;
+
 test "secure random generation" {
     var buf: [32]u8 = undefined;
     secure_random.bytes(&buf);

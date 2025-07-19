@@ -18,6 +18,7 @@ pub const mls_messages = @import("mls_messages.zig");
 pub const crypto_utils = @import("crypto_utils.zig");
 pub const welcome_events = @import("welcome_events.zig");
 pub const nip59 = @import("nip59.zig");
+pub const tree_kem = @import("tree_kem.zig");
 
 // Re-export commonly used types
 pub const Epoch = types.Epoch;
@@ -229,4 +230,5 @@ test {
     _ = @import("group_messaging.zig");
     _ = @import("state_machine.zig");
     _ = @import("test_example.zig");
+    _ = @import("tree_kem.zig");
 }
