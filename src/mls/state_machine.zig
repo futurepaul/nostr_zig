@@ -6,6 +6,26 @@ const key_packages = @import("key_packages.zig");
 const welcomes = @import("welcomes.zig");
 const mls_messages = @import("mls_messages.zig");
 const crypto = @import("../crypto.zig");
+const extension = @import("extension.zig");
+
+/// Key rotation policy configuration
+pub const KeyRotationPolicy = struct {
+    /// Enable automatic key rotation
+    enabled: bool = true,
+    /// Rotate keys every N epochs (0 = rotate every epoch)
+    rotation_interval: u64 = 1,
+    /// Rotation mode
+    mode: RotationMode = .automatic,
+    
+    pub const RotationMode = enum {
+        /// Automatic rotation based on epoch advancement
+        automatic,
+        /// Manual rotation only
+        manual,
+        /// Rotation based on time intervals (future enhancement)
+        time_based,
+    };
+};
 
 /// MLS Group State Machine
 /// Manages the lifecycle of an MLS group including epochs, membership, and state transitions
@@ -36,6 +56,12 @@ pub const MLSStateMachine = struct {
     
     /// Epoch secrets
     epoch_secrets: EpochSecrets,
+    
+    /// Key rotation policy
+    rotation_policy: KeyRotationPolicy,
+    
+    /// Member's Nostr private key for key rotation
+    nostr_private_key: [32]u8,
     
     /// Allocator for dynamic memory
     allocator: std.mem.Allocator,
@@ -120,12 +146,118 @@ pub const MLSStateMachine = struct {
         external_pub: [32]u8,
     };
     
+    /// Extract NostrGroupData from group context extensions
+    fn extractNostrGroupData(self: *const MLSStateMachine) !?extension.NostrGroupData {
+        for (self.group_context.extensions) |ext| {
+            if (ext.extension_type == .nostr_group_data) {
+                return try extension.extractNostrGroupData(self.allocator, ext);
+            }
+        }
+        return null;
+    }
+    
+    /// Check if automatic key rotation is needed for the current epoch
+    fn shouldRotateKey(self: *const MLSStateMachine, member_index: u32) bool {
+        if (!self.rotation_policy.enabled or self.rotation_policy.mode != .automatic) {
+            return false;
+        }
+        
+        // Check if this member is the one we can rotate (ourselves)
+        if (member_index != 0) { // For now, only the creator (index 0) can auto-rotate
+            return false;
+        }
+        
+        // Rotate every rotation_interval epochs (0 means every epoch)
+        if (self.rotation_policy.rotation_interval == 0) {
+            return true; // Rotate every epoch
+        }
+        
+        return (self.epoch + 1) % self.rotation_policy.rotation_interval == 0;
+    }
+    
+    /// Automatically propose key rotation if needed
+    fn proposeAutomaticRotation(self: *MLSStateMachine) !bool {
+        if (!self.shouldRotateKey(0)) {
+            return false;
+        }
+        
+        // Generate new signing key for the upcoming epoch
+        const new_epoch = self.epoch + 1;
+        const new_signing_private_key = try crypto_utils.deriveMlsSigningKey(
+            self.allocator,
+            self.nostr_private_key,
+            new_epoch,
+        );
+        defer self.allocator.free(new_signing_private_key);
+        
+        // Derive the public key from the private key
+        const new_signing_public_key = try crypto_utils.deriveMlsPublicKey(
+            self.allocator,
+            new_signing_private_key,
+        );
+        
+        // Create updated leaf node with new signing public key
+        var updated_leaf = self.members.items[0].leaf_node;
+        updated_leaf.signature_key = types.SignaturePublicKey{
+            .data = try self.allocator.dupe(u8, &new_signing_public_key),
+        };
+        
+        // Propose the update
+        try self.proposeUpdate(0, updated_leaf);
+        
+        return true;
+    }
+    
+    /// Check if a member is an admin
+    fn isMemberAdmin(self: *const MLSStateMachine, member_index: u32) !bool {
+        if (member_index >= self.members.items.len) {
+            return false;
+        }
+        
+        const group_data = try self.extractNostrGroupData();
+        if (group_data) |gd| {
+            defer {
+                self.allocator.free(gd.name);
+                self.allocator.free(gd.description);
+                self.allocator.free(gd.admins);
+                for (gd.relays) |relay| {
+                    self.allocator.free(relay);
+                }
+                self.allocator.free(gd.relays);
+                if (gd.image) |img| {
+                    self.allocator.free(img);
+                }
+            }
+            
+            // Extract the member's Nostr public key from their identity
+            const member = self.members.items[member_index];
+            var pubkey: [32]u8 = undefined;
+            
+            // Identity is hex-encoded, need to decode it
+            if (member.identity.len != 64) return false;
+            
+            // Convert hex to bytes
+            for (0..32) |i| {
+                const hi = std.fmt.charToDigit(member.identity[i * 2], 16) catch return false;
+                const lo = std.fmt.charToDigit(member.identity[i * 2 + 1], 16) catch return false;
+                pubkey[i] = (hi << 4) | lo;
+            }
+            
+            return gd.isAdmin(pubkey);
+        }
+        
+        // If no group data extension, assume first member (creator) is admin
+        return member_index == 0;
+    }
+    
     /// Initialize a new group (creator's perspective)
     pub fn initializeGroup(
         allocator: std.mem.Allocator,
         group_id: [32]u8,
         creator_key_package: types.KeyPackage,
+        creator_nostr_private_key: [32]u8,
         mls_provider: *provider.MlsProvider,
+        rotation_policy: KeyRotationPolicy,
     ) !MLSStateMachine {
         var members = std.ArrayList(Member).init(allocator);
         errdefer members.deinit();
@@ -185,6 +317,8 @@ pub const MLSStateMachine = struct {
             .interim_transcript_hash = [_]u8{0} ** 32,
             .group_context = group_context,
             .epoch_secrets = epoch_secrets,
+            .rotation_policy = rotation_policy,
+            .nostr_private_key = creator_nostr_private_key,
             .allocator = allocator,
         };
         
@@ -220,6 +354,12 @@ pub const MLSStateMachine = struct {
             return error.InvalidSenderIndex;
         }
         
+        // Check if sender is admin
+        const is_admin = try self.isMemberAdmin(sender_index);
+        if (!is_admin) {
+            return error.PermissionDenied;
+        }
+        
         const proposal = Proposal{
             .proposal_type = .add,
             .sender = sender_index,
@@ -241,6 +381,12 @@ pub const MLSStateMachine = struct {
         }
         if (removed_index >= self.members.items.len) {
             return error.InvalidRemovedIndex;
+        }
+        
+        // Check if sender is admin
+        const is_admin = try self.isMemberAdmin(sender_index);
+        if (!is_admin) {
+            return error.PermissionDenied;
         }
         
         const proposal = Proposal{
@@ -285,8 +431,34 @@ pub const MLSStateMachine = struct {
             return error.InvalidCommitterIndex;
         }
         
+        // Try to automatically propose key rotation if needed and no proposals exist
+        if (self.pending_proposals.items.len == 0) {
+            const rotation_proposed = try self.proposeAutomaticRotation();
+            if (!rotation_proposed) {
+                return error.NoPendingProposals;
+            }
+        }
+        
         if (self.pending_proposals.items.len == 0) {
             return error.NoPendingProposals;
+        }
+        
+        // Check if committer has permission to commit add/remove proposals
+        const committer_is_admin = try self.isMemberAdmin(committer_index);
+        var has_add_remove_proposals = false;
+        
+        for (self.pending_proposals.items) |proposal| {
+            switch (proposal.data) {
+                .add, .remove => {
+                    has_add_remove_proposals = true;
+                    break;
+                },
+                else => {},
+            }
+        }
+        
+        if (has_add_remove_proposals and !committer_is_admin) {
+            return error.PermissionDenied;
         }
         
         // Process proposals in order
@@ -538,11 +710,8 @@ test "MLS state machine - group creation" {
     // Create MLS provider
     var mls_provider = provider.MlsProvider.init(allocator);
     
-    // Create creator's key package with a valid private key
-    const creator_privkey = crypto.deriveValidKeyFromSeed([_]u8{0x01} ** 32) catch blk: {
-        // If that fails, generate a real key
-        break :blk try crypto.generatePrivateKey();
-    };
+    // Generate a proper Nostr private key
+    const creator_privkey = try crypto.generatePrivateKey();
     
     const creator_kp = try key_packages.generateKeyPackage(
         allocator,
@@ -558,7 +727,9 @@ test "MLS state machine - group creation" {
         allocator,
         group_id,
         creator_kp,
+        creator_privkey,
         &mls_provider,
+        KeyRotationPolicy{}, // Use default rotation policy
     );
     defer state_machine.deinit();
     
@@ -578,7 +749,7 @@ test "MLS state machine - add member proposal and commit" {
     // Create MLS provider
     var mls_provider = provider.MlsProvider.init(allocator);
     
-    // Create key packages with valid private keys
+    // Generate proper Nostr private keys
     const alice_privkey = try crypto.generatePrivateKey();
     const alice_kp = try key_packages.generateKeyPackage(
         allocator,
@@ -603,7 +774,9 @@ test "MLS state machine - add member proposal and commit" {
         allocator,
         group_id,
         alice_kp,
+        alice_privkey,
         &mls_provider,
+        KeyRotationPolicy{}, // Use default rotation policy
     );
     defer state_machine.deinit();
     
@@ -633,7 +806,7 @@ test "MLS state machine - remove member proposal and commit" {
     // Create MLS provider
     var mls_provider = provider.MlsProvider.init(allocator);
     
-    // Create key packages for 3 members
+    // Generate proper Nostr private keys for 3 members
     const alice_privkey = try crypto.generatePrivateKey();
     const alice_kp = try key_packages.generateKeyPackage(allocator, &mls_provider, alice_privkey, .{});
     defer key_packages.freeKeyPackage(allocator, alice_kp);
@@ -648,7 +821,7 @@ test "MLS state machine - remove member proposal and commit" {
     
     // Initialize group with Alice
     const group_id = [_]u8{0x42} ** 32;
-    var state_machine = try MLSStateMachine.initializeGroup(allocator, group_id, alice_kp, &mls_provider);
+    var state_machine = try MLSStateMachine.initializeGroup(allocator, group_id, alice_kp, alice_privkey, &mls_provider, KeyRotationPolicy{});
     defer state_machine.deinit();
     
     // Add Bob and Charlie
@@ -677,4 +850,275 @@ test "MLS state machine - remove member proposal and commit" {
     
     // Bob should be gone
     try std.testing.expectEqual(@as(?*const MLSStateMachine.Member, null), state_machine.getMember(2));
+}
+
+test "MLS state machine - admin controls" {
+    const allocator = std.testing.allocator;
+    
+    // Create MLS provider
+    var mls_provider = provider.MlsProvider.init(allocator);
+    
+    // Generate proper Nostr private keys
+    const alice_privkey = try crypto.generatePrivateKey();
+    const alice_kp = try key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        alice_privkey,
+        .{},
+    );
+    defer key_packages.freeKeyPackage(allocator, alice_kp);
+    
+    const bob_privkey = try crypto.generatePrivateKey();
+    const bob_kp = try key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        bob_privkey,
+        .{},
+    );
+    defer key_packages.freeKeyPackage(allocator, bob_kp);
+    
+    const charlie_privkey = try crypto.generatePrivateKey();
+    const charlie_kp = try key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        charlie_privkey,
+        .{},
+    );
+    defer key_packages.freeKeyPackage(allocator, charlie_kp);
+    
+    // Initialize group with Alice as admin (creator)
+    const group_id = [_]u8{0x42} ** 32;
+    var state_machine = try MLSStateMachine.initializeGroup(
+        allocator,
+        group_id,
+        alice_kp,
+        alice_privkey,
+        &mls_provider,
+        KeyRotationPolicy{}, // Use default rotation policy
+    );
+    defer state_machine.deinit();
+    
+    // Alice (admin) adds Bob
+    try state_machine.proposeAdd(0, bob_kp);
+    _ = try state_machine.commitProposals(0, &mls_provider);
+    
+    // Bob (non-admin) tries to add Charlie - should fail
+    const result = state_machine.proposeAdd(1, charlie_kp);
+    try std.testing.expectError(error.PermissionDenied, result);
+    
+    // Bob (non-admin) tries to remove Alice - should fail
+    const remove_result = state_machine.proposeRemove(1, 0);
+    try std.testing.expectError(error.PermissionDenied, remove_result);
+    
+    // Alice (admin) can still add Charlie
+    try state_machine.proposeAdd(0, charlie_kp);
+    _ = try state_machine.commitProposals(0, &mls_provider);
+    
+    // Alice (admin) can remove Bob
+    try state_machine.proposeRemove(0, 1);
+    _ = try state_machine.commitProposals(0, &mls_provider);
+    
+    // Verify final state
+    try std.testing.expectEqual(@as(usize, 2), state_machine.getMemberCount());
+    
+    // Bob (non-admin) creates proposals but Alice (admin) tries to commit - should succeed
+    var state_machine2 = try MLSStateMachine.initializeGroup(
+        allocator,
+        [_]u8{0x43} ** 32,
+        alice_kp,
+        alice_privkey,
+        &mls_provider,
+        KeyRotationPolicy{}, // Use default rotation policy
+    );
+    defer state_machine2.deinit();
+    
+    // Alice adds Bob first
+    try state_machine2.proposeAdd(0, bob_kp);
+    _ = try state_machine2.commitProposals(0, &mls_provider);
+    
+    // Bob proposes update (allowed for all members)
+    const new_leaf = bob_kp.leaf_node;
+    try state_machine2.proposeUpdate(1, new_leaf);
+    
+    // Alice commits Bob's update proposal - should succeed
+    _ = try state_machine2.commitProposals(0, &mls_provider);
+}
+
+test "MLS state machine - automatic key rotation" {
+    const allocator = std.testing.allocator;
+    
+    std.debug.print("\n=== Automatic Key Rotation Test ===\n", .{});
+    
+    // Create MLS provider
+    var mls_provider = provider.MlsProvider.init(allocator);
+    
+    // Generate Alice's identity
+    const alice_privkey = try crypto.generatePrivateKey();
+    const alice_kp = try key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        alice_privkey,
+        .{},
+    );
+    defer key_packages.freeKeyPackage(allocator, alice_kp);
+    
+    // Create rotation policy for every epoch
+    const rotation_policy = KeyRotationPolicy{
+        .enabled = true,
+        .rotation_interval = 1, // Rotate every epoch
+        .mode = .automatic,
+    };
+    
+    // Initialize group with automatic rotation enabled
+    const group_id = [_]u8{0x44} ** 32;
+    var state_machine = try MLSStateMachine.initializeGroup(
+        allocator,
+        group_id,
+        alice_kp,
+        alice_privkey,
+        &mls_provider,
+        rotation_policy,
+    );
+    defer state_machine.deinit();
+    
+    std.debug.print("\nStep 1: Initial state at epoch 0\n", .{});
+    try std.testing.expectEqual(@as(u64, 0), state_machine.epoch);
+    try std.testing.expectEqual(@as(usize, 1), state_machine.getMemberCount());
+    
+    // Get initial signing key for comparison
+    const initial_signing_key = state_machine.members.items[0].signing_key;
+    std.debug.print("  ✓ Initial signing key: {s}...\n", .{std.fmt.fmtSliceHexLower(initial_signing_key[0..8])});
+    
+    // Add Bob to trigger epoch advancement
+    const bob_privkey = try crypto.generatePrivateKey();
+    const bob_kp = try key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        bob_privkey,
+        .{},
+    );
+    defer key_packages.freeKeyPackage(allocator, bob_kp);
+    
+    std.debug.print("\nStep 2: Adding Bob to trigger epoch advancement\n", .{});
+    try state_machine.proposeAdd(0, bob_kp);
+    
+    // Commit should automatically propose key rotation and then commit both proposals
+    const commit_result = try state_machine.commitProposals(0, &mls_provider);
+    
+    try std.testing.expectEqual(@as(u64, 1), commit_result.epoch);
+    try std.testing.expectEqual(@as(usize, 2), state_machine.getMemberCount());
+    std.debug.print("  ✓ Epoch advanced to 1 with 2 members\n", .{});
+    
+    // Verify that the signing key has been rotated
+    const rotated_signing_key = state_machine.members.items[0].signing_key;
+    try std.testing.expect(!std.mem.eql(u8, &initial_signing_key, &rotated_signing_key));
+    std.debug.print("  ✓ Alice's signing key rotated: {s}...\n", .{std.fmt.fmtSliceHexLower(rotated_signing_key[0..8])});
+    
+    // Test with rotation disabled
+    std.debug.print("\nStep 3: Testing with rotation disabled\n", .{});
+    const no_rotation_policy = KeyRotationPolicy{
+        .enabled = false,
+        .rotation_interval = 1,
+        .mode = .manual,
+    };
+    
+    var state_machine2 = try MLSStateMachine.initializeGroup(
+        allocator,
+        [_]u8{0x45} ** 32,
+        alice_kp,
+        alice_privkey,
+        &mls_provider,
+        no_rotation_policy,
+    );
+    defer state_machine2.deinit();
+    
+    const initial_key2 = state_machine2.members.items[0].signing_key;
+    
+    // Add Bob - should not trigger automatic rotation
+    try state_machine2.proposeAdd(0, bob_kp);
+    _ = try state_machine2.commitProposals(0, &mls_provider);
+    
+    const key_after_commit = state_machine2.members.items[0].signing_key;
+    try std.testing.expect(std.mem.eql(u8, &initial_key2, &key_after_commit));
+    std.debug.print("  ✓ No automatic rotation when disabled\n", .{});
+    
+    // Test different rotation intervals
+    std.debug.print("\nStep 4: Testing rotation interval = 2 epochs\n", .{});
+    const interval_policy = KeyRotationPolicy{
+        .enabled = true,
+        .rotation_interval = 2, // Rotate every 2 epochs
+        .mode = .automatic,
+    };
+    
+    var state_machine3 = try MLSStateMachine.initializeGroup(
+        allocator,
+        [_]u8{0x46} ** 32,
+        alice_kp,
+        alice_privkey,
+        &mls_provider,
+        interval_policy,
+    );
+    defer state_machine3.deinit();
+    
+    const initial_key3 = state_machine3.members.items[0].signing_key;
+    
+    // First epoch advancement (0 -> 1) - should not rotate
+    try state_machine3.proposeAdd(0, bob_kp);
+    _ = try state_machine3.commitProposals(0, &mls_provider);
+    const key_epoch1 = state_machine3.members.items[0].signing_key;
+    try std.testing.expect(std.mem.eql(u8, &initial_key3, &key_epoch1));
+    std.debug.print("  ✓ No rotation at epoch 1 (interval = 2)\n", .{});
+    
+    // Second epoch advancement (1 -> 2) - should rotate
+    try state_machine3.proposeRemove(0, 1); // Remove Bob
+    _ = try state_machine3.commitProposals(0, &mls_provider);
+    const key_epoch2 = state_machine3.members.items[0].signing_key;
+    try std.testing.expect(!std.mem.eql(u8, &initial_key3, &key_epoch2));
+    std.debug.print("  ✓ Rotation occurred at epoch 2 (interval = 2)\n", .{});
+    
+    std.debug.print("\n=== Automatic Key Rotation Test Complete ===\n", .{});
+}
+
+test "MLS state machine - epoch-based key derivation consistency" {
+    const allocator = std.testing.allocator;
+    
+    std.debug.print("\n=== Epoch-based Key Derivation Consistency Test ===\n", .{});
+    
+    // Generate test identity
+    const test_privkey = try crypto.deriveValidKeyFromSeed([_]u8{200} ** 32);
+    
+    // Test that key derivation for the same epoch is consistent
+    const key_epoch_5_first = try crypto_utils.deriveMlsSigningKey(allocator, test_privkey, 5);
+    defer allocator.free(key_epoch_5_first);
+    
+    const key_epoch_5_second = try crypto_utils.deriveMlsSigningKey(allocator, test_privkey, 5);
+    defer allocator.free(key_epoch_5_second);
+    
+    try std.testing.expect(std.mem.eql(u8, key_epoch_5_first, key_epoch_5_second));
+    std.debug.print("  ✓ Same epoch produces identical keys\n", .{});
+    
+    // Test that different epochs produce different keys
+    const key_epoch_10 = try crypto_utils.deriveMlsSigningKey(allocator, test_privkey, 10);
+    defer allocator.free(key_epoch_10);
+    
+    try std.testing.expect(!std.mem.eql(u8, key_epoch_5_first, key_epoch_10));
+    std.debug.print("  ✓ Different epochs produce different keys\n", .{});
+    
+    // Test key progression through multiple epochs
+    var previous_key = try crypto_utils.deriveMlsSigningKey(allocator, test_privkey, 0);
+    defer allocator.free(previous_key);
+    
+    for (1..6) |epoch| {
+        const current_key = try crypto_utils.deriveMlsSigningKey(allocator, test_privkey, epoch);
+        defer allocator.free(current_key);
+        
+        try std.testing.expect(!std.mem.eql(u8, previous_key, current_key));
+        std.debug.print("  ✓ Epoch {} key differs from epoch {}\n", .{ epoch, epoch - 1 });
+        
+        // For next iteration
+        allocator.free(previous_key);
+        previous_key = try allocator.dupe(u8, current_key);
+    }
+    
+    std.debug.print("\n=== Key Derivation Consistency Test Complete ===\n", .{});
 }

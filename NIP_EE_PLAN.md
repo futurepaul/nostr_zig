@@ -36,23 +36,35 @@
    - ✅ Added Welcome message HPKE operations
    - ✅ Created separate `tree_kem.zig` module to avoid comptime issues
 
-2. **🔄 Last Resort KeyPackages** - Minimize race conditions
-   - Implement `last_resort` extension in KeyPackage events
-   - Add proper KeyPackage lifecycle management
+2. **✅ Last Resort KeyPackages** - Minimize race conditions
+   - ✅ Implemented `last_resort` extension in all KeyPackage events
+   - ✅ Added helper function to check for extension presence
+   - ✅ Extension included in capabilities list
 
-3. **🔄 Group Admin Controls** - Administrative features
-   - Implement `admin_pubkeys` from nostr_group_data extension
-   - Add admin-only member removal restrictions
+3. **✅ Group Admin Controls** - Administrative features
+   - ✅ Implemented `admin_pubkeys` checking from nostr_group_data extension
+   - ✅ Added admin-only restrictions for add/remove proposals
+   - ✅ Added admin validation in commit operations
 
-4. **🔄 Signing Key Rotation** - Post-compromise security
-   - Implement automatic key rotation
-   - Add proper key lifecycle management
+4. **✅ Signing Key Rotation** - Post-compromise security
+   - ✅ Implemented automatic key rotation with epoch-based key derivation
+   - ✅ Added configurable rotation policies (automatic/manual, rotation intervals)
+   - ✅ Integrated automatic rotation triggers into epoch advancement
+   - ✅ Created comprehensive tests for key rotation functionality
 
 ### **Medium Priority - Enhanced Features**
 1. **🔄 Application Message Types** - Support kind 9 (chat), kind 7 (reactions)
 2. **🔄 Ephemeral Keypairs** - Use new keypair for each Group Event (kind: 445)
 3. **🔄 KeyPackage Deletion** - Delete consumed KeyPackages from relays
 4. **🔄 MLS Protocol Version Support** - Handle `mls_protocol_version` tag
+
+### **Low Priority - Code Quality**
+1. **🔄 Memory Management Refactor** - Implement clearer ownership model
+   - Document ownership in all structs
+   - Add separate shallow/deep free functions
+   - Consider arena allocators for group-scoped data
+2. **🔄 Error Handling Consistency** - Standardize error types across modules
+3. **🔄 Documentation** - Add comprehensive API documentation
 
 ### **Code Consolidation Opportunities**
 Replace custom implementations with direct `mls_zig` calls:
@@ -107,8 +119,31 @@ Replace custom implementations with direct `mls_zig` calls:
 - `zig build wasm` - WASM build (generates `visualizer/src/nostr_mls.wasm`)
 - `zig build test` - Run test suite
 
-### **Current Blockers**
-- **None!** 🎉 All major blockers (HPKE, WASM, dependencies) resolved
+### **Recent Fixes**
+- ✅ **Key Generation Issues** - Fixed test failures with proper key generation
+- ✅ **Memory Leaks** - Resolved all memory leaks in test suite
+- ✅ **Admin Controls** - Implemented permission checks for add/remove operations
+- ✅ **Last Resort Extension** - Added to all generated KeyPackages
+- ✅ **Automatic Key Rotation** - Implemented epoch-based signing key rotation for post-compromise security
+
+### **Memory Management Improvements Needed**
+- **Ownership Clarity** - Current issues discovered while fixing leaks:
+  - When `createGroup` consumes KeyPackages, ownership of sub-objects (credentials, etc.) is unclear
+  - Some fields are shared between KeyPackage and group state, others are not
+  - Led to double-free errors when trying to clean up properly
+  
+- **Proposed Solutions**:
+  1. **Clear Ownership Model** - Document which structures own their data vs. borrow references
+  2. **Deep Copy Option** - Add functions to deep-copy credentials when needed
+  3. **Separate Free Functions** - Create `freeKeyPackageShallow` vs `freeKeyPackageDeep`
+  4. **Reference Counting** - Consider reference counting for shared objects like credentials
+  5. **Arena Allocator Pattern** - Use arena allocators for group-lifetime objects
+  
+- **Best Practices to Adopt**:
+  - Always document ownership in struct comments
+  - Use consistent naming: `owned_field` vs `borrowed_field`
+  - Provide both consuming and non-consuming APIs where appropriate
+  - Add debug mode ownership tracking
 
 ---
 

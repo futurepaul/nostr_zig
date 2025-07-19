@@ -214,10 +214,14 @@ fn readString(allocator: std.mem.Allocator, data: []const u8, offset: *usize) ![
 
 test "serialize and parse NostrGroupData" {
     const allocator = std.testing.allocator;
+    const crypto = @import("../crypto.zig");
     
     const group_id = types.GroupId.init([_]u8{1} ** 32);
-    const admin1: [32]u8 = [_]u8{2} ** 32;
-    const admin2: [32]u8 = [_]u8{3} ** 32;
+    // Use valid secp256k1 public keys for admins
+    const admin1_privkey = try crypto.deriveValidKeyFromSeed([_]u8{2} ** 32);
+    const admin1 = try crypto.getPublicKey(admin1_privkey);
+    const admin2_privkey = try crypto.deriveValidKeyFromSeed([_]u8{3} ** 32);
+    const admin2 = try crypto.getPublicKey(admin2_privkey);
     
     const original = NostrGroupData{
         .group_id = group_id,
@@ -264,10 +268,16 @@ test "serialize and parse NostrGroupData" {
 }
 
 test "isAdmin function" {
+    const crypto = @import("../crypto.zig");
+    
     const group_id = types.GroupId.init([_]u8{1} ** 32);
-    const admin1: [32]u8 = [_]u8{2} ** 32;
-    const admin2: [32]u8 = [_]u8{3} ** 32;
-    const non_admin: [32]u8 = [_]u8{4} ** 32;
+    // Use valid secp256k1 public keys
+    const admin1_privkey = try crypto.deriveValidKeyFromSeed([_]u8{2} ** 32);
+    const admin1 = try crypto.getPublicKey(admin1_privkey);
+    const admin2_privkey = try crypto.deriveValidKeyFromSeed([_]u8{3} ** 32);
+    const admin2 = try crypto.getPublicKey(admin2_privkey);
+    const non_admin_privkey = try crypto.deriveValidKeyFromSeed([_]u8{4} ** 32);
+    const non_admin = try crypto.getPublicKey(non_admin_privkey);
     
     const data = NostrGroupData{
         .group_id = group_id,
@@ -285,13 +295,18 @@ test "isAdmin function" {
 
 test "create and extract extension" {
     const allocator = std.testing.allocator;
+    const crypto = @import("../crypto.zig");
     
     const group_id = types.GroupId.init([_]u8{5} ** 32);
+    // Use valid secp256k1 public key
+    const admin_privkey = try crypto.deriveValidKeyFromSeed([_]u8{6} ** 32);
+    const admin_pubkey = try crypto.getPublicKey(admin_privkey);
+    
     const data = NostrGroupData{
         .group_id = group_id,
         .name = "Extension Test",
         .description = "Testing extension creation",
-        .admins = &[_][32]u8{[_]u8{6} ** 32},
+        .admins = &[_][32]u8{admin_pubkey},
         .relays = &[_][]const u8{"wss://test.relay"},
         .image = null,
     };

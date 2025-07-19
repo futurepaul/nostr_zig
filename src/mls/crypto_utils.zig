@@ -15,15 +15,39 @@ pub fn hkdfExtract(allocator: std.mem.Allocator, salt: []const u8, ikm: []const 
     return try hkdf.extract(allocator, salt, ikm);
 }
 
-/// Derive MLS signing key from Nostr private key
-pub fn deriveMlsSigningKey(allocator: std.mem.Allocator, nostr_private_key: [32]u8) ![]u8 {
-    // Derive MLS signing key from Nostr private key using HKDF
+/// Derive MLS signing key from Nostr private key for a specific epoch
+/// This function now requires an epoch parameter for automatic key rotation
+pub fn deriveMlsSigningKey(allocator: std.mem.Allocator, nostr_private_key: [32]u8, epoch: u64) ![]u8 {
+    return deriveMlsSigningKeyForEpoch(allocator, nostr_private_key, epoch);
+}
+
+/// Derive MLS signing key from Nostr private key for a specific epoch
+/// This enables automatic key rotation by generating different keys per epoch
+pub fn deriveMlsSigningKeyForEpoch(allocator: std.mem.Allocator, nostr_private_key: [32]u8, epoch: u64) ![]u8 {
+    // Derive MLS signing key from Nostr private key using HKDF with epoch number
     const salt = "nostr-to-mls-signing-key";
     const prk = try hkdfExtract(allocator, salt, &nostr_private_key);
     defer allocator.free(prk);
     
-    const info = "mls-signing-key";
+    // Include epoch number in the info parameter for key rotation
+    const info = try std.fmt.allocPrint(allocator, "mls-signing-key-epoch-{d}", .{epoch});
+    defer allocator.free(info);
+    
     const signing_key = try hkdfExpand(allocator, prk, info, 32);
+    
+    // Ensure the derived key is valid for Ed25519
+    // Ed25519 accepts any 32-byte seed, but we should ensure it's not all zeros
+    var all_zeros = true;
+    for (signing_key) |byte| {
+        if (byte != 0) {
+            all_zeros = false;
+            break;
+        }
+    }
+    if (all_zeros) {
+        // If somehow we got all zeros, modify it slightly
+        signing_key[0] = 1;
+    }
     
     return signing_key;
 }
@@ -108,12 +132,11 @@ test "hkdf operations" {
 test "key derivation" {
     const allocator = std.testing.allocator;
     
-    // Test key with all zeros (just for testing)
-    var nostr_key: [32]u8 = [_]u8{0} ** 32;
-    nostr_key[0] = 1; // Make it non-zero
+    // Use a properly generated test key
+    const nostr_key = try crypto.deriveValidKeyFromSeed([_]u8{42} ** 32);
     
-    // Test MLS signing key derivation
-    const signing_key = try deriveMlsSigningKey(allocator, nostr_key);
+    // Test MLS signing key derivation with epoch
+    const signing_key = try deriveMlsSigningKey(allocator, nostr_key, 0);
     defer allocator.free(signing_key);
     try std.testing.expectEqual(@as(usize, 32), signing_key.len);
     
@@ -124,4 +147,41 @@ test "key derivation" {
     
     // Keys should be different
     try std.testing.expect(!std.mem.eql(u8, signing_key, hpke_key));
+}
+
+test "epoch-based key derivation" {
+    const allocator = std.testing.allocator;
+    
+    // Use a properly generated test key
+    const nostr_key = try crypto.deriveValidKeyFromSeed([_]u8{123} ** 32);
+    
+    // Test that different epochs produce different keys
+    const key_epoch_0 = try deriveMlsSigningKeyForEpoch(allocator, nostr_key, 0);
+    defer allocator.free(key_epoch_0);
+    
+    const key_epoch_1 = try deriveMlsSigningKeyForEpoch(allocator, nostr_key, 1);
+    defer allocator.free(key_epoch_1);
+    
+    const key_epoch_5 = try deriveMlsSigningKeyForEpoch(allocator, nostr_key, 5);
+    defer allocator.free(key_epoch_5);
+    
+    // All keys should be valid length
+    try std.testing.expectEqual(@as(usize, 32), key_epoch_0.len);
+    try std.testing.expectEqual(@as(usize, 32), key_epoch_1.len);
+    try std.testing.expectEqual(@as(usize, 32), key_epoch_5.len);
+    
+    // All keys should be different
+    try std.testing.expect(!std.mem.eql(u8, key_epoch_0, key_epoch_1));
+    try std.testing.expect(!std.mem.eql(u8, key_epoch_0, key_epoch_5));
+    try std.testing.expect(!std.mem.eql(u8, key_epoch_1, key_epoch_5));
+    
+    // Test that the same epoch produces the same key (deterministic)
+    const key_epoch_1_again = try deriveMlsSigningKeyForEpoch(allocator, nostr_key, 1);
+    defer allocator.free(key_epoch_1_again);
+    try std.testing.expect(std.mem.eql(u8, key_epoch_1, key_epoch_1_again));
+    
+    // Test epoch 0 matches the main function with epoch parameter
+    const key_main_function = try deriveMlsSigningKey(allocator, nostr_key, 0);
+    defer allocator.free(key_main_function);
+    try std.testing.expect(std.mem.eql(u8, key_epoch_0, key_main_function));
 }

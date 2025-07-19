@@ -598,11 +598,15 @@ test "extract group data from context" {
     const allocator = std.testing.allocator;
     
     const group_id = types.GroupId.init([_]u8{7} ** 32);
+    // Use valid secp256k1 public key
+    const admin_privkey = try crypto.deriveValidKeyFromSeed([_]u8{8} ** 32);
+    const admin_pubkey = try crypto.getPublicKey(admin_privkey);
+    
     const group_data = extension.NostrGroupData{
         .group_id = group_id,
         .name = "Extract Test",
         .description = "Testing extraction",
-        .admins = &[_][32]u8{[_]u8{8} ** 32},
+        .admins = &[_][32]u8{admin_pubkey},
         .relays = &[_][]const u8{"wss://test.relay"},
         .image = null,
     };

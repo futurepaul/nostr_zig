@@ -9,14 +9,10 @@ pub fn main() !void {
     // Initialize MLS provider
     var mls_provider = mls.provider.MlsProvider.init(allocator);
     
-    // Generate keys for three users
-    var alice_key: [32]u8 = undefined;
-    var bob_key: [32]u8 = undefined;
-    var carol_key: [32]u8 = undefined;
-    
-    std.crypto.random.bytes(&alice_key);
-    std.crypto.random.bytes(&bob_key);
-    std.crypto.random.bytes(&carol_key);
+    // Generate valid keys for three users
+    const alice_key = try crypto.generatePrivateKey();
+    const bob_key = try crypto.generatePrivateKey();
+    const carol_key = try crypto.generatePrivateKey();
     
     std.debug.print("=== Nostr MLS Example ===\n", .{});
     
@@ -29,7 +25,7 @@ pub fn main() !void {
         bob_key,
         .{},
     );
-    defer freeKeyPackage(allocator, bob_kp);
+    defer mls.key_packages.freeKeyPackage(allocator, bob_kp);
     
     const carol_kp = try mls.key_packages.generateKeyPackage(
         allocator,
@@ -37,7 +33,7 @@ pub fn main() !void {
         carol_key,
         .{},
     );
-    defer freeKeyPackage(allocator, carol_kp);
+    defer mls.key_packages.freeKeyPackage(allocator, carol_kp);
     
     // Step 2: Create key package events
     std.debug.print("\n2. Creating key package events...\n", .{});
@@ -195,7 +191,7 @@ pub fn main() !void {
         dave_key,
         .{},
     );
-    defer freeKeyPackage(allocator, dave_kp);
+    defer mls.key_packages.freeKeyPackage(allocator, dave_kp);
     
     // Note: In a real implementation, addMember would be fully implemented
     std.debug.print("  Would add Dave to the group (not fully implemented)\n", .{});
@@ -204,33 +200,7 @@ pub fn main() !void {
 }
 
 // Helper functions to free allocated memory
-
-fn freeKeyPackage(allocator: std.mem.Allocator, kp: mls.types.KeyPackage) void {
-    allocator.free(kp.init_key.data);
-    allocator.free(kp.leaf_node.encryption_key.data);
-    allocator.free(kp.leaf_node.signature_key.data);
-    
-    switch (kp.leaf_node.credential) {
-        .basic => |basic| allocator.free(basic.identity),
-        else => {},
-    }
-    
-    allocator.free(kp.leaf_node.capabilities.versions);
-    allocator.free(kp.leaf_node.capabilities.ciphersuites);
-    allocator.free(kp.leaf_node.capabilities.extensions);
-    allocator.free(kp.leaf_node.capabilities.proposals);
-    allocator.free(kp.leaf_node.capabilities.credentials);
-    
-    // Free the extensions array
-    allocator.free(kp.extensions);
-    
-    for (kp.leaf_node.extensions) |ext| {
-        allocator.free(ext.extension_data);
-    }
-    allocator.free(kp.leaf_node.extensions);
-    allocator.free(kp.leaf_node.signature);
-    allocator.free(kp.signature);
-}
+// Note: Using mls.key_packages.freeKeyPackage instead of local function
 
 fn freeGroupCreationResult(allocator: std.mem.Allocator, result: mls.GroupCreationResult) void {
     for (result.state.members) |member| {
@@ -255,6 +225,28 @@ fn freeGroupCreationResult(allocator: std.mem.Allocator, result: mls.GroupCreati
         allocator.free(welcome.encrypted_group_info);
     }
     allocator.free(result.welcomes);
+    
+    // Free the non-shared parts of used key packages
+    // The credentials are shared with group state members, but other parts need to be freed
+    for (result.used_key_packages) |kp| {
+        // Free the parts that aren't shared with group state
+        allocator.free(kp.init_key.data);
+        allocator.free(kp.leaf_node.encryption_key.data);
+        allocator.free(kp.leaf_node.signature_key.data);
+        allocator.free(kp.leaf_node.capabilities.versions);
+        allocator.free(kp.leaf_node.capabilities.ciphersuites);
+        allocator.free(kp.leaf_node.capabilities.extensions);
+        allocator.free(kp.leaf_node.capabilities.proposals);
+        allocator.free(kp.leaf_node.capabilities.credentials);
+        allocator.free(kp.extensions);
+        for (kp.leaf_node.extensions) |ext| {
+            allocator.free(ext.extension_data);
+        }
+        allocator.free(kp.leaf_node.extensions);
+        allocator.free(kp.leaf_node.signature);
+        allocator.free(kp.signature);
+        // Note: We don't free kp.leaf_node.credential because it's shared with group members
+    }
 }
 
 test "MLS workflow example" {
@@ -286,7 +278,7 @@ test "MLS workflow example" {
         bob_key,
         .{},
     );
-    defer freeKeyPackage(allocator, bob_kp);
+    // Note: bob_kp will be consumed by createGroup, so we don't free it here
     
     // Alice creates a group
     var alice_pubkey: [32]u8 = undefined;
@@ -319,7 +311,9 @@ test "NostrGroupData extension round-trip" {
     const allocator = std.testing.allocator;
     
     const group_id = mls.types.GroupId.init([_]u8{42} ** 32);
-    const admin_key: [32]u8 = [_]u8{1} ** 32;
+    // Use valid secp256k1 public key
+    const admin_privkey = try crypto.deriveValidKeyFromSeed([_]u8{1} ** 32);
+    const admin_key = try crypto.getPublicKey(admin_privkey);
     
     const original_data = mls.extension.NostrGroupData{
         .group_id = group_id,

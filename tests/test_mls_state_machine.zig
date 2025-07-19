@@ -52,7 +52,9 @@ test "MLS state machine - full group lifecycle" {
         allocator,
         group_id,
         alice_kp,
+        alice_identity,
         &mls_provider,
+        mls.state_machine.KeyRotationPolicy{}, // Use default rotation policy
     );
     defer state_machine.deinit();
     
@@ -160,11 +162,13 @@ test "MLS state machine - concurrent proposals" {
     // Create MLS provider
     var mls_provider = mls.provider.MlsProvider.init(allocator);
     
-    // Create key packages for 4 members
+    // Create identity keys and key packages for 4 members
+    var identity_keys: [4][32]u8 = undefined;
     var key_packages: [4]mls.types.KeyPackage = undefined;
-    for (&key_packages, 0..) |*kp, i| {
-        const identity = try crypto.generatePrivateKey();
-        kp.* = try mls.key_packages.generateKeyPackage(allocator, &mls_provider, identity, .{});
+    for (&key_packages, &identity_keys, 0..) |*kp, *identity, i| {
+        identity.* = try crypto.generatePrivateKey();
+        kp.* = try mls.key_packages.generateKeyPackage(allocator, &mls_provider, identity.*, .{});
+        _ = i;
     }
     defer for (key_packages) |kp| {
         mls.key_packages.freeKeyPackage(allocator, kp);
@@ -176,7 +180,9 @@ test "MLS state machine - concurrent proposals" {
         allocator,
         group_id,
         key_packages[0],
+        identity_keys[0],
         &mls_provider,
+        mls.state_machine.KeyRotationPolicy{}, // Use default rotation policy
     );
     defer state_machine.deinit();
     
@@ -246,7 +252,9 @@ test "MLS state machine - epoch secret derivation" {
         allocator,
         group_id,
         kp,
+        identity_key,
         &mls_provider,
+        mls.state_machine.KeyRotationPolicy{}, // Use default rotation policy
     );
     defer state_machine.deinit();
     

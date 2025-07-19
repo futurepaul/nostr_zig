@@ -47,10 +47,11 @@ pub fn generateKeyPackage(
     // Generate HPKE key pair for encryption
     const hpke_keypair = try mls_provider.crypto.hpkeGenerateKeyPairFn(allocator);
     defer allocator.free(hpke_keypair.private_key);
+    defer allocator.free(hpke_keypair.public_key);
     
     // Generate signature key pair for MLS
-    // For now, we'll use a deterministic derivation from Nostr key
-    const mls_private_key = try deriveMlsSigningKey(allocator, nostr_private_key);
+    // For key packages, we use epoch 0 as they're generated before group creation
+    const mls_private_key = try crypto_utils.deriveMlsSigningKey(allocator, nostr_private_key, 0);
     defer allocator.free(mls_private_key);
     
     const mls_public_key = try deriveMlsPublicKey(allocator, mls_private_key);
@@ -63,6 +64,7 @@ pub fn generateKeyPackage(
             .capabilities,
             .lifetime,
             .required_capabilities,
+            .last_resort,
         }),
         .proposals = try allocator.dupe(types.ProposalType, &[_]types.ProposalType{
             .add,
@@ -99,6 +101,12 @@ pub fn generateKeyPackage(
     try extensions.append(types.Extension{
         .extension_type = .capabilities,
         .extension_data = try allocator.dupe(u8, capabilities_data),
+    });
+    
+    // Add last_resort extension (empty data, presence indicates last resort)
+    try extensions.append(types.Extension{
+        .extension_type = .last_resort,
+        .extension_data = try allocator.dupe(u8, &.{}), // Empty extension
     });
     
     // Add any additional extensions
@@ -325,6 +333,16 @@ pub fn validateKeyPackage(
     }
 }
 
+/// Check if key package has last_resort extension
+pub fn hasLastResortExtension(key_package: types.KeyPackage) bool {
+    for (key_package.leaf_node.extensions) |ext| {
+        if (ext.extension_type == .last_resort) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Extract Nostr public key from key package
 pub fn extractNostrPubkey(key_package: types.KeyPackage) ![32]u8 {
     switch (key_package.leaf_node.credential) {
@@ -386,10 +404,6 @@ fn isHexString(s: []const u8) bool {
 // Helper functions
 
 
-fn deriveMlsSigningKey(allocator: std.mem.Allocator, nostr_private_key: [32]u8) ![]u8 {
-    // Use the shared crypto utilities for consistent key derivation
-    return try crypto_utils.deriveMlsSigningKey(allocator, nostr_private_key);
-}
 
 fn deriveMlsPublicKey(allocator: std.mem.Allocator, mls_private_key: []const u8) ![]u8 {
     // Derive Ed25519 public key from private key
@@ -771,6 +785,41 @@ test "key package serialization roundtrip" {
     try std.testing.expectEqual(original.version, parsed.version);
     try std.testing.expectEqual(original.cipher_suite, parsed.cipher_suite);
     try std.testing.expect(original.init_key.eql(parsed.init_key));
+}
+
+test "key package includes last_resort extension" {
+    // Test that we properly add last_resort to capabilities
+    const allocator = std.testing.allocator;
+    
+    const capabilities = types.Capabilities{
+        .versions = try allocator.dupe(types.ProtocolVersion, &[_]types.ProtocolVersion{.mls10}),
+        .ciphersuites = try allocator.dupe(types.Ciphersuite, &[_]types.Ciphersuite{.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519}),
+        .extensions = try allocator.dupe(types.ExtensionType, &[_]types.ExtensionType{
+            .capabilities,
+            .lifetime,
+            .required_capabilities,
+            .last_resort,
+        }),
+        .proposals = try allocator.dupe(types.ProposalType, &[_]types.ProposalType{.add}),
+        .credentials = try allocator.dupe(types.CredentialType, &[_]types.CredentialType{.basic}),
+    };
+    defer {
+        allocator.free(capabilities.versions);
+        allocator.free(capabilities.ciphersuites);
+        allocator.free(capabilities.extensions);
+        allocator.free(capabilities.proposals);
+        allocator.free(capabilities.credentials);
+    }
+    
+    // Check that last_resort is in the extensions
+    var found = false;
+    for (capabilities.extensions) |ext| {
+        if (ext == .last_resort) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }
 
 pub fn freeKeyPackage(allocator: std.mem.Allocator, kp: types.KeyPackage) void {

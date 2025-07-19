@@ -113,24 +113,22 @@ fn defaultSign(allocator: std.mem.Allocator, private_key: []const u8, data: []co
     // Use mls_zig's cipher suite for signing
     const cs = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
     
-    // Convert 32-byte seeds to 64-byte keys if needed
+    // For Ed25519, we need to handle the key properly
     if (private_key.len == 32) {
-        // Standard Ed25519 seed-to-key derivation
-        const seed_array: [32]u8 = private_key[0..32].*;
-        var h: [64]u8 = undefined;
-        std.crypto.hash.sha2.Sha512.hash(&seed_array, &h, .{});
-        h[0] &= 248;
-        h[31] &= 63;
-        h[31] |= 64;
+        // This is a seed, generate the full keypair from it
+        const seed: [32]u8 = private_key[0..32].*;
+        const keypair = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
         
-        // Derive public key (this is simplified - just use the hash for now)
-        var full_key: [64]u8 = undefined;
-        @memcpy(full_key[0..32], &h[0..32].*);
-        @memcpy(full_key[32..64], &h[32..64].*);
+        // Create the 64-byte private key format that mls_zig expects
+        // Zig's Ed25519 already has 64-byte secret key
+        var full_private_key: [64]u8 = keypair.secret_key.bytes;
         
-        return cs.sign(allocator, &full_key, data);
-    } else {
+        return cs.sign(allocator, &full_private_key, data);
+    } else if (private_key.len == 64) {
+        // Already in the correct format
         return cs.sign(allocator, private_key, data);
+    } else {
+        return error.InvalidPrivateKeyLength;
     }
 }
 

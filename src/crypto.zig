@@ -85,6 +85,13 @@ pub fn sign(message: []const u8, private_key: [32]u8) ![64]u8 {
     return signature;
 }
 
+/// Calculate SHA256 hash of data
+pub fn sha256Hash(data: []const u8) [32]u8 {
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &hash, .{});
+    return hash;
+}
+
 /// Verify a Schnorr signature (message-based)
 pub fn verifyMessageSignature(message: []const u8, signature: [64]u8, public_key: [32]u8) !bool {
     const builtin = @import("builtin");

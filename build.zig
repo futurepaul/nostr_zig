@@ -597,6 +597,50 @@ pub fn build(b: *std.Build) void {
     const nip_ee_real_step = b.step("test-nip-ee-real", "Run real NIP-EE test");
     nip_ee_real_step.dependOn(&run_nip_ee_real_test.step);
 
+    // Add test runner for all tests in tests/ directory
+    const test_runner = b.addTest(.{
+        .root_source_file = b.path("test_runner.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_runner.root_module.addImport("websocket", websocket_mod);
+    test_runner.root_module.addImport("secp256k1", secp256k1_mod);
+    test_runner.root_module.addImport("bech32", bech32_mod);
+    test_runner.root_module.addImport("mls_zig", mls_mod);
+    test_runner.root_module.addImport("nostr", lib_mod);
+    test_runner.linkLibrary(secp256k1_lib);
+    test_runner.linkLibrary(bech32_lib);
+    test_runner.addIncludePath(b.path("deps/secp256k1/include"));
+    test_runner.addIncludePath(b.path("src/secp256k1"));
+    test_runner.addIncludePath(b.path("deps/bech32/ref/c"));
+    test_runner.linkLibC();
+    
+    const run_test_runner = b.addRunArtifact(test_runner);
+    const test_all_step = b.step("test-all", "Run all tests in tests/ directory");
+    test_all_step.dependOn(&run_test_runner.step);
+
+    // Add single test runner
+    const single_test_runner = b.addTest(.{
+        .root_source_file = b.path("run_single_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    single_test_runner.root_module.addImport("websocket", websocket_mod);
+    single_test_runner.root_module.addImport("secp256k1", secp256k1_mod);
+    single_test_runner.root_module.addImport("bech32", bech32_mod);
+    single_test_runner.root_module.addImport("mls_zig", mls_mod);
+    single_test_runner.root_module.addImport("nostr", lib_mod);
+    single_test_runner.linkLibrary(secp256k1_lib);
+    single_test_runner.linkLibrary(bech32_lib);
+    single_test_runner.addIncludePath(b.path("deps/secp256k1/include"));
+    single_test_runner.addIncludePath(b.path("src/secp256k1"));
+    single_test_runner.addIncludePath(b.path("deps/bech32/ref/c"));
+    single_test_runner.linkLibC();
+    
+    const run_single_test_runner = b.addRunArtifact(single_test_runner);
+    const test_single_step = b.step("test-single", "Run single test file (edit run_single_test.zig to choose)");
+    test_single_step.dependOn(&run_single_test_runner.step);
+
     // Add WASM library build
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,

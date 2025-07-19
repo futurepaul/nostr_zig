@@ -11,6 +11,7 @@ pub const nip44 = @import("nip44/mod.zig");
 pub const mls = @import("mls/mls.zig");
 pub const nip_ee = @import("nip_ee.zig");
 pub const nip_ee_types = @import("nip_ee_types.zig");
+pub const event = @import("nostr/event.zig");
 
 // Export main types for convenience
 pub const Event = nostr.Event;

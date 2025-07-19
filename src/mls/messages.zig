@@ -53,8 +53,8 @@ pub fn encryptGroupMessage(
     const framed_tbs = try serializeFramedContentTBS(allocator, framed_content);
     defer allocator.free(framed_tbs);
     
-    // Sign with sender's MLS signing key
-    const mls_private_key = try deriveMlsSigningKey(allocator, sender_private_key);
+    // Sign with sender's MLS signing key for the current epoch
+    const mls_private_key = try crypto_utils.deriveMlsSigningKey(allocator, sender_private_key, group_state.epoch);
     defer allocator.free(mls_private_key);
     
     const signature = try mls_provider.crypto.signFn(allocator, mls_private_key, framed_tbs);
@@ -292,15 +292,6 @@ fn getSenderPublicKey(group_state: *const mls.MlsGroupState, sender: types.Sende
 }
 
 
-fn deriveMlsSigningKey(allocator: std.mem.Allocator, nostr_private_key: [32]u8) ![]u8 {
-    // Derive MLS signing key from Nostr private key using HKDF
-    // Uses domain separation to ensure MLS keys are cryptographically isolated from Nostr keys
-    const prk = try crypto_utils.hkdfExtract(allocator, constants.HKDF_SALT.NOSTR_TO_MLS_SIGNING, &nostr_private_key);
-    defer allocator.free(prk);
-    
-    // Further domain separation for the specific use as a signing key
-    return try crypto_utils.hkdfExpand(allocator, prk, constants.HKDF_INFO.MLS_SIGNING_KEY, constants.KEY_SIZES.HKDF_OUTPUT);
-}
 
 fn deriveMlsPublicKey(allocator: std.mem.Allocator, nostr_pubkey: [32]u8) ![]u8 {
     // Note: This function derives a deterministic identifier from a Nostr public key.
