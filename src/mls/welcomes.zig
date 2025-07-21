@@ -384,7 +384,7 @@ fn decryptGroupInfo(
         .group_context = types.GroupContext{
             .version = .mls10,
             .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
-            .group_id = [_]u8{0} ** 32,
+            .group_id = types.GroupId.init([_]u8{0} ** 32),
             .epoch = 0,
             .tree_hash = [_]u8{0} ** 32,
             .confirmed_transcript_hash = [_]u8{0} ** 32,

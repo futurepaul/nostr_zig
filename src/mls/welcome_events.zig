@@ -8,6 +8,7 @@ const provider = @import("provider.zig");
 const mls = @import("mls.zig");
 const wasm_random = @import("../wasm_random.zig");
 const wasm_time = @import("../wasm_time.zig");
+const TagBuilder = @import("../nostr.zig").TagBuilder;
 
 /// NIP-EE Welcome Event (kind: 444)
 /// Welcome events are NIP-59 gift-wrapped to provide metadata protection
@@ -42,70 +43,36 @@ pub const WelcomeEvent = struct {
         const welcome_bytes = try welcomes.serializeWelcome(allocator, mls_welcome);
         defer allocator.free(welcome_bytes);
         
-        // Create tags with proper error handling
-        var tags_list = std.ArrayList([]const []const u8).init(allocator);
-        defer tags_list.deinit();
-        
-        // Track allocations for cleanup
-        var allocated_strings = std.ArrayList([]u8).init(allocator);
-        defer {
-            for (allocated_strings.items) |str| {
-                allocator.free(str);
-            }
-            allocated_strings.deinit();
-        }
+        // Create tags using TagBuilder
+        var tag_builder = TagBuilder.init(allocator);
+        errdefer tag_builder.deinit();
         
         // Add e tag for KeyPackage Event reference
-        const e_tag = try allocator.alloc([]const u8, 2);
-        errdefer allocator.free(e_tag);
-        
-        const e_tag_name = try allocator.dupe(u8, "e");
-        try allocated_strings.append(e_tag_name);
-        e_tag[0] = e_tag_name;
-        
-        const e_tag_value = try allocator.dupe(u8, key_package_event_id);
-        try allocated_strings.append(e_tag_value);
-        e_tag[1] = e_tag_value;
-        
-        try tags_list.append(e_tag);
+        try tag_builder.addEventTag(key_package_event_id);
         
         // Add relays tag
-        const relay_tag = try allocator.alloc([]const u8, 1 + group_relays.len);
-        errdefer allocator.free(relay_tag);
-        
-        const relay_tag_name = try allocator.dupe(u8, "relays");
-        try allocated_strings.append(relay_tag_name);
-        relay_tag[0] = relay_tag_name;
-        
+        var relay_values = try allocator.alloc([]const u8, 1 + group_relays.len);
+        defer allocator.free(relay_values);
+        relay_values[0] = "relays";
         for (group_relays, 1..) |relay, i| {
-            const relay_copy = try allocator.dupe(u8, relay);
-            try allocated_strings.append(relay_copy);
-            relay_tag[i] = relay_copy;
+            relay_values[i] = relay;
         }
-        try tags_list.append(relay_tag);
+        try tag_builder.add(relay_values);
         
-        const tags = try tags_list.toOwnedSlice();
-        errdefer {
-            for (tags) |tag| {
-                allocator.free(tag);
-            }
-            allocator.free(tags);
-        }
+        const tags = try tag_builder.build();
+        errdefer allocator.free(tags);
         
         // Create the inner Welcome Event rumor (kind: 444)
         // As per NIP-59, this must be an unsigned rumor
         const sender_pubkey_hex = try crypto.pubkeyToHex(allocator, try crypto.getPublicKey(sender_privkey));
         errdefer allocator.free(sender_pubkey_hex);
-        try allocated_strings.append(@constCast(sender_pubkey_hex));
         
         // Convert welcome_bytes to hex string for content
         const content_hex = try std.fmt.allocPrint(allocator, "{}", .{std.fmt.fmtSliceHexLower(welcome_bytes)});
         errdefer allocator.free(content_hex);
-        try allocated_strings.append(content_hex);
         
         const event_id = try generateEventId(allocator);
         errdefer allocator.free(event_id);
-        try allocated_strings.append(@constCast(event_id));
         
         const welcome_rumor = event.Event{
             .id = event_id, 
@@ -126,9 +93,15 @@ pub const WelcomeEvent = struct {
             welcome_rumor,
         );
         
-        // Clear the allocated_strings list to prevent double-free
-        // since ownership has been transferred
-        allocated_strings.clearRetainingCapacity();
+        // Clean up all intermediate allocations
+        allocator.free(sender_pubkey_hex);
+        allocator.free(content_hex);
+        allocator.free(event_id);
+        for (tags) |tag| {
+            allocator.free(tag);
+        }
+        allocator.free(tags);
+        tag_builder.deinit();
         
         return result;
     }

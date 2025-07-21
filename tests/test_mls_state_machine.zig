@@ -27,6 +27,7 @@ test "MLS state machine - full group lifecycle" {
         alice_identity,
         .{},
     );
+    errdefer mls.key_packages.freeKeyPackage(allocator, alice_kp);
     defer mls.key_packages.freeKeyPackage(allocator, alice_kp);
     
     const bob_kp = try mls.key_packages.generateKeyPackage(
@@ -35,6 +36,7 @@ test "MLS state machine - full group lifecycle" {
         bob_identity,
         .{},
     );
+    errdefer mls.key_packages.freeKeyPackage(allocator, bob_kp);
     defer mls.key_packages.freeKeyPackage(allocator, bob_kp);
     
     const charlie_kp = try mls.key_packages.generateKeyPackage(
@@ -43,6 +45,7 @@ test "MLS state machine - full group lifecycle" {
         charlie_identity,
         .{},
     );
+    errdefer mls.key_packages.freeKeyPackage(allocator, charlie_kp);
     defer mls.key_packages.freeKeyPackage(allocator, charlie_kp);
     
     // Step 1: Alice creates the group
@@ -79,13 +82,14 @@ test "MLS state machine - full group lifecycle" {
     
     // Verify exporter secret changed
     const exporter1 = state_machine.epoch_secrets.exporter_secret;
-    std.debug.print("  ✓ Exporter secret: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter1)});
+    std.debug.print("  ✓ Exporter secret: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter1.data)});
     
     // Step 4: Bob proposes to update his key
     std.debug.print("\nStep 4: Bob proposes key update\n", .{});
     const bob_new_signing = try crypto.generatePrivateKey();
+    const bob_new_pubkey = try crypto.getPublicKey(bob_new_signing);
     var bob_new_leaf = bob_kp.leaf_node;
-    bob_new_leaf.signature_key = bob_new_signing;
+    bob_new_leaf.signature_key = mls.types.SignaturePublicKey.init(&bob_new_pubkey);
     
     try state_machine.proposeUpdate(1, bob_new_leaf);
     try testing.expectEqual(@as(usize, 1), state_machine.pending_proposals.items.len);
@@ -99,8 +103,8 @@ test "MLS state machine - full group lifecycle" {
     
     // Verify exporter secret changed again
     const exporter2 = state_machine.epoch_secrets.exporter_secret;
-    try testing.expect(!std.mem.eql(u8, &exporter1, &exporter2));
-    std.debug.print("  ✓ Exporter secret rotated: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter2)});
+    try testing.expect(!std.mem.eql(u8, &exporter1.data, &exporter2.data));
+    std.debug.print("  ✓ Exporter secret rotated: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter2.data)});
     
     // Step 6: Alice proposes to add Charlie
     std.debug.print("\nStep 6: Alice proposes to add Charlie\n", .{});
@@ -142,8 +146,8 @@ test "MLS state machine - full group lifecycle" {
     
     // Verify exporter secret rotated again
     const exporter4 = state_machine.epoch_secrets.exporter_secret;
-    try testing.expect(!std.mem.eql(u8, &exporter2, &exporter4));
-    std.debug.print("  ✓ Final exporter secret: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter4)});
+    try testing.expect(!std.mem.eql(u8, &exporter2.data, &exporter4.data));
+    std.debug.print("  ✓ Final exporter secret: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter4.data)});
     
     // Summary
     std.debug.print("\n=== Test Summary ===\n", .{});
@@ -202,13 +206,17 @@ test "MLS state machine - concurrent proposals" {
     
     // Member 1 proposes to update their key
     var member1_new_leaf = key_packages[1].leaf_node;
-    member1_new_leaf.signature_key = try crypto.generatePrivateKey();
+    const member1_new_privkey = try crypto.generatePrivateKey();
+    const member1_new_pubkey = try crypto.getPublicKey(member1_new_privkey);
+    member1_new_leaf.signature_key = mls.types.SignaturePublicKey.init(&member1_new_pubkey);
     try state_machine.proposeUpdate(1, member1_new_leaf);
     std.debug.print("  - Member 1 proposes: update key\n", .{});
     
     // Member 2 proposes to update their key
     var member2_new_leaf = key_packages[2].leaf_node;
-    member2_new_leaf.signature_key = try crypto.generatePrivateKey();
+    const member2_new_privkey = try crypto.generatePrivateKey();
+    const member2_new_pubkey = try crypto.getPublicKey(member2_new_privkey);
+    member2_new_leaf.signature_key = mls.types.SignaturePublicKey.init(&member2_new_pubkey);
     try state_machine.proposeUpdate(2, member2_new_leaf);
     std.debug.print("  - Member 2 proposes: update key\n", .{});
     
@@ -260,7 +268,7 @@ test "MLS state machine - epoch secret derivation" {
     
     // Track exporter secrets across epochs
     var exporter_secrets: [3][32]u8 = undefined;
-    exporter_secrets[0] = state_machine.epoch_secrets.exporter_secret;
+    exporter_secrets[0] = state_machine.epoch_secrets.exporter_secret.data;
     
     std.debug.print("\nEpoch 0 secrets:\n", .{});
     std.debug.print("  Exporter: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter_secrets[0])});
@@ -273,21 +281,24 @@ test "MLS state machine - epoch secret derivation" {
         new_identity,
         .{},
     );
+    errdefer mls.key_packages.freeKeyPackage(allocator, new_kp);
     defer mls.key_packages.freeKeyPackage(allocator, new_kp);
     
     try state_machine.proposeAdd(0, new_kp);
     _ = try state_machine.commitProposals(0, &mls_provider);
-    exporter_secrets[1] = state_machine.epoch_secrets.exporter_secret;
+    exporter_secrets[1] = state_machine.epoch_secrets.exporter_secret.data;
     
     std.debug.print("\nEpoch 1 secrets:\n", .{});
     std.debug.print("  Exporter: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter_secrets[1])});
     
     // Update to trigger another epoch change
     var updated_leaf = kp.leaf_node;
-    updated_leaf.signature_key = try crypto.generatePrivateKey();
+    const new_privkey = try crypto.generatePrivateKey();
+    const new_pubkey = try crypto.getPublicKey(new_privkey);
+    updated_leaf.signature_key = mls.types.SignaturePublicKey.init(&new_pubkey);
     try state_machine.proposeUpdate(0, updated_leaf);
     _ = try state_machine.commitProposals(0, &mls_provider);
-    exporter_secrets[2] = state_machine.epoch_secrets.exporter_secret;
+    exporter_secrets[2] = state_machine.epoch_secrets.exporter_secret.data;
     
     std.debug.print("\nEpoch 2 secrets:\n", .{});
     std.debug.print("  Exporter: {s}\n", .{std.fmt.fmtSliceHexLower(&exporter_secrets[2])});
@@ -302,7 +313,7 @@ test "MLS state machine - epoch secret derivation" {
     
     // Verify other epoch secrets are also set
     std.debug.print("\n✓ All epoch secrets derived:\n", .{});
-    std.debug.print("  - Joiner secret: {s}\n", .{std.fmt.fmtSliceHexLower(&state_machine.epoch_secrets.joiner_secret)[0..16]});
-    std.debug.print("  - Epoch authenticator: {s}\n", .{std.fmt.fmtSliceHexLower(&state_machine.epoch_secrets.epoch_authenticator)[0..16]});
-    std.debug.print("  - Encryption secret: {s}\n", .{std.fmt.fmtSliceHexLower(&state_machine.epoch_secrets.encryption_secret)[0..16]});
+    std.debug.print("  - Joiner secret: {s}\n", .{std.fmt.fmtSliceHexLower(state_machine.epoch_secrets.joiner_secret.data[0..16])});
+    std.debug.print("  - Epoch authenticator: {s}\n", .{std.fmt.fmtSliceHexLower(state_machine.epoch_secrets.epoch_authenticator.data[0..16])});
+    std.debug.print("  - Encryption secret: {s}\n", .{std.fmt.fmtSliceHexLower(state_machine.epoch_secrets.encryption_secret.data[0..16])});
 }

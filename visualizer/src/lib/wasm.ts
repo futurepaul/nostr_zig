@@ -108,6 +108,18 @@ export interface WasmExports {
     outDecrypted: number,
     outLen: number
   ) => boolean;
+  // Event publishing functions
+  wasm_create_text_note: (
+    privateKey: number,
+    content: number,
+    contentLen: number,
+    outEventJson: number,
+    outEventJsonLen: number
+  ) => boolean;
+  wasm_get_public_key: (
+    privateKey: number,
+    outPublicKey: number
+  ) => boolean;
 }
 
 class WasmWrapper {
@@ -154,7 +166,7 @@ class WasmWrapper {
           },
           // Current Unix timestamp in seconds
           getCurrentTimestamp: () => {
-            return BigInt(Math.floor(Date.now() / 1000));
+            return Math.floor(Date.now() / 1000);
           }
         }
       };
@@ -1252,6 +1264,158 @@ class WasmWrapper {
     exports.wasm_free_u32(outLenPtr, 1);
     
     return result;
+  }
+
+  // Create a text note event (kind 1)
+  createTextNote(privateKey: Uint8Array, content: string): string {
+    const exports = this.ensureInitialized();
+    
+    // Manual event creation using individual WASM functions that work
+    // This bypasses the problematic wasm_create_text_note function
+    
+    // Get public key
+    const pubkey = this.getPublicKey(privateKey);
+    
+    // Create current timestamp (Unix timestamp in seconds)
+    const createdAt = Math.floor(Date.now() / 1000);
+    
+    // Build the event object (before calculating ID and signature)
+    const eventForId = {
+      pubkey: Array.from(pubkey).map(b => b.toString(16).padStart(2, '0')).join(''),
+      created_at: createdAt,
+      kind: 1,
+      tags: [],
+      content: content
+    };
+    
+    // Calculate event ID using NIP-01 specification
+    // ID = SHA256([0, pubkey, created_at, kind, tags, content])
+    const serializedForId = JSON.stringify([
+      0,
+      eventForId.pubkey,
+      eventForId.created_at,
+      eventForId.kind,
+      eventForId.tags,
+      eventForId.content
+    ]);
+    
+    // Calculate SHA256 hash using working WASM function
+    const encoder = new TextEncoder();
+    const serializedBytes = encoder.encode(serializedForId);
+    
+    const dataPtr = exports.wasm_alloc(serializedBytes.length);
+    new Uint8Array(exports.memory.buffer, dataPtr, serializedBytes.length).set(serializedBytes);
+    
+    const hashPtr = exports.wasm_alloc(32);
+    const hashSuccess = exports.wasm_sha256(dataPtr, serializedBytes.length, hashPtr);
+    
+    if (!hashSuccess) {
+      exports.wasm_free(dataPtr, serializedBytes.length);
+      exports.wasm_free(hashPtr, 32);
+      throw new Error('Failed to calculate event ID hash');
+    }
+    
+    const eventIdBytes = new Uint8Array(exports.memory.buffer, hashPtr, 32);
+    const eventId = Array.from(eventIdBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    
+    // Sign the event ID using working WASM function
+    const privkeyPtr = exports.wasm_alloc(32);
+    new Uint8Array(exports.memory.buffer, privkeyPtr, 32).set(privateKey);
+    
+    const sigPtr = exports.wasm_alloc(64);
+    const signSuccess = exports.wasm_sign_schnorr(privkeyPtr, hashPtr, sigPtr);
+    
+    if (!signSuccess) {
+      exports.wasm_free(dataPtr, serializedBytes.length);
+      exports.wasm_free(hashPtr, 32);
+      exports.wasm_free(privkeyPtr, 32);
+      exports.wasm_free(sigPtr, 64);
+      throw new Error('Failed to sign event');
+    }
+    
+    const signatureBytes = new Uint8Array(exports.memory.buffer, sigPtr, 64);
+    const signature = Array.from(signatureBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    
+    // Clean up memory
+    exports.wasm_free(dataPtr, serializedBytes.length);
+    exports.wasm_free(hashPtr, 32);
+    exports.wasm_free(privkeyPtr, 32);
+    exports.wasm_free(sigPtr, 64);
+    
+    // Build final event with ID and signature
+    const finalEvent = {
+      id: eventId,
+      pubkey: eventForId.pubkey,
+      created_at: eventForId.created_at,
+      kind: eventForId.kind,
+      tags: eventForId.tags,
+      content: eventForId.content,
+      sig: signature
+    };
+    
+    return JSON.stringify(finalEvent);
+  }
+
+  // Get public key from private key
+  getPublicKey(privateKey: Uint8Array): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    const privkeyPtr = exports.wasm_alloc(32);
+    new Uint8Array(exports.memory.buffer, privkeyPtr, 32).set(privateKey);
+    
+    const pubkeyPtr = exports.wasm_alloc(32);
+    
+    const success = exports.wasm_get_public_key(privkeyPtr, pubkeyPtr);
+    
+    if (!success) {
+      exports.wasm_free(privkeyPtr, 32);
+      exports.wasm_free(pubkeyPtr, 32);
+      throw new Error('Failed to get public key');
+    }
+    
+    const result = this.readBytes(pubkeyPtr, 32);
+    
+    exports.wasm_free(privkeyPtr, 32);
+    exports.wasm_free(pubkeyPtr, 32);
+    
+    return result;
+  }
+
+  // Convert public key to hex
+  pubkeyToHex(publicKey: Uint8Array): string {
+    const exports = this.ensureInitialized();
+    
+    const pubkeyPtr = exports.wasm_alloc(32);
+    new Uint8Array(exports.memory.buffer, pubkeyPtr, 32).set(publicKey);
+    
+    const hexPtr = exports.wasm_alloc(64);
+    
+    exports.wasm_pubkey_to_hex(pubkeyPtr, hexPtr);
+    
+    const hexBytes = new Uint8Array(exports.memory.buffer, hexPtr, 64);
+    const decoder = new TextDecoder();
+    const result = decoder.decode(hexBytes);
+    
+    exports.wasm_free(pubkeyPtr, 32);
+    exports.wasm_free(hexPtr, 64);
+    
+    return result;
+  }
+
+  // Verify event signature
+  verifyEvent(eventJson: string): boolean {
+    const exports = this.ensureInitialized();
+    
+    const encoder = new TextEncoder();
+    const jsonBytes = encoder.encode(eventJson);
+    const jsonPtr = exports.wasm_alloc(jsonBytes.length);
+    new Uint8Array(exports.memory.buffer, jsonPtr, jsonBytes.length).set(jsonBytes);
+    
+    const isValid = exports.wasm_verify_event(jsonPtr, jsonBytes.length);
+    
+    exports.wasm_free(jsonPtr, jsonBytes.length);
+    
+    return isValid;
   }
 }
 

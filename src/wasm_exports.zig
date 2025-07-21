@@ -1024,7 +1024,7 @@ export fn wasm_receive_message(
 }
 
 // Debug helper to log errors from Zig
-fn logError(comptime fmt: []const u8, args: anytype) void {
+pub fn logError(comptime fmt: []const u8, args: anytype) void {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
     // Call the external JS function

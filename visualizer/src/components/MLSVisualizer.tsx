@@ -8,6 +8,8 @@ import { StateTransitionDiagram } from './StateTransitionDiagram';
 import { InfoPanelProvider } from './InfoPanel';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
 
 export interface Identity {
   privateKey: Uint8Array;
@@ -121,6 +123,11 @@ export function MLSVisualizer() {
             <h1 className="text-3xl font-bold text-center mb-8">
               NIP-EE MLS Visual Explainer
             </h1>
+            <div className="text-center mb-4">
+              <a href="/publish" className="text-blue-600 hover:underline">
+                → Try the Event Publisher
+              </a>
+            </div>
           
           <div className="grid grid-cols-3 gap-4">
             {/* Alice Panel */}
@@ -180,8 +187,8 @@ export function MLSVisualizer() {
             />
             <ProtocolStateCard currentStep={currentStep} />
           </div>
+          </div>
         </div>
-      </div>
       </InfoPanelProvider>
     </WasmProvider>
   );

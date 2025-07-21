@@ -597,6 +597,28 @@ pub fn build(b: *std.Build) void {
     const nip_ee_real_step = b.step("test-nip-ee-real", "Run real NIP-EE test");
     nip_ee_real_step.dependOn(&run_nip_ee_real_test.step);
 
+    // Add test for basic event creation/signing/publishing
+    const test_events = b.addTest(.{
+        .root_source_file = b.path("tests/test_events.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_events.root_module.addImport("websocket", websocket_mod);
+    test_events.root_module.addImport("secp256k1", secp256k1_mod);
+    test_events.root_module.addImport("bech32", bech32_mod);
+    test_events.root_module.addImport("mls_zig", mls_mod);
+    test_events.root_module.addImport("nostr", lib_mod);
+    test_events.linkLibrary(secp256k1_lib);
+    test_events.linkLibrary(bech32_lib);
+    test_events.addIncludePath(b.path("deps/secp256k1/include"));
+    test_events.addIncludePath(b.path("src/secp256k1"));
+    test_events.addIncludePath(b.path("deps/bech32/ref/c"));
+    test_events.linkLibC();
+    
+    const run_test_events = b.addRunArtifact(test_events);
+    const test_events_step = b.step("test-events", "Run basic event creation and signing tests");
+    test_events_step.dependOn(&run_test_events.step);
+
     // Add test runner for all tests in tests/ directory
     const test_runner = b.addTest(.{
         .root_source_file = b.path("test_runner.zig"),
@@ -621,7 +643,7 @@ pub fn build(b: *std.Build) void {
 
     // Add single test runner
     const single_test_runner = b.addTest(.{
-        .root_source_file = b.path("run_single_test.zig"),
+        .root_source_file = b.path("test-utils/run_single_test.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -716,6 +738,37 @@ pub fn build(b: *std.Build) void {
     secp256k1_wasm_mod.addIncludePath(b.path("src/secp256k1"));
     secp256k1_wasm_mod.linkLibrary(secp256k1_wasm_lib);
     
+    // Build bech32 for WASM
+    const bech32_wasm_lib = b.addStaticLibrary(.{
+        .name = "bech32_wasm",
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    
+    bech32_wasm_lib.addCSourceFile(.{
+        .file = b.path("deps/bech32/ref/c/segwit_addr.c"),
+        .flags = &[_][]const u8{"-std=c99"},
+    });
+    
+    // Add minimal libc for bech32 WASM
+    bech32_wasm_lib.addCSourceFile(.{
+        .file = b.path("src/wasm_libc.c"),
+        .flags = &[_][]const u8{},
+    });
+    
+    // Add include directories with our headers first
+    bech32_wasm_lib.addIncludePath(b.path("src/wasm_headers"));
+    bech32_wasm_lib.addIncludePath(b.path("deps/bech32/ref/c"));
+    
+    // Create bech32 module for WASM
+    const bech32_wasm_mod = b.createModule(.{
+        .root_source_file = b.path("src/bech32.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    bech32_wasm_mod.addIncludePath(b.path("deps/bech32/ref/c"));
+    bech32_wasm_mod.linkLibrary(bech32_wasm_lib);
+    
     const wasm_lib = b.addExecutable(.{
         .name = "nostr_mls",
         .root_source_file = b.path("src/wasm_exports.zig"),
@@ -729,6 +782,10 @@ pub fn build(b: *std.Build) void {
     // Add secp256k1 import for WASM
     wasm_lib.root_module.addImport("secp256k1", secp256k1_wasm_mod);
     wasm_lib.linkLibrary(secp256k1_wasm_lib);
+    
+    // Add bech32 import for WASM
+    wasm_lib.root_module.addImport("bech32", bech32_wasm_mod);
+    wasm_lib.linkLibrary(bech32_wasm_lib);
     
     // Add mls_zig dependency for WASM
     const mls_dep_wasm = b.dependency("mls_zig", .{

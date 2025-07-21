@@ -19,6 +19,11 @@ pub const crypto_utils = @import("crypto_utils.zig");
 pub const welcome_events = @import("welcome_events.zig");
 pub const nip59 = @import("nip59.zig");
 pub const tree_kem = @import("tree_kem.zig");
+pub const message_authentication = @import("message_authentication.zig");
+pub const application_messages = @import("application_messages.zig");
+pub const forward_secrecy = @import("forward_secrecy.zig");
+pub const event_signing = @import("event_signing.zig");
+pub const commit_ordering = @import("commit_ordering.zig");
 
 // Re-export commonly used types
 pub const Epoch = types.Epoch;

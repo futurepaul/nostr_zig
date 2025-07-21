@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import index from "./index.html";
+import publish from "./publish.html";
 
 const server = serve({
   port: 3001,
@@ -7,7 +8,10 @@ const server = serve({
     // Serve the WASM file
     "/src/nostr_mls.wasm": Bun.file("./src/nostr_mls.wasm"),
     
-    // Serve index.html for all unmatched routes.
+    // Publish route
+    "/publish": publish,
+    
+    // Serve index.html for all other routes
     "/*": index,
 
     "/api/hello": {

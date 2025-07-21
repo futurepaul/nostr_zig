@@ -25,22 +25,18 @@ test "welcome events core functionality" {
     // Test 2: Basic event structure for Welcome Events
     const allocator = testing.allocator;
     
-    // Create an unsigned rumor (as required by NIP-59)
-    const tags = try allocator.alloc([]const []const u8, 2);
+    // Create an unsigned rumor (as required by NIP-59) using TagBuilder
+    var tag_builder = nostr.TagBuilder.init(allocator);
     
     // e tag for KeyPackage Event reference
-    const e_tag = try allocator.alloc([]const u8, 2);
-    e_tag[0] = try allocator.dupe(u8, "e");
-    e_tag[1] = try allocator.dupe(u8, "test_keypackage_event_id");
+    try tag_builder.addEventTag("test_keypackage_event_id");
     
     // relays tag
-    const relays_tag = try allocator.alloc([]const u8, 3);
-    relays_tag[0] = try allocator.dupe(u8, "relays");
-    relays_tag[1] = try allocator.dupe(u8, "wss://relay1.example.com");
-    relays_tag[2] = try allocator.dupe(u8, "wss://relay2.example.com");
+    try tag_builder.add(&.{ "relays", "wss://relay1.example.com", "wss://relay2.example.com" });
     
-    tags[0] = e_tag;
-    tags[1] = relays_tag;
+    const tags = try tag_builder.build();
+    defer allocator.free(tags);
+    defer tag_builder.deinit();
     
     // Create test Welcome Event rumor structure
     const welcome_rumor = event.Event{
@@ -52,7 +48,17 @@ test "welcome events core functionality" {
         .content = try allocator.dupe(u8, "serialized_mls_welcome_data_hex"),
         .sig = try allocator.dupe(u8, ""), // Unsigned rumor!
     };
-    defer welcome_rumor.deinit(allocator);
+    defer {
+        allocator.free(welcome_rumor.id);
+        allocator.free(welcome_rumor.pubkey);
+        allocator.free(welcome_rumor.content);
+        allocator.free(welcome_rumor.sig);
+        // Free tag arrays allocated by TagBuilder.build()
+        for (welcome_rumor.tags) |tag| {
+            allocator.free(tag);
+        }
+        // Don't free tag string contents - handled by tag_builder.deinit()
+    }
     
     // Verify rumor properties
     try testing.expectEqual(WELCOME_KIND, welcome_rumor.kind);
@@ -95,16 +101,31 @@ test "nip59 gift wrap concepts" {
     try testing.expect(!std.mem.eql(u8, &ephemeral_key, &another_key));
     
     // Test gift wrap event structure concepts
+    var gift_wrap_builder = nostr.TagBuilder.init(allocator);
+    const gift_wrap_tags = try gift_wrap_builder.build();
+    defer allocator.free(gift_wrap_tags);
+    defer gift_wrap_builder.deinit();
+    
     const gift_wrap_event = event.Event{
         .id = try allocator.dupe(u8, "gift_wrap_id"),
         .pubkey = try allocator.dupe(u8, "ephemeral_pubkey_hex"),
         .created_at = tweaked_timestamp,
         .kind = 1059, // Gift Wrap kind
-        .tags = try allocator.alloc([]const []const u8, 0),
+        .tags = gift_wrap_tags,
         .content = try allocator.dupe(u8, "encrypted_seal_content"),
         .sig = try allocator.dupe(u8, "ephemeral_signature"),
     };
-    defer gift_wrap_event.deinit(allocator);
+    defer {
+        allocator.free(gift_wrap_event.id);
+        allocator.free(gift_wrap_event.pubkey);
+        allocator.free(gift_wrap_event.content);
+        allocator.free(gift_wrap_event.sig);
+        // Free tag arrays allocated by TagBuilder.build()
+        for (gift_wrap_event.tags) |tag| {
+            allocator.free(tag);
+        }
+        // Don't free tag string contents - handled by gift_wrap_builder.deinit()
+    }
     
     try testing.expectEqual(@as(u32, 1059), gift_wrap_event.kind);
     try testing.expect(gift_wrap_event.sig.len > 0); // Gift wrap should be signed
@@ -138,8 +159,10 @@ test "json serialization round-trip" {
     const allocator = testing.allocator;
     
     // Test event JSON serialization/deserialization
-    const tags = try allocator.alloc([]const []const u8, 0);
+    var tag_builder = nostr.TagBuilder.init(allocator);
+    const tags = try tag_builder.build();
     defer allocator.free(tags);
+    defer tag_builder.deinit();
     
     const test_event = event.Event{
         .id = try allocator.dupe(u8, "test_id"),
@@ -150,7 +173,17 @@ test "json serialization round-trip" {
         .content = try allocator.dupe(u8, "test content"),
         .sig = try allocator.dupe(u8, ""),
     };
-    defer test_event.deinit(allocator);
+    defer {
+        allocator.free(test_event.id);
+        allocator.free(test_event.pubkey);
+        allocator.free(test_event.content);
+        allocator.free(test_event.sig);
+        // Free tag arrays allocated by TagBuilder.build()
+        for (test_event.tags) |tag| {
+            allocator.free(tag);
+        }
+        // Don't free tag string contents - handled by tag_builder.deinit()
+    }
     
     // Serialize to JSON
     const json_str = try test_event.toJson(allocator);
@@ -282,14 +315,12 @@ test "welcome event parsing - missing tags" {
     const bob_pubkey = try crypto.getPublicKey(bob_privkey);
     
     // Create a malformed Welcome Event without e tag
-    const tags = try allocator.alloc([]const []const u8, 1);
-    defer allocator.free(tags);
-    
+    var tag_builder = nostr.TagBuilder.init(allocator);
     // Only relays tag, no e tag
-    const relay_tag = try allocator.alloc([]const u8, 2);
-    relay_tag[0] = try allocator.dupe(u8, "relays");
-    relay_tag[1] = try allocator.dupe(u8, "wss://relay.example.com");
-    tags[0] = relay_tag;
+    try tag_builder.addPair("relays", "wss://relay.example.com");
+    const tags = try tag_builder.build();
+    defer allocator.free(tags);
+    defer tag_builder.deinit();
     
     const alice_pubkey_hex = try crypto.pubkeyToHex(allocator, alice_pubkey);
     defer allocator.free(alice_pubkey_hex);
@@ -308,7 +339,11 @@ test "welcome event parsing - missing tags" {
         allocator.free(malformed_rumor.pubkey);
         allocator.free(malformed_rumor.content);
         allocator.free(malformed_rumor.sig);
-        // tags are freed separately below
+        // Free tag arrays allocated by TagBuilder.build()
+        for (malformed_rumor.tags) |tag| {
+            allocator.free(tag);
+        }
+        // Don't free tag string contents - handled by tag_builder.deinit()
     }
     
     // Manually gift-wrap it
@@ -327,11 +362,6 @@ test "welcome event parsing - missing tags" {
         bob_privkey,
     );
     try testing.expectError(error.MissingKeyPackageId, result);
-    
-    // Clean up manually created tags
-    allocator.free(relay_tag[0]);
-    allocator.free(relay_tag[1]);
-    allocator.free(relay_tag);
 }
 
 test "welcome event hex content validation" {
@@ -343,13 +373,11 @@ test "welcome event hex content validation" {
     const bob_pubkey = try crypto.getPublicKey(bob_privkey);
     
     // Create a Welcome Event with invalid hex content (odd length)
-    const tags = try allocator.alloc([]const []const u8, 1);
+    var tag_builder = nostr.TagBuilder.init(allocator);
+    try tag_builder.addEventTag("test_keypackage_id");
+    const tags = try tag_builder.build();
     defer allocator.free(tags);
-    
-    const e_tag = try allocator.alloc([]const u8, 2);
-    e_tag[0] = try allocator.dupe(u8, "e");
-    e_tag[1] = try allocator.dupe(u8, "test_keypackage_id");
-    tags[0] = e_tag;
+    defer tag_builder.deinit();
     
     const alice_pubkey_hex = try crypto.pubkeyToHex(allocator, alice_pubkey);
     defer allocator.free(alice_pubkey_hex);
@@ -368,7 +396,11 @@ test "welcome event hex content validation" {
         allocator.free(malformed_rumor.pubkey);
         allocator.free(malformed_rumor.content);
         allocator.free(malformed_rumor.sig);
-        // tags are freed separately below
+        // Free tag arrays allocated by TagBuilder.build()
+        for (malformed_rumor.tags) |tag| {
+            allocator.free(tag);
+        }
+        // Don't free tag string contents - handled by tag_builder.deinit()
     }
     
     // Manually gift-wrap it
@@ -387,11 +419,6 @@ test "welcome event hex content validation" {
         bob_privkey,
     );
     try testing.expectError(error.InvalidHexContent, result);
-    
-    // Clean up manually created tags
-    allocator.free(e_tag[0]);
-    allocator.free(e_tag[1]);
-    allocator.free(e_tag);
 }
 
 test "welcome event memory management" {

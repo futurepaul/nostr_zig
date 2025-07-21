@@ -164,16 +164,156 @@ pub const Event = struct {
         allocator.free(self.tags);
     }
 
-    /// Validate event ID matches the computed hash
-    pub fn validateId(self: Self) bool {
-        // TODO: Implement SHA256 validation
-        return self.id.len == 64; // Basic length check for now
+    /// Calculate the event ID according to NIP-01
+    pub fn calculateId(self: *Self, allocator: Allocator) !void {
+        const crypto = @import("../crypto.zig");
+        if (self.id.len > 0) {
+            allocator.free(self.id);
+        }
+        self.id = try crypto.calculateEventId(
+            allocator,
+            self.pubkey,
+            self.created_at,
+            self.kind,
+            self.tags,
+            self.content,
+        );
+    }
+    
+    /// Sign the event with a private key
+    pub fn sign(self: *Self, allocator: Allocator, private_key: [32]u8) !void {
+        const crypto = @import("../crypto.zig");
+        const wasm_time = @import("../wasm_time.zig");
+        
+        // Set public key if not already set
+        if (self.pubkey.len == 0) {
+            const public_key = try crypto.getPublicKey(private_key);
+            self.pubkey = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&public_key)});
+        }
+        
+        // Set timestamp if not already set
+        if (self.created_at == 0) {
+            self.created_at = wasm_time.timestamp();
+        }
+        
+        // Ensure ID is calculated
+        if (self.id.len == 0) {
+            try self.calculateId(allocator);
+        }
+        
+        // Sign the event
+        const sig_bytes = try crypto.signEvent(self.id, private_key);
+        
+        // Free old signature if exists
+        if (self.sig.len > 0) {
+            allocator.free(self.sig);
+        }
+        
+        // Convert signature to hex
+        self.sig = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&sig_bytes)});
+    }
+    
+    /// Verify the event signature
+    pub fn verify(self: *const Self) !bool {
+        const crypto = @import("../crypto.zig");
+        
+        // Parse public key from hex
+        if (self.pubkey.len != 64) return error.InvalidPublicKey;
+        var pubkey_bytes: [32]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&pubkey_bytes, self.pubkey);
+        
+        // Parse signature from hex
+        if (self.sig.len != 128) return error.InvalidSignature;
+        var signature_bytes: [64]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&signature_bytes, self.sig);
+        
+        // Verify the signature
+        return try crypto.verifySignature(self.id, signature_bytes, pubkey_bytes);
     }
 
-    /// Validate signature
-    pub fn validateSignature(self: Self) bool {
-        // TODO: Implement BIP340 signature verification
-        return self.sig.len == 128; // Basic length check for now
+    /// Validate event ID matches the computed hash
+    pub fn validateId(self: Self, allocator: Allocator) !bool {
+        const crypto = @import("../crypto.zig");
+        
+        // Calculate what the ID should be
+        const calculated_id = try crypto.calculateEventId(
+            allocator,
+            self.pubkey,
+            self.created_at,
+            self.kind,
+            self.tags,
+            self.content,
+        );
+        defer allocator.free(calculated_id);
+        
+        // Compare with the actual ID
+        return std.mem.eql(u8, self.id, calculated_id);
+    }
+
+    /// Validate signature (alias for verify for backward compatibility)
+    pub fn validateSignature(self: *const Self) !bool {
+        return try self.verify();
+    }
+
+    /// Initialize a new event with basic fields
+    pub fn init(allocator: Allocator, kind: u32, content: []const u8, tags: []const []const []const u8) !Self {
+        // Deep copy tags
+        const tags_copy = try allocator.alloc([]const []const u8, tags.len);
+        for (tags, 0..) |tag, i| {
+            const tag_copy = try allocator.alloc([]const u8, tag.len);
+            for (tag, 0..) |tag_item, j| {
+                tag_copy[j] = try allocator.dupe(u8, tag_item);
+            }
+            tags_copy[i] = tag_copy;
+        }
+        
+        return Self{
+            .id = try allocator.dupe(u8, ""), // Will be calculated
+            .pubkey = try allocator.dupe(u8, ""), // Will be set when signing
+            .created_at = 0, // Will be set when signing
+            .kind = kind,
+            .tags = tags_copy,
+            .content = try allocator.dupe(u8, content),
+            .sig = try allocator.dupe(u8, ""), // Will be set when signing
+        };
+    }
+    
+    /// Initialize a new unsigned event (for NIP-59 rumors)
+    pub fn initUnsigned(allocator: Allocator, private_key: [32]u8, kind: u32, content: []const u8, tags: []const []const []const u8, created_at: ?i64) !Self {
+        const crypto = @import("../crypto.zig");
+        const wasm_time = @import("../wasm_time.zig");
+        
+        // Get public key from private key
+        const public_key = try crypto.getPublicKey(private_key);
+        const pubkey_hex = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&public_key)});
+        
+        // Use provided timestamp or current time
+        const timestamp = created_at orelse wasm_time.timestamp();
+        
+        // Deep copy tags
+        const tags_copy = try allocator.alloc([]const []const u8, tags.len);
+        for (tags, 0..) |tag, i| {
+            const tag_copy = try allocator.alloc([]const u8, tag.len);
+            for (tag, 0..) |tag_item, j| {
+                tag_copy[j] = try allocator.dupe(u8, tag_item);
+            }
+            tags_copy[i] = tag_copy;
+        }
+        
+        var event = Self{
+            .id = try allocator.dupe(u8, ""),
+            .pubkey = pubkey_hex,
+            .created_at = timestamp,
+            .kind = kind,
+            .tags = tags_copy,
+            .content = try allocator.dupe(u8, content),
+            .sig = try allocator.dupe(u8, ""), // Unsigned
+        };
+        
+        // Calculate ID even for unsigned events
+        try event.calculateId(allocator);
+        
+        return event;
     }
 
     /// Check if event is a text note
@@ -366,9 +506,9 @@ test "basic validation checks" {
     const event = try Event.fromJson(allocator, json_str);
     defer event.deinit(allocator);
     
-    // Basic validation (just length checks for now)
-    try testing.expect(event.validateId());
-    try testing.expect(event.validateSignature());
+    // Basic validation (validateId now requires allocator)
+    try testing.expect(try event.validateId(allocator));
+    try testing.expect(try event.validateSignature());
 }
 
 test "kind enum functionality" {

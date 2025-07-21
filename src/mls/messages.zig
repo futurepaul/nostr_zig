@@ -9,6 +9,7 @@ const mls_zig = @import("mls_zig");
 const ephemeral = @import("ephemeral.zig");
 const constants = @import("constants.zig");
 const crypto_utils = @import("crypto_utils.zig");
+const forward_secrecy = @import("forward_secrecy.zig");
 
 /// Message encryption parameters
 pub const MessageParams = struct {
@@ -53,12 +54,18 @@ pub fn encryptGroupMessage(
     const framed_tbs = try serializeFramedContentTBS(allocator, framed_content);
     defer allocator.free(framed_tbs);
     
-    // Sign with sender's MLS signing key for the current epoch
-    const mls_private_key = try crypto_utils.deriveMlsSigningKey(allocator, sender_private_key, group_state.epoch);
-    defer allocator.free(mls_private_key);
+    // Sign with sender's MLS signing key for the current epoch (with forward secrecy)
+    var temp_signing_key = try forward_secrecy.SecureCryptoOps.deriveMlsSigningKeySecure(allocator, sender_private_key, group_state.epoch);
+    defer temp_signing_key.deinit(); // Automatically clears the key
     
+    const signing_key_data = temp_signing_key.getData() orelse return error.KeyAlreadyCleared;
+    
+    // Convert to slice for signing function
+    const mls_private_key = @constCast(signing_key_data[0..]);
     const signature = try mls_provider.crypto.signFn(allocator, mls_private_key, framed_tbs);
     defer allocator.free(signature);
+    
+    // The signing key is automatically cleared when temp_signing_key goes out of scope
     
     // Create MLS plaintext
     const mls_plaintext = types.MLSPlaintext{
@@ -127,6 +134,9 @@ pub fn decryptGroupMessage(
     } else {
         return error.InvalidEpoch;
     }
+    
+    // Ensure we clear the exporter secret from stack after use (for forward secrecy)
+    defer forward_secrecy.secureZero(u8, &exporter_secret);
     
     // Use exporter secret as the "sender" key for NIP-44 decryption
     const nip44_decrypted = try nip44.decrypt(

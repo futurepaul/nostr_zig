@@ -31,6 +31,12 @@ interface WasmContextType {
     signature: Uint8Array;
   };
   decryptGroupMessage: (exporterSecret: Uint8Array, encryptedData: Uint8Array) => Uint8Array;
+  // Event publishing functions
+  wasmReady: boolean;
+  createTextNote: (privateKey: Uint8Array, content: string) => string;
+  getPublicKey: (privateKey: Uint8Array) => Uint8Array;
+  pubkeyToHex: (publicKey: Uint8Array) => string;
+  verifyEvent: (eventJson: string) => boolean;
 }
 
 const WasmContext = createContext<WasmContextType | null>(null);
@@ -77,6 +83,12 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
       wasm.createEncryptedGroupMessage(groupId, epoch, senderIndex, messageContent, mlsSignature, exporterSecret),
     deserializeMLSMessage: (serializedData) => wasm.deserializeMLSMessage(serializedData),
     decryptGroupMessage: (exporterSecret, encryptedData) => wasm.decryptGroupMessage(exporterSecret, encryptedData),
+    // Event publishing functions
+    wasmReady: isReady,
+    createTextNote: (privateKey, content) => wasm.createTextNote(privateKey, content),
+    getPublicKey: (privateKey) => wasm.getPublicKey(privateKey),
+    pubkeyToHex: (publicKey) => wasm.pubkeyToHex(publicKey),
+    verifyEvent: (eventJson) => wasm.verifyEvent(eventJson),
   };
 
   return (

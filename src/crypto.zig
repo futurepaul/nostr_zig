@@ -339,9 +339,19 @@ pub fn calculateEventId(allocator: std.mem.Allocator, pubkey: []const u8, create
 
 /// Sign an event using BIP340 Schnorr signature
 pub fn signEvent(event_id: []const u8, private_key: [32]u8) ![64]u8 {
-    // Create secp256k1 context
-    const ctx = secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
-    defer secp256k1.secp256k1_context_destroy(ctx);
+    // Use static context for WASM compatibility
+    const builtin = @import("builtin");
+    const ctx = if (builtin.target.cpu.arch == .wasm32) blk: {
+        // In WASM, use the static no-precomp context
+        const wasm_ctx = @import("wasm_secp_context.zig");
+        break :blk wasm_ctx.getStaticContext();
+    } else blk: {
+        // On native platforms, create a context normally
+        break :blk secp256k1.secp256k1_context_create(secp256k1.SECP256K1_CONTEXT_SIGN) orelse return error.ContextCreationFailed;
+    };
+    defer if (builtin.target.cpu.arch != .wasm32) {
+        secp256k1.secp256k1_context_destroy(ctx);
+    };
     
     // Verify the private key
     if (secp256k1.secp256k1_ec_seckey_verify(ctx, &private_key) != 1) {

@@ -123,9 +123,11 @@ fn bobJoinsGroup(ctx: *TestContext) !void {
     
     // For now, we'll simulate the successful join by updating the group state
     var new_members = try ctx.allocator.alloc(*const UserIdentity, 2);
+    errdefer ctx.allocator.free(new_members);
     new_members[0] = ctx.group_state.?.members[0]; // Alice
     new_members[1] = &ctx.bob; // Bob
     
+    // Free the old members array (it only contained pointers, not owned data)
     ctx.allocator.free(ctx.group_state.?.members);
     ctx.group_state.?.members = new_members;
     
@@ -197,7 +199,7 @@ fn sendRealMessage(ctx: *TestContext, sender: *const UserIdentity, message: []co
     // Use the real NIP-EE module to create encrypted group message
     // Use arena allocator for MLS operations (native environment)
     var mls_arena = std.heap.ArenaAllocator.init(ctx.allocator);
-    defer mls_arena.deinit();
+    errdefer mls_arena.deinit();
     const mls_allocator = mls_arena.allocator();
     
     const encrypted = try nip_ee.createEncryptedGroupMessage(
@@ -211,6 +213,8 @@ fn sendRealMessage(ctx: *TestContext, sender: *const UserIdentity, message: []co
         group_state.exporter_secret.bytes,
     );
     
+    mls_arena.deinit();
+    
     return encrypted;
 }
 
@@ -221,7 +225,7 @@ fn receiveRealMessage(ctx: *TestContext, encrypted_message: []const u8) ![]u8 {
     // Use the real NIP-EE module to decrypt group message
     // Use arena allocator for MLS operations (native environment)
     var mls_arena = std.heap.ArenaAllocator.init(ctx.allocator);
-    defer mls_arena.deinit();
+    errdefer mls_arena.deinit();
     const mls_allocator = mls_arena.allocator();
     
     const decrypted_content = try nip_ee.decryptGroupMessage(
@@ -230,6 +234,8 @@ fn receiveRealMessage(ctx: *TestContext, encrypted_message: []const u8) ![]u8 {
         encrypted_message,
         group_state.exporter_secret.bytes,
     );
+    
+    mls_arena.deinit();
     
     // The arena allocator handles MLS message cleanup automatically
     // Just return the decrypted content
@@ -311,7 +317,7 @@ test "Real NIP-EE error handling" {
     // This should handle invalid secrets gracefully
     // Use arena allocator for MLS operations
     var mls_arena = std.heap.ArenaAllocator.init(allocator);
-    defer mls_arena.deinit();
+    errdefer mls_arena.deinit();
     const mls_allocator = mls_arena.allocator();
     
     const result = nip_ee.createEncryptedGroupMessage(
@@ -324,6 +330,8 @@ test "Real NIP-EE error handling" {
         &signature,
         invalid_secret,
     );
+    
+    mls_arena.deinit();
     
     // Should either succeed (with key derivation) or fail with proper error
     if (result) |encrypted| {
@@ -339,7 +347,7 @@ test "Real NIP-EE error handling" {
     
     // Use arena allocator for MLS operations
     var mls_arena2 = std.heap.ArenaAllocator.init(allocator);
-    defer mls_arena2.deinit();
+    errdefer mls_arena2.deinit();
     const mls_allocator2 = mls_arena2.allocator();
     
     const result2 = nip_ee.decryptGroupMessage(
@@ -348,6 +356,8 @@ test "Real NIP-EE error handling" {
         invalid_ciphertext,
         valid_secret
     );
+    
+    mls_arena2.deinit();
     if (result2) |decrypted| {
         defer allocator.free(decrypted); // Free the returned []u8
         return error.ShouldHaveFailed;

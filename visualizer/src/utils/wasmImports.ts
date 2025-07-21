@@ -23,7 +23,7 @@ export function createWasmImports(wasmMemory: WebAssembly.Memory) {
       
       // Current Unix timestamp in seconds
       getCurrentTimestamp: () => {
-        return BigInt(Math.floor(Date.now() / 1000));
+        return Math.floor(Date.now() / 1000);
       }
     }
   };

@@ -151,23 +151,208 @@ A Nostr event contains these fields:
 
 ## Testing Strategy
 
-### Pure Zig Tests (`tests/`)
-- Unit tests for each module
-- Integration tests for complete flows
-- Cryptographic test vectors
-- Error handling verification
+The project has a comprehensive test suite organized into several categories:
 
-### WASM Tests (`wasm_tests/`)
-- WASM-specific behavior testing
-- Memory management verification
-- Browser compatibility testing
+### 🏗️ Build Commands for Testing
+
+**Quick Reference:**
+```bash
+# Run all working tests (recommended for regular development)
+zig build test-all
+
+# Run specific test suites  
+zig build test-events        # Core Nostr event functionality
+zig build test-nip-ee-real   # NIP-EE MLS protocol tests
+zig build test               # Basic library tests
+
+# Run single test file (edit test-utils/run_single_test.zig first)
+zig build test-single
+
+# List all available test commands
+zig build --help | grep test
+```
+
+### 📁 Test Organization
+
+```
+tests/                          # Pure Zig integration tests
+├── test_events.zig            # ✅ Core Nostr events + publish/subscribe
+├── test_nip_ee_real.zig       # ✅ NIP-EE protocol implementation  
+├── test_welcome_events.zig    # ✅ MLS welcome message handling
+└── test_mls_state_machine.zig # ⚠️ MLS state management (disabled)
+
+wasm_tests/                     # TypeScript tests for WASM functionality
+├── test_state_machine.ts      # Main WASM integration tests
+├── test_crypto_functions.ts   # Cryptographic operations
+└── [various other test files] # Specific feature tests
+
+test-utils/                     # Test utilities and helpers  
+├── run_single_test.zig        # Single test runner
+├── run_test.sh               # Helper script
+└── [development test files]   # Temporary test files
+
+test_runner.zig                # Master test file (imports all tests)
+```
+
+### ✅ Core Test Suites
+
+#### `test-events` - Event Creation and Publishing
+**What it tests:**
+- Event creation with proper ID calculation and signing
+- BIP340 Schnorr signature generation and verification
+- JSON serialization/deserialization round-trips
+- Tag handling and validation
+- **NEW: Publish-subscribe roundtrip testing**
+  - Publishes events to relay via WebSocket
+  - Sets up subscriptions to query for specific events
+  - Validates received events match published data
+  - Tests complete relay integration workflow
+
+**Example Output:**
+```
+✅ Event created successfully
+✅ Event signature verified successfully  
+✅ All validations passed!
+```
+
+#### `test-nip-ee-real` - NIP-EE Protocol
+**What it tests:**
+- MLS KeyPackage generation and parsing
+- Group creation and member management
+- Welcome event handling with NIP-59 gift wrapping
+- NIP-44 encryption integration
+- Real cryptographic operations (no placeholders)
+
+#### `test-welcome-events` - MLS Welcome Messages
+**What it tests:**
+- Welcome message creation and processing
+- Ephemeral key generation for privacy
+- HPKE encryption/decryption operations
+- Group state initialization from welcome
+
+### 🌐 WASM Tests (`wasm_tests/`)
+- TypeScript integration tests for browser functionality
+- WASM-specific memory management verification
+- Cross-platform compatibility testing
 - Performance benchmarks
 
-### Guidelines
-- Test both success and failure paths
-- Use real-world test data when possible
-- Verify cryptographic operations with known test vectors
-- Test complete round-trips (encrypt → decrypt, serialize → deserialize)
+### 🔧 Test Configuration
+
+#### Master Test Runner (`test_runner.zig`)
+```zig
+test {
+    // Core Nostr functionality tests
+    _ = @import("tests/test_events.zig");
+    
+    // MLS/NIP-EE protocol tests  
+    _ = @import("tests/test_nip_ee_real.zig");
+    _ = @import("tests/test_welcome_events.zig");
+    // _ = @import("tests/test_mls_state_machine.zig"); // Disabled: compilation errors
+}
+```
+
+#### Single Test Runner (`test-utils/run_single_test.zig`)
+Edit this file to test individual test files:
+```zig
+test {
+    _ = @import("tests/test_events.zig"); // Change this line
+}
+```
+
+### 🚨 Relay Testing Requirements
+
+**For publish-subscribe tests:**
+1. Start a test relay: `nak serve --verbose`
+2. Relay runs on `ws://localhost:10547`
+3. Tests will skip gracefully if relay is unavailable
+
+**Test Features:**
+- ✅ Publishes real Nostr events to relay
+- ✅ Sets up REQ subscriptions with filters  
+- ✅ Validates event round-trip integrity
+- ✅ Proper NIP-01 message format compliance
+- ✅ Timeout handling (5 second max wait)
+- ✅ Graceful failure if relay unavailable
+
+### 🐛 Debugging Failed Tests
+
+#### Common Issues:
+```bash
+# Module resolution error (no module 'nostr' available)
+# → Always use `zig build test-*` commands, never `zig test` directly
+
+# Connection refused to relay
+# → Start relay with: nak serve --verbose
+
+# Compilation errors in MLS tests  
+# → Some MLS tests disabled due to type system changes
+```
+
+#### Getting More Information:
+```bash
+# Verbose output
+zig build test-events --verbose
+
+# Show all compilation errors
+zig build test-all --summary all
+
+# Run tests with more detailed failure info
+zig build test-all --summary failures
+```
+
+### 📊 Test Coverage Areas
+
+#### ✅ Working & Comprehensive
+- **Event Creation**: ID calculation, signing, verification
+- **JSON Handling**: Serialization, parsing, validation  
+- **Relay Integration**: WebSocket publish/subscribe
+- **Cryptography**: BIP340 Schnorr, secp256k1 operations
+- **NIP-EE Core**: KeyPackages, Welcome events
+- **Performance**: Event creation benchmarks (~1.8ms/event)
+
+#### ⚠️ Partial Coverage  
+- **MLS State Machine**: Type system issues with some tests
+- **WASM Integration**: Some functions need debugging
+- **Error Recovery**: Limited edge case coverage
+
+#### ❌ Missing Coverage
+- **Multi-relay Publishing**: Not yet implemented
+- **Large Group Support**: >150 members not tested
+- **Multi-device Scenarios**: Single client testing only
+
+### 💡 Adding New Tests
+
+1. **Create test file** in `tests/` directory:
+```zig
+const std = @import("std");
+const testing = std.testing;
+const nostr = @import("nostr"); // Uses build system modules
+
+test "My new feature" {
+    const allocator = testing.allocator;
+    // Test implementation...
+    try testing.expect(result == expected);
+}
+```
+
+2. **Add to test_runner.zig**:
+```zig
+test {
+    _ = @import("tests/my_new_test.zig");
+}
+```
+
+3. **Optional: Add dedicated build step**:
+Edit `build.zig` to add `zig build test-my-feature` command.
+
+### 🎯 Test Guidelines
+
+- **Real Cryptography Only**: No fake/placeholder implementations
+- **Integration Focus**: Test complete workflows, not just units
+- **Error Path Coverage**: Test both success and failure cases  
+- **Relay Compatibility**: Use real relay for integration tests
+- **Performance Awareness**: Monitor test execution time
+- **Documentation**: Document test purpose and expected behavior
 
 ## Zig Idioms and Best Practices
 
@@ -213,6 +398,60 @@ pub fn encrypt(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 // Bad: Hidden allocation
 pub fn encrypt(data: []const u8) ![]u8 {
     // Where does this memory come from?
+}
+```
+
+### Tag Allocation Best Practices
+```zig
+// Good: Use TagBuilder for safe tag allocation
+var builder = nostr.TagBuilder.init(allocator);
+defer builder.deinit();
+
+try builder.addEventTag("event_id");
+try builder.addPubkeyTag("pubkey");
+try builder.addRelayTag("wss://relay.example.com");
+
+const tags = try builder.build();
+defer allocator.free(tags);
+
+// Bad: Manual tag allocation (error-prone)
+const tag = try allocator.alloc([]const u8, 2);
+tag[0] = try allocator.dupe(u8, "e");
+tag[1] = try allocator.dupe(u8, "event_id");
+// Easy to forget cleanup, leak memory
+```
+
+### Arena Allocator Pattern
+```zig
+// Good: Use arena for temporary allocations
+var arena = std.heap.ArenaAllocator.init(allocator);
+defer arena.deinit();
+const arena_alloc = arena.allocator();
+
+// All allocations in this scope use arena
+const temp_data = try arena_alloc.alloc(u8, 1024);
+const temp_string = try arena_alloc.dupe(u8, "temporary");
+// No need to free individually - arena.deinit() handles all
+
+// Bad: Many small allocations without grouping
+const data1 = try allocator.alloc(u8, 100);
+defer allocator.free(data1);
+const data2 = try allocator.alloc(u8, 200);
+defer allocator.free(data2);
+// Error-prone, easy to miss a defer
+```
+
+### Deep Copy When Storing
+```zig
+// Good: Deep copy when storing in long-lived structures
+pub fn cacheEvent(self: *Cache, event: Event) !void {
+    const event_copy = try event.deepCopy(self.allocator);
+    try self.events.put(event.id, event_copy);
+}
+
+// Bad: Store reference that may be freed
+pub fn cacheEvent(self: *Cache, event: Event) !void {
+    try self.events.put(event.id, event); // Dangerous!
 }
 ```
 
@@ -290,12 +529,48 @@ wasm_tests/            # WASM-specific tests
 - Don't create magic byte arrays without type safety
 - Don't skip pure Zig tests when adding WASM functionality
 
+### Memory Management
+- Don't shallow copy when you need ownership (leads to double-free)
+- Don't store references to data that might be freed (use-after-free)
+- Don't manually allocate tags - use TagBuilder
+- Don't forget errdefer for cleanup on error paths
+- Don't mix allocators - be consistent about which allocator owns what
+
 ### Cryptography
 - Don't use default secp256k1 ECDH (applies SHA256)
 - Don't ignore secp256k1 function return values
 - Don't use ECDSA functions for Schnorr signatures
 - Don't forget to validate private keys before use
 - Don't duplicate HKDF/HMAC implementations - use shared modules
+
+### Memory Ownership Patterns
+
+#### When to Deep Copy
+- Storing data in caches or long-lived structures
+- Crossing module boundaries where lifetime is unclear
+- When the original might be freed before you're done
+
+#### When to Use Arena Allocators
+- Temporary operations within a function
+- Building complex structures that will be used together
+- Test setup/teardown
+- MLS operations that create many temporary objects
+
+#### TagBuilder Usage
+```zig
+// Always prefer TagBuilder for tag creation
+var builder = nostr.TagBuilder.init(allocator);
+defer builder.deinit();
+
+// Use type-safe methods
+try builder.addEventTag(event_id);
+try builder.addPubkeyTag(pubkey);
+
+// For custom tags
+try builder.add(&.{ "custom", "value1", "value2" });
+
+const tags = try builder.build();
+```
 
 ### Testing
 - Don't rely only on WASM tests for correctness

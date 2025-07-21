@@ -19,6 +19,7 @@ pub const Kind = nostr.Kind;
 pub const Client = client.Client;
 pub const Filter = client.Filter;
 pub const RelayMessage = client.RelayMessage;
+pub const TagBuilder = nostr.TagBuilder;
 
 test {
     // Reference all tests

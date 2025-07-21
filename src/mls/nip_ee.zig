@@ -3,12 +3,14 @@ const nostr = @import("../nostr.zig");
 const types = @import("types.zig");
 const key_packages = @import("key_packages.zig");
 const welcomes = @import("welcomes.zig");
+const keypackage_discovery = @import("keypackage_discovery.zig");
 
 /// NIP-EE event kinds
 pub const EventKind = enum(u32) {
     key_package = 443,
     welcome = 444,
     group_message = 445,
+    keypackage_relay_list = 10051,
 };
 
 /// Kind 443: MLS Key Package Event
@@ -35,23 +37,24 @@ pub const KeyPackageEvent = struct {
         const content = try allocator.alloc(u8, encoded);
         _ = std.base64.standard.Encoder.encode(content, serialized);
         
-        // Create the event
-        var event = nostr.Event{
-            .id = undefined,
-            .pubkey = undefined,
-            .created_at = @intCast(std.time.timestamp()),
-            .kind = @intFromEnum(EventKind.key_package),
-            .tags = &.{},
-            .content = content,
-            .sig = undefined,
-        };
+        // Use proper event signing infrastructure (no more undefined fields!)
+        const event_signing = @import("event_signing.zig");
+        const helper = event_signing.NipEEEventHelper.init(allocator, private_key);
         
-        // Set pubkey from private key
-        event.pubkey = try crypto.getPublicKey(private_key);
+        // Create cipher suite and protocol version from key package
+        const cipher_suite = @intFromEnum(key_package.cipher_suite);
+        const protocol_version = @intFromEnum(key_package.version);
         
-        // Calculate event ID and sign
-        try event.calculateId(allocator);
-        try event.sign(allocator, private_key);
+        // Extract extension IDs (simplified - in real implementation, parse extensions)
+        const extensions = [_]u32{}; // Empty for now, would need proper extension parsing
+        
+        // Create properly signed KeyPackage event
+        const event = try helper.createKeyPackageEvent(
+            content,
+            cipher_suite,
+            protocol_version,
+            &extensions,
+        );
         
         return KeyPackageEvent{
             .event = event,
@@ -225,45 +228,18 @@ pub const GroupMessageEvent = struct {
         message_type: []const u8,
         encrypted_content: []const u8,
     ) !GroupMessageEvent {
-        // Create tags
-        var tags = std.ArrayList([]const []const u8).init(allocator);
-        defer tags.deinit();
+        // Use proper event signing infrastructure with ephemeral key
+        const event_signing = @import("event_signing.zig");
+        const helper = event_signing.NipEEEventHelper.init(allocator, ephemeral_private_key);
         
-        // Add g tag for group ID
-        const g_tag = try allocator.alloc([]const u8, 2);
-        g_tag[0] = try allocator.dupe(u8, "g");
-        g_tag[1] = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&group_id)});
-        try tags.append(g_tag);
-        
-        // Add epoch tag
-        const epoch_tag = try allocator.alloc([]const u8, 2);
-        epoch_tag[0] = try allocator.dupe(u8, "epoch");
-        epoch_tag[1] = try std.fmt.allocPrint(allocator, "{}", .{epoch});
-        try tags.append(epoch_tag);
-        
-        // Add mls tag for message type
-        const mls_tag = try allocator.alloc([]const u8, 2);
-        mls_tag[0] = try allocator.dupe(u8, "mls");
-        mls_tag[1] = try allocator.dupe(u8, message_type);
-        try tags.append(mls_tag);
-        
-        // Create the event
-        var event = nostr.Event{
-            .id = undefined,
-            .pubkey = undefined,
-            .created_at = @intCast(std.time.timestamp()),
-            .kind = @intFromEnum(EventKind.group_message),
-            .tags = try tags.toOwnedSlice(),
-            .content = try allocator.dupe(u8, encrypted_content),
-            .sig = undefined,
-        };
-        
-        // Set pubkey from ephemeral private key
-        event.pubkey = try crypto.getPublicKey(ephemeral_private_key);
-        
-        // Calculate event ID and sign with ephemeral key
-        try event.calculateId(allocator);
-        try event.sign(allocator, ephemeral_private_key);
+        // Create properly signed Group Message event
+        const event = try helper.createGroupMessageEvent(
+            ephemeral_private_key,
+            &group_id.data,
+            epoch,
+            message_type,
+            encrypted_content,
+        );
         
         return GroupMessageEvent{
             .event = event,
@@ -304,6 +280,78 @@ pub const GroupMessageEvent = struct {
             .epoch = epoch,
             .message_type = message_type,
         };
+    }
+};
+
+/// KeyPackage Discovery API
+/// High-level interface for managing KeyPackage discoverability
+pub const KeyPackageDiscovery = struct {
+    discovery_service: keypackage_discovery.KeyPackageDiscoveryService,
+    
+    pub fn init(allocator: std.mem.Allocator) KeyPackageDiscovery {
+        return .{
+            .discovery_service = keypackage_discovery.KeyPackageDiscoveryService.init(allocator),
+        };
+    }
+    
+    pub fn deinit(self: *KeyPackageDiscovery) void {
+        self.discovery_service.deinit();
+    }
+    
+    /// Publish a KeyPackage relay list event
+    pub fn publishKeyPackageRelays(
+        self: *KeyPackageDiscovery,
+        private_key: [32]u8,
+        relay_uris: []const []const u8,
+        description: ?[]const u8,
+    ) !keypackage_discovery.KeyPackageRelayListEvent {
+        // Update our internal relay list
+        for (relay_uris) |relay_uri| {
+            try self.discovery_service.addRelay(relay_uri);
+        }
+        
+        // Create and return the event
+        return try self.discovery_service.publishRelayList(private_key, description);
+    }
+    
+    /// Process a received relay list event from another user
+    pub fn processRelayListEvent(
+        self: *KeyPackageDiscovery,
+        event: nostr.Event,
+    ) !void {
+        const relay_event = try keypackage_discovery.KeyPackageRelayListEvent.parse(
+            self.discovery_service.allocator,
+            event,
+        );
+        
+        // Extract pubkey
+        const pubkey = try keypackage_discovery.parsePublicKey(event.pubkey);
+        
+        // Cache the relay list
+        try self.discovery_service.cacheRelayList(pubkey, relay_event);
+    }
+    
+    /// Find relay URIs where a specific user's KeyPackages might be found
+    pub fn findKeyPackageRelays(
+        self: *const KeyPackageDiscovery,
+        user_pubkey: [32]u8,
+    ) ?[]const []const u8 {
+        return self.discovery_service.getRelayListForUser(user_pubkey);
+    }
+    
+    /// Get all known relay URIs for KeyPackage discovery
+    pub fn getAllDiscoveryRelays(self: *const KeyPackageDiscovery) ![]const []const u8 {
+        return try self.discovery_service.getAllKnownRelays();
+    }
+    
+    /// Clean up expired relay list entries
+    pub fn cleanupExpiredEntries(self: *KeyPackageDiscovery) !void {
+        try self.discovery_service.cleanupExpiredEntries();
+    }
+    
+    /// Get discovery statistics
+    pub fn getStats(self: *const KeyPackageDiscovery) keypackage_discovery.DiscoveryStats {
+        return self.discovery_service.getStats();
     }
 };
 
@@ -382,4 +430,54 @@ test "parse group message event" {
     try std.testing.expect(msg_event.group_id != null);
     try std.testing.expectEqual(@as(types.Epoch, 42), msg_event.epoch.?);
     try std.testing.expectEqualStrings("application", msg_event.message_type.?);
+}
+
+test "KeyPackage discovery integration" {
+    const allocator = std.testing.allocator;
+    
+    var discovery = KeyPackageDiscovery.init(allocator);
+    defer discovery.deinit();
+    
+    // Test publishing relay list
+    const private_key: [32]u8 = [_]u8{0xAB} ** 32;
+    const relay_uris = [_][]const u8{
+        "wss://relay1.example.com",
+        "wss://relay2.example.com",
+    };
+    
+    const relay_event = try discovery.publishKeyPackageRelays(
+        private_key,
+        &relay_uris,
+        "My KeyPackage relays for testing",
+    );
+    defer relay_event.deinit(allocator);
+    
+    // Verify event was created correctly
+    try std.testing.expectEqual(@as(u32, 10051), relay_event.event.kind);
+    try std.testing.expectEqual(@as(usize, 2), relay_event.relay_uris.len);
+    
+    // Test stats
+    const stats = discovery.getStats();
+    try std.testing.expectEqual(@as(u32, 2), stats.current_relays_count);
+    try std.testing.expectEqual(@as(u32, 0), stats.cached_users_count);
+    
+    // Test processing a relay list from another user
+    const other_private_key: [32]u8 = [_]u8{0xCD} ** 32;
+    const other_pubkey = try crypto.getPublicKey(other_private_key);
+    
+    const other_event = try keypackage_discovery.KeyPackageRelayListEvent.create(
+        allocator,
+        other_private_key,
+        &[_][]const u8{"wss://other-relay.example.com"},
+        null,
+    );
+    defer other_event.deinit(allocator);
+    
+    try discovery.processRelayListEvent(other_event.event);
+    
+    // Check if we can find the other user's relays
+    const other_relays = discovery.findKeyPackageRelays(other_pubkey);
+    try std.testing.expect(other_relays != null);
+    try std.testing.expectEqual(@as(usize, 1), other_relays.?.len);
+    try std.testing.expectEqualStrings("wss://other-relay.example.com", other_relays.?[0]);
 }

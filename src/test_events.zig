@@ -282,3 +282,264 @@ test "event signature verification" {
     // Test that we can verify event signatures
     // This will be implemented once we have crypto support
 }
+
+test "publish and subscribe event roundtrip" {
+    const allocator = std.testing.allocator;
+    
+    // Import required modules
+    const crypto = @import("crypto.zig");
+    const client = @import("client.zig");
+    
+    std.debug.print("\n=== Testing Publish-Subscribe Roundtrip ===\n", .{});
+    
+    // 1. Create a test event to publish
+    var rng = std.Random.DefaultPrng.init(@bitCast(std.time.timestamp()));
+    const private_key = try crypto.generatePrivateKey(rng.random());
+    const public_key = try crypto.getPublicKey(private_key);
+    
+    // Create test event content
+    const test_content = "Test event for publish-subscribe validation";
+    const current_time = @as(u32, @intCast(std.time.timestamp()));
+    
+    // Build the event
+    var tags = std.ArrayList(nostr.Tag).init(allocator);
+    defer tags.deinit();
+    try tags.append(nostr.Tag{ .name = "test", .values = &[_][]const u8{ "roundtrip" } });
+    
+    var event = nostr.Event{
+        .id = "",
+        .pubkey = try allocator.dupe(u8, &public_key),
+        .created_at = current_time,
+        .kind = 1, // Text note
+        .content = try allocator.dupe(u8, test_content),
+        .tags = try tags.toOwnedSlice(),
+        .sig = "",
+    };
+    defer {
+        allocator.free(event.id);
+        allocator.free(event.pubkey);
+        allocator.free(event.content);
+        for (event.tags) |tag| {
+            allocator.free(tag.name);
+            for (tag.values) |value| {
+                allocator.free(value);
+            }
+            allocator.free(tag.values);
+        }
+        allocator.free(event.tags);
+        allocator.free(event.sig);
+    }
+    
+    // Calculate event ID and signature
+    const event_id = try nostr.calculateEventId(allocator, event);
+    defer allocator.free(event_id);
+    event.id = try allocator.dupe(u8, event_id);
+    
+    const signature = try crypto.signSchnorr(private_key, event_id);
+    event.sig = try allocator.dupe(u8, &signature);
+    
+    std.debug.print("Created test event ID: {s}\n", .{event.id});
+    
+    // 2. Set up relay client
+    var relay_client = client.Client.init(allocator, "ws://localhost:10547");
+    defer relay_client.deinit();
+    
+    // Connect to relay
+    relay_client.connect() catch |err| switch (err) {
+        error.ConnectionRefused => {
+            std.debug.print("⚠️  Relay not available at ws://localhost:10547\n");
+            std.debug.print("   To run this test, start a relay with: nak serve --verbose\n");
+            return; // Skip test if relay is not available
+        },
+        else => return err,
+    };
+    defer relay_client.disconnect();
+    
+    // 3. Set up subscription state tracking
+    var received_event: ?nostr.Event = null;
+    var subscription_complete = false;
+    var publish_confirmed = false;
+    
+    // Callback for publish confirmation
+    const PublishContext = struct {
+        confirmed: *bool,
+        
+        fn callback(self: @This(), ok: bool, message: ?[]const u8) void {
+            _ = message;
+            self.confirmed.* = ok;
+            if (ok) {
+                std.debug.print("✅ Event publish confirmed\n", .{});
+            } else {
+                std.debug.print("❌ Event publish failed\n", .{});
+            }
+        }
+    };
+    const publish_context = PublishContext{ .confirmed = &publish_confirmed };
+    
+    // Callback for subscription messages
+    const SubContext = struct {
+        target_event_id: []const u8,
+        received: *?nostr.Event,
+        complete: *bool,
+        alloc: std.mem.Allocator,
+        
+        fn callback(self: @This(), message: client.RelayMessage) void {
+            switch (message) {
+                .event => |event_msg| {
+                    std.debug.print("📨 Received event: {s}\n", .{event_msg.event.id});
+                    
+                    // Check if this is our target event
+                    if (std.mem.eql(u8, event_msg.event.id, self.target_event_id)) {
+                        std.debug.print("✅ Found our published event!\n", .{});
+                        
+                        // Clone the event for verification
+                        const cloned_event = nostr.Event{
+                            .id = self.alloc.dupe(u8, event_msg.event.id) catch return,
+                            .pubkey = self.alloc.dupe(u8, event_msg.event.pubkey) catch return,
+                            .created_at = event_msg.event.created_at,
+                            .kind = event_msg.event.kind,
+                            .content = self.alloc.dupe(u8, event_msg.event.content) catch return,
+                            .tags = self.alloc.dupe(nostr.Tag, event_msg.event.tags) catch return,
+                            .sig = self.alloc.dupe(u8, event_msg.event.sig) catch return,
+                        };
+                        
+                        // Deep copy tags
+                        for (cloned_event.tags, 0..) |*tag, i| {
+                            tag.name = self.alloc.dupe(u8, event_msg.event.tags[i].name) catch return;
+                            tag.values = self.alloc.dupe([]const u8, event_msg.event.tags[i].values) catch return;
+                            for (tag.values, 0..) |*value, j| {
+                                value.* = self.alloc.dupe(u8, event_msg.event.tags[i].values[j]) catch return;
+                            }
+                        }
+                        
+                        self.received.* = cloned_event;
+                    }
+                },
+                .eose => |eose_msg| {
+                    std.debug.print("📋 End of stored events for subscription: {s}\n", .{eose_msg.subscription_id});
+                    self.complete.* = true;
+                },
+                .ok => |ok_msg| {
+                    std.debug.print("📝 OK response: {s} -> {}\n", .{ ok_msg.event_id, ok_msg.accepted });
+                },
+                else => {},
+            }
+        }
+    };
+    const sub_context = SubContext{
+        .target_event_id = event.id,
+        .received = &received_event,
+        .complete = &subscription_complete,
+        .alloc = allocator,
+    };
+    
+    // 4. Publish the event first
+    std.debug.print("📤 Publishing test event...\n", .{});
+    try relay_client.publish_event(event, publish_context.callback);
+    
+    // 5. Set up subscription to query for our event
+    const subscription_id = "test-roundtrip-sub";
+    var filters = [_]client.Filter{
+        .{
+            .ids = &[_][]const u8{event.id},
+            .limit = 1,
+        },
+    };
+    
+    std.debug.print("📝 Setting up subscription for event ID: {s}\n", .{event.id});
+    try relay_client.subscribe(subscription_id, &filters, sub_context.callback);
+    
+    // 6. Process messages with timeout
+    const max_wait_time = 5 * 1000; // 5 seconds in milliseconds
+    const start_time = std.time.milliTimestamp();
+    var current_time_ms = start_time;
+    
+    std.debug.print("⏳ Waiting for messages (timeout: {}ms)...\n", .{max_wait_time});
+    
+    while (current_time_ms - start_time < max_wait_time) {
+        relay_client.process_messages() catch |err| switch (err) {
+            error.WouldBlock => {
+                // No messages available, sleep briefly and continue
+                std.time.sleep(10 * std.time.ns_per_ms); // 10ms
+            },
+            else => return err,
+        };
+        
+        // Check if we're done
+        if (publish_confirmed and subscription_complete and received_event != null) {
+            break;
+        }
+        
+        current_time_ms = std.time.milliTimestamp();
+    }
+    
+    // 7. Clean up subscription
+    try relay_client.unsubscribe(subscription_id);
+    
+    // 8. Validate results
+    std.debug.print("\n=== Validation Results ===\n", .{});
+    std.debug.print("Publish confirmed: {}\n", .{publish_confirmed});
+    std.debug.print("Subscription complete: {}\n", .{subscription_complete});
+    std.debug.print("Event received: {}\n", .{received_event != null});
+    
+    // Test assertions
+    try std.testing.expect(publish_confirmed); // Publish should be confirmed
+    
+    if (received_event) |recv_event| {
+        defer {
+            allocator.free(recv_event.id);
+            allocator.free(recv_event.pubkey);
+            allocator.free(recv_event.content);
+            for (recv_event.tags) |tag| {
+                allocator.free(tag.name);
+                for (tag.values) |value| {
+                    allocator.free(value);
+                }
+                allocator.free(tag.values);
+            }
+            allocator.free(recv_event.tags);
+            allocator.free(recv_event.sig);
+        }
+        
+        // Verify the received event matches what we published
+        try std.testing.expectEqualSlices(u8, event.id, recv_event.id);
+        try std.testing.expectEqualSlices(u8, event.pubkey, recv_event.pubkey);
+        try std.testing.expect(event.created_at == recv_event.created_at);
+        try std.testing.expect(event.kind == recv_event.kind);
+        try std.testing.expectEqualSlices(u8, event.content, recv_event.content);
+        try std.testing.expectEqualSlices(u8, event.sig, recv_event.sig);
+        
+        // Verify tags match
+        try std.testing.expect(event.tags.len == recv_event.tags.len);
+        for (event.tags, recv_event.tags) |orig_tag, recv_tag| {
+            try std.testing.expectEqualSlices(u8, orig_tag.name, recv_tag.name);
+            try std.testing.expect(orig_tag.values.len == recv_tag.values.len);
+            for (orig_tag.values, recv_tag.values) |orig_value, recv_value| {
+                try std.testing.expectEqualSlices(u8, orig_value, recv_value);
+            }
+        }
+        
+        // Verify signature is valid
+        const recv_event_id = try nostr.calculateEventId(allocator, recv_event);
+        defer allocator.free(recv_event_id);
+        
+        try std.testing.expectEqualSlices(u8, recv_event.id, recv_event_id);
+        
+        const pubkey_bytes = try nostr.hexDecode(allocator, recv_event.pubkey);
+        defer allocator.free(pubkey_bytes);
+        
+        const sig_bytes = try nostr.hexDecode(allocator, recv_event.sig);
+        defer allocator.free(sig_bytes);
+        
+        const event_id_bytes = try nostr.hexDecode(allocator, recv_event_id);
+        defer allocator.free(event_id_bytes);
+        
+        const is_valid = try crypto.verifySchnorr(pubkey_bytes[0..32].*, sig_bytes[0..64].*, event_id_bytes[0..32].*);
+        try std.testing.expect(is_valid);
+        
+        std.debug.print("✅ All validations passed!\n", .{});
+    } else {
+        std.debug.print("❌ No event received within timeout period\n", .{});
+        try std.testing.expect(false); // Fail if we didn't receive the event
+    }
+}
