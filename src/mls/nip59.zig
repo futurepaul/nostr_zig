@@ -59,7 +59,7 @@ pub const SealedEvent = struct {
             recipient_pubkey,
             rumor_json,
         );
-        defer allocator.free(encrypted);
+        // Note: Event now owns the encrypted memory - don't free here
         
         // Create seal event (kind: 13) with random timestamp tweak
         const now = wasm_time.timestamp();
@@ -109,7 +109,7 @@ pub const GiftWrap = struct {
             recipient_pubkey,
             sealed_json,
         );
-        defer allocator.free(encrypted);
+        // Note: Event now owns the encrypted memory - don't free here
         
         // Create p tag for recipient
         const p_tag = try allocator.alloc([]const u8, 2);
