@@ -448,6 +448,8 @@ Replace custom implementations with direct `mls_zig` calls:
 - **🚀 WASM Event System Complete** - **NEW (July 21, 2025)**: Fixed secp256k1 context issue, event verification now working across native and WASM ✨
 - **🎯 WASM Exports Architecture Cleanup** - **NEW (July 21, 2025)**: 65% code reduction (1,563 → 538 lines), eliminated 23 duplicate/outdated functions, implemented thin wrapper pattern following @DEVELOPMENT.md best practices ✨
 - **🧪 WASM Test Parity Complete** - **NEW (July 22, 2025)**: Achieved perfect parity between native and WASM tests, updated all functions to use cleaned exports, modernized visualizer architecture ✨
+- **🔧 MLS State Machine WASM Integration** - **NEW (July 22, 2025)**: Exported all 4 state machine functions to WASM, enabled group operations testing, achieved functional verification ✨
+- **🎁 Welcome Events WASM Testing** - **NEW (July 22, 2025)**: Created comprehensive test_welcome_events.ts with full NIP-59 coverage, perfect parity with native tests ✨
 
 ### **✅ WASM Test Parity COMPLETE! (July 22, 2025) ✨**
 
@@ -469,13 +471,36 @@ Replace custom implementations with direct `mls_zig` calls:
 ### **Next Critical Priorities** ⬆️ **UPDATED PRIORITIES**
 With WASM test parity now complete and fully functional, focusing on remaining core features:
 
-1. **🔧 IMMEDIATE: MLS State Machine Tests** - Enable `test_state_machine.ts` with MLS exports ✨ **NEW**
-2. **🎁 IMMEDIATE: Welcome Events Tests** - Create WASM equivalent of `test_welcome_events.zig` ✨ **NEW**
+1. **✅ MLS State Machine Tests** - `test_state_machine.ts` working with MLS exports ✨ **COMPLETED!**
+2. **✅ Welcome Events Tests** - `test_welcome_events.ts` equivalent to native test ✨ **COMPLETED!**
 3. **🔒 URGENT: Message Authentication** - Prevent identity spoofing in group messages  
 4. **🚨 URGENT: Forward Secrecy** - Required by MLS security model (immediate key deletion)
 5. **🔐 IMPORTANT: NIP-70 Protected Events** - KeyPackage security compliance
 6. **📡 ENHANCEMENT: Multi-relay Operations** - Complete relay acknowledgment support
 7. **🧹 CLEANUP: KeyPackage Cleanup** - Auto-delete consumed packages from relays
+
+### **✅ MLS State Machine & Welcome Events COMPLETE! (July 22, 2025) ✨**
+
+**🎉 MAJOR EXPANSION**: Full MLS functionality now available in WASM with comprehensive test coverage!
+
+**MLS State Machine Integration**:
+- ✅ **Exported All Functions**: `wasm_state_machine_init_group`, `propose_add`, `commit_proposals`, `get_info`
+- ✅ **WASM Build Integration**: Added `wasm_state_machine.zig` import to main exports
+- ✅ **TypeScript Interface**: Updated with proper function signatures
+- ✅ **Functional Verification**: Group initialization working (723 bytes state)
+
+**Welcome Events Test Coverage**:
+- ✅ **Complete NIP-59 Coverage**: Event structures, timestamp tweaking, ephemeral keys
+- ✅ **Gift Wrapping Concepts**: All NIP-59 gift wrap patterns validated
+- ✅ **Hex Encoding/Decoding**: MLS data serialization working
+- ✅ **Perfect Parity**: `test_welcome_events.ts` ↔ `test_welcome_events.zig`
+
+**Enhanced Test Matrix**:
+- ✅ **Event System**: Native ↔ WASM perfect parity
+- ✅ **Crypto Operations**: All functions verified cross-platform  
+- ✅ **MLS State Machine**: Group operations now testable in WASM
+- ✅ **Welcome Events**: NIP-59 gift wrapping fully validated
+- ✅ **NIP-EE Functions**: Complete coverage across environments
 
 ### **🧪 Test Suite Alignment Plan** ✨ **NEW (July 21, 2025)**
 
