@@ -5,6 +5,8 @@ const std = @import("std");
 test {
     // Core Nostr functionality tests
     _ = @import("tests/test_events.zig");
+    _ = @import("tests/test_public_key_derivation.zig");
+    _ = @import("tests/test_schnorr_verify.zig");
     
     // MLS/NIP-EE protocol tests  
     _ = @import("tests/test_nip_ee_real.zig");

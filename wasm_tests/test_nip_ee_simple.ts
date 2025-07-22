@@ -64,17 +64,9 @@ if (!secretResult) {
 const generatedSecret = new Uint8Array(wasmMemory.buffer, secretPtr, 32);
 console.log(`✅ Generated exporter secret: ${bytesToHex(generatedSecret)}`);
 
-// Make sure the exporter secret is a valid secp256k1 key
-const validSecretPtr = exports.wasm_alloc(32);
-if (!exports.wasm_generate_valid_secp256k1_key(secretPtr, validSecretPtr)) {
-    console.error("❌ Failed to convert exporter secret to valid secp256k1 key");
-    process.exit(1);
-}
-
-// Copy back to secretPtr
-new Uint8Array(wasmMemory.buffer, secretPtr, 32).set(new Uint8Array(wasmMemory.buffer, validSecretPtr, 32));
-exports.wasm_free(validSecretPtr, 32);
-console.log(`✅ Converted to valid secp256k1 key: ${bytesToHex(new Uint8Array(wasmMemory.buffer, secretPtr, 32))}`);
+// Use the generated secret directly (it should already be valid for crypto operations)
+// The new crypto functions handle validation internally
+console.log(`✅ Using exporter secret for crypto operations: ${bytesToHex(generatedSecret)}`);
 
 // Test 2: Create encrypted group message
 console.log("\n2. Testing group message encryption...");

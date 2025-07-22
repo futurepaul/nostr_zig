@@ -1,79 +1,28 @@
 export interface WasmExports {
   memory: WebAssembly.Memory;
   wasm_init: () => void;
-  wasm_add: (a: number, b: number) => number;
+  wasm_get_version: () => number;
   wasm_alloc: (size: number) => number;
   wasm_alloc_u32: (count: number) => number;
   wasm_free: (ptr: number, size: number) => void;
   wasm_free_u32: (ptr: number, count: number) => void;
   wasm_align_ptr: (ptr: number, alignment: number) => number;
-  bytes_to_hex: (bytes: number, bytesLen: number, outHex: number, outHexLen: number) => boolean;
   wasm_create_identity: (outPrivateKey: number, outPublicKey: number) => boolean;
   wasm_get_public_key_from_private: (privateKey: number, outPublicKey: number) => boolean;
-  wasm_generate_ephemeral_keys: (outPrivateKey: number, outPublicKey: number) => boolean;
-  wasm_generate_mls_signing_keys: (outPrivateKey: number, outPublicKey: number) => boolean;
+  wasm_get_public_key_hex: (privateKey: number, outPubkeyHex: number) => boolean;
   wasm_sign_schnorr: (messageHash: number, privateKey: number, outSignature: number) => boolean;
   wasm_verify_schnorr: (messageHash: number, signature: number, publicKey: number) => boolean;
-  wasm_create_key_package: (
-    privateKey: number,
-    outData: number,
-    outLenPtr: number
-  ) => boolean;
-  wasm_create_group: (
-    creatorPrivateKey: number,
-    creatorPublicKey: number,
-    outState: number,
-    outStateLenPtr: number
-  ) => boolean;
-  wasm_generate_exporter_secret: (
-    groupState: number,
-    groupStateLen: number,
-    outSecret: number
-  ) => boolean;
-  wasm_nip44_encrypt: (
-    exporterSecret: number,
-    plaintext: number,
-    plaintextLen: number,
-    outCiphertext: number,
-    outLenPtr: number
-  ) => boolean;
-  wasm_nip44_decrypt: (
-    exporterSecret: number,
-    ciphertext: number,
-    ciphertextLen: number,
-    outPlaintext: number,
-    outLenPtr: number
-  ) => boolean;
-  wasm_send_message: (
-    groupState: number,
-    groupStateLen: number,
-    senderPrivateKey: number,
-    message: number,
-    messageLen: number,
-    outCiphertext: number,
-    outLenPtr: number
-  ) => boolean;
-  wasm_receive_message: (
-    groupState: number,
-    groupStateLen: number,
-    receiverPrivateKey: number,
-    nip44Ciphertext: number,
-    nip44CiphertextLen: number,
-    outPlaintext: number,
-    outLenPtr: number
-  ) => boolean;
-  wasm_deserialize_mls_message: (
-    serializedData: number,
-    serializedLen: number,
-    outGroupId: number,
-    outEpoch: number,
-    outSenderIndex: number,
-    outApplicationData: number,
-    outApplicationDataLen: number,
-    outSignature: number,
-    outSignatureLen: number
-  ) => boolean;
   wasm_sha256: (data: number, dataLen: number, outHash: number) => boolean;
+  wasm_create_event: (
+    privateKey: number,
+    kind: number,
+    content: number,
+    contentLen: number,
+    tagsJson: number,
+    tagsJsonLen: number,
+    outEventJson: number,
+    outLenPtr: number
+  ) => boolean;
   wasm_create_nostr_event_id: (
     pubkey: number,
     createdAt: bigint,
@@ -96,29 +45,34 @@ export interface WasmExports {
     outEncrypted: number,
     outLen: number
   ) => boolean;
+  wasm_nip_ee_decrypt_group_message: (
+    groupId: number,
+    epoch: bigint,
+    senderIndex: number,
+    encryptedMessage: number,
+    encryptedMessageLen: number,
+    exporterSecret: number,
+    outDecrypted: number,
+    outLen: number
+  ) => boolean;
   wasm_nip_ee_generate_exporter_secret: (
     groupState: number,
     groupStateLen: number,
     outSecret: number
   ) => boolean;
-  wasm_nip_ee_decrypt_group_message: (
-    encryptedData: number,
-    encryptedDataLen: number,
-    exporterSecret: number,
-    outDecrypted: number,
+  wasm_create_gift_wrap: (
+    innerEvent: number,
+    innerEventLen: number,
+    recipientPubkey: number,
+    outGiftWrap: number,
     outLen: number
   ) => boolean;
-  // Event publishing functions
-  wasm_create_text_note: (
-    privateKey: number,
-    content: number,
-    contentLen: number,
-    outEventJson: number,
-    outEventJsonLen: number
-  ) => boolean;
-  wasm_get_public_key: (
-    privateKey: number,
-    outPublicKey: number
+  wasm_unwrap_gift_wrap: (
+    giftWrapEvent: number,
+    giftWrapEventLen: number,
+    recipientPrivkey: number,
+    outInnerEvent: number,
+    outLen: number
   ) => boolean;
 }
 
@@ -279,61 +233,21 @@ class WasmWrapper {
   }
 
   generateEphemeralKeys(): { privateKey: Uint8Array; publicKey: Uint8Array } {
-    const exports = this.ensureInitialized();
-    const privateKeyPtr = exports.wasm_alloc(32);
-    const publicKeyPtr = exports.wasm_alloc(32);
-    
-    if (!privateKeyPtr || !publicKeyPtr) {
-      throw new Error('Failed to allocate memory for ephemeral keys');
-    }
-
-    const success = exports.wasm_generate_ephemeral_keys(privateKeyPtr, publicKeyPtr);
-    if (!success) {
-      exports.wasm_free(privateKeyPtr, 32);
-      exports.wasm_free(publicKeyPtr, 32);
-      throw new Error('Failed to generate ephemeral keys');
-    }
-
-    const privateKey = this.readBytes(privateKeyPtr, 32);
-    const publicKey = this.readBytes(publicKeyPtr, 32);
-    
+    // Use the same identity creation function for ephemeral keys
+    const identity = this.createIdentity();
     console.log('Generated ephemeral keys:', {
-      publicKey: Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
+      publicKey: Array.from(identity.publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
     });
-
-    exports.wasm_free(privateKeyPtr, 32);
-    exports.wasm_free(publicKeyPtr, 32);
-
-    return { privateKey, publicKey };
+    return identity;
   }
 
   generateMLSSigningKeys(): { privateKey: Uint8Array; publicKey: Uint8Array } {
-    const exports = this.ensureInitialized();
-    const privateKeyPtr = exports.wasm_alloc(32);
-    const publicKeyPtr = exports.wasm_alloc(32);
-    
-    if (!privateKeyPtr || !publicKeyPtr) {
-      throw new Error('Failed to allocate memory for MLS signing keys');
-    }
-
-    const success = exports.wasm_generate_mls_signing_keys(privateKeyPtr, publicKeyPtr);
-    if (!success) {
-      exports.wasm_free(privateKeyPtr, 32);
-      exports.wasm_free(publicKeyPtr, 32);
-      throw new Error('Failed to generate MLS signing keys');
-    }
-
-    const privateKey = this.readBytes(privateKeyPtr, 32);
-    const publicKey = this.readBytes(publicKeyPtr, 32);
-    
+    // Use the same identity creation function for MLS signing keys
+    const identity = this.createIdentity();
     console.log('Generated MLS signing keys:', {
-      publicKey: Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
+      publicKey: Array.from(identity.publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
     });
-
-    exports.wasm_free(privateKeyPtr, 32);
-    exports.wasm_free(publicKeyPtr, 32);
-
-    return { privateKey, publicKey };
+    return identity;
   }
 
   signSchnorr(messageHash: Uint8Array, privateKey: Uint8Array): Uint8Array {
@@ -1270,90 +1184,61 @@ class WasmWrapper {
   createTextNote(privateKey: Uint8Array, content: string): string {
     const exports = this.ensureInitialized();
     
-    // Manual event creation using individual WASM functions that work
-    // This bypasses the problematic wasm_create_text_note function
+    // Use the new wasm_create_event function for clean event creation
+    const contentBytes = new TextEncoder().encode(content);
+    const tagsJson = "[]"; // Empty tags for simple text note
+    const tagsBytes = new TextEncoder().encode(tagsJson);
     
-    // Get public key
-    const pubkey = this.getPublicKey(privateKey);
+    // Allocate memory
+    const privateKeyPtr = exports.wasm_alloc(32);
+    const contentPtr = exports.wasm_alloc(contentBytes.length);
+    const tagsPtr = exports.wasm_alloc(tagsBytes.length);
+    const outEventPtr = exports.wasm_alloc(4096); // Generous buffer for JSON
+    const outLenPtr = exports.wasm_alloc_u32(1);
     
-    // Create current timestamp (Unix timestamp in seconds)
-    const createdAt = Math.floor(Date.now() / 1000);
-    
-    // Build the event object (before calculating ID and signature)
-    const eventForId = {
-      pubkey: Array.from(pubkey).map(b => b.toString(16).padStart(2, '0')).join(''),
-      created_at: createdAt,
-      kind: 1,
-      tags: [],
-      content: content
-    };
-    
-    // Calculate event ID using NIP-01 specification
-    // ID = SHA256([0, pubkey, created_at, kind, tags, content])
-    const serializedForId = JSON.stringify([
-      0,
-      eventForId.pubkey,
-      eventForId.created_at,
-      eventForId.kind,
-      eventForId.tags,
-      eventForId.content
-    ]);
-    
-    // Calculate SHA256 hash using working WASM function
-    const encoder = new TextEncoder();
-    const serializedBytes = encoder.encode(serializedForId);
-    
-    const dataPtr = exports.wasm_alloc(serializedBytes.length);
-    new Uint8Array(exports.memory.buffer, dataPtr, serializedBytes.length).set(serializedBytes);
-    
-    const hashPtr = exports.wasm_alloc(32);
-    const hashSuccess = exports.wasm_sha256(dataPtr, serializedBytes.length, hashPtr);
-    
-    if (!hashSuccess) {
-      exports.wasm_free(dataPtr, serializedBytes.length);
-      exports.wasm_free(hashPtr, 32);
-      throw new Error('Failed to calculate event ID hash');
+    if (!privateKeyPtr || !contentPtr || !tagsPtr || !outEventPtr || !outLenPtr) {
+      throw new Error('Failed to allocate WASM memory');
     }
     
-    const eventIdBytes = new Uint8Array(exports.memory.buffer, hashPtr, 32);
-    const eventId = Array.from(eventIdBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    
-    // Sign the event ID using working WASM function
-    const privkeyPtr = exports.wasm_alloc(32);
-    new Uint8Array(exports.memory.buffer, privkeyPtr, 32).set(privateKey);
-    
-    const sigPtr = exports.wasm_alloc(64);
-    const signSuccess = exports.wasm_sign_schnorr(privkeyPtr, hashPtr, sigPtr);
-    
-    if (!signSuccess) {
-      exports.wasm_free(dataPtr, serializedBytes.length);
-      exports.wasm_free(hashPtr, 32);
-      exports.wasm_free(privkeyPtr, 32);
-      exports.wasm_free(sigPtr, 64);
-      throw new Error('Failed to sign event');
+    try {
+      // Copy data to WASM memory
+      new Uint8Array(exports.memory.buffer, privateKeyPtr, 32).set(privateKey);
+      new Uint8Array(exports.memory.buffer, contentPtr, contentBytes.length).set(contentBytes);
+      new Uint8Array(exports.memory.buffer, tagsPtr, tagsBytes.length).set(tagsBytes);
+      new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = 4096;
+      
+      // Create the event
+      const success = exports.wasm_create_event(
+        privateKeyPtr,
+        1,                          // kind 1 = text note
+        contentPtr,
+        contentBytes.length,
+        tagsPtr,
+        tagsBytes.length,
+        outEventPtr,
+        outLenPtr
+      );
+      
+      if (!success) {
+        throw new Error('Failed to create event');
+      }
+      
+      // Read the result
+      const eventJsonLen = new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0];
+      const eventJsonBytes = new Uint8Array(exports.memory.buffer, outEventPtr, eventJsonLen);
+      const eventJson = new TextDecoder().decode(eventJsonBytes);
+      
+      console.log('Created text note event:', JSON.parse(eventJson));
+      return eventJson;
+      
+    } finally {
+      // Clean up memory
+      exports.wasm_free(privateKeyPtr, 32);
+      exports.wasm_free(contentPtr, contentBytes.length);
+      exports.wasm_free(tagsPtr, tagsBytes.length);
+      exports.wasm_free(outEventPtr, 4096);
+      exports.wasm_free_u32(outLenPtr, 1);
     }
-    
-    const signatureBytes = new Uint8Array(exports.memory.buffer, sigPtr, 64);
-    const signature = Array.from(signatureBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    
-    // Clean up memory
-    exports.wasm_free(dataPtr, serializedBytes.length);
-    exports.wasm_free(hashPtr, 32);
-    exports.wasm_free(privkeyPtr, 32);
-    exports.wasm_free(sigPtr, 64);
-    
-    // Build final event with ID and signature
-    const finalEvent = {
-      id: eventId,
-      pubkey: eventForId.pubkey,
-      created_at: eventForId.created_at,
-      kind: eventForId.kind,
-      tags: eventForId.tags,
-      content: eventForId.content,
-      sig: signature
-    };
-    
-    return JSON.stringify(finalEvent);
   }
 
   // Get public key from private key
