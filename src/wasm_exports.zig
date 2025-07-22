@@ -5,6 +5,9 @@ const nostr = @import("nostr.zig");
 const welcome_events = @import("mls/welcome_events.zig");
 const nip59 = @import("mls/nip59.zig");
 
+// Import MLS state machine functions to make them available
+const _ = @import("wasm_state_machine.zig");
+
 // External functions provided by JavaScript
 extern fn getRandomValues(buf: [*]u8, len: usize) void;
 extern fn getCurrentTimestamp() u64;

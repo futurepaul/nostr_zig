@@ -74,6 +74,35 @@ export interface WasmExports {
     outInnerEvent: number,
     outLen: number
   ) => boolean;
+  // MLS State Machine Functions
+  wasm_state_machine_init_group: (
+    groupId: number,
+    creatorIdentityPubkey: number,
+    creatorSigningKey: number,
+    outState: number,
+    outStateLenPtr: number
+  ) => boolean;
+  wasm_state_machine_propose_add: (
+    state: number,
+    stateLen: number,
+    memberKeyPackage: number,
+    memberKeyPackageLen: number,
+    outState: number,
+    outStateLenPtr: number
+  ) => boolean;
+  wasm_state_machine_commit_proposals: (
+    state: number,
+    stateLen: number,
+    outState: number,
+    outStateLenPtr: number
+  ) => boolean;
+  wasm_state_machine_get_info: (
+    state: number,
+    stateLen: number,
+    outGroupId: number,
+    outEpoch: number,
+    outMemberCount: number
+  ) => boolean;
 }
 
 class WasmWrapper {

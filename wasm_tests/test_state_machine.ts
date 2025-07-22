@@ -32,6 +32,9 @@ if (exports.wasm_init) {
     exports.wasm_init();
 }
 
+// Check if state machine functions are available
+console.log('Available exports:', Object.keys(exports).filter(name => name.includes('state_machine')));
+
 // Helper functions
 function bytesToHex(bytes: Uint8Array): string {
     return Array.from(bytes)
