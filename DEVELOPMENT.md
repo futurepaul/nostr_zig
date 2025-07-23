@@ -591,6 +591,94 @@ const tags = try builder.build();
 - Don't use `std.crypto.random` - use `wasm_random` module instead
 - Don't use `std.Random` PRNG - it depends on POSIX functionality
 
+## WASM Memory Management Best Practices
+
+### **🚨 CRITICAL: Flat Structs for WASM**
+
+Based on investigation of the "33 vs 32 byte" memory corruption issue, follow these patterns:
+
+#### **✅ GOOD: Flat Structs with Fixed Arrays**
+```zig
+// Good: WASM-friendly struct
+pub const KeyPackage = struct {
+    init_key: [32]u8,           // Fixed-size array on stack
+    encryption_key: [32]u8,     // No heap allocation
+    signature_key: [32]u8,      // No pointer sharing
+    
+    pub fn init(init_key: [32]u8, enc_key: [32]u8, sig_key: [32]u8) KeyPackage {
+        return KeyPackage{
+            .init_key = init_key,
+            .encryption_key = enc_key,
+            .signature_key = sig_key,
+        };
+    }
+};
+```
+
+#### **❌ BAD: Nested Heap Allocations**
+```zig
+// Bad: Complex ownership causes WASM memory corruption
+pub const KeyPackage = struct {
+    payload: KeyPackageTBS,     // Nested struct
+    signature: Signature,       // Contains []u8 slice
+    
+    pub const KeyPackageTBS = struct {
+        init_key: HpkePublicKey,    // Another nested struct
+        leaf_node: LeafNode,        // Even more nesting!
+        
+        pub const HpkePublicKey = struct {
+            data: []u8,             // Heap allocation
+            allocator: Allocator,   // Complex ownership
+        };
+    };
+};
+```
+
+### **WASM Struct Design Principles**
+
+1. **Use Fixed Arrays**: `[32]u8` instead of `[]u8` or `[]const u8`
+2. **Minimize Nesting**: Prefer flat structs over deeply nested hierarchies
+3. **Avoid Heap in Data**: Keep allocations out of data structures when possible
+4. **Stack-First**: Design for stack allocation, use heap only when necessary
+5. **Single Responsibility**: Each struct should have one clear purpose
+
+### **Arena Allocator Limitations in WASM**
+
+```zig
+// ❌ BAD: Arena destroyed before data is used
+export fn wasm_create_keys() KeyPackage {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit(); // Destroys data before return!
+    
+    const key_package = createKeyPackage(arena.allocator());
+    return key_package; // Data is now invalid
+}
+
+// ✅ GOOD: Use persistent allocator or stack allocation
+export fn wasm_create_keys() KeyPackage {
+    const init_key = generateX25519Key();    // [32]u8
+    const enc_key = generateX25519Key();     // [32]u8
+    const sig_key = generateEd25519Key();    // [32]u8
+    
+    return KeyPackage.init(init_key, enc_key, sig_key); // All stack data
+}
+```
+
+### **Memory Corruption Symptoms**
+
+Watch for these signs of WASM memory issues:
+- **Large Random Lengths**: Keys showing as 1,000,000+ bytes instead of 32
+- **Null Pointers**: Slice pointers showing as `u8@0`
+- **Wrong Sizes**: 33 bytes instead of 32 (often corrupted + length prefix)
+- **Unreachable Panics**: WASM runtime errors when accessing corrupted memory
+
+### **Debugging WASM Memory Issues**
+
+1. **Add Length Checks**: Verify sizes immediately after creation
+2. **Check Pointer Values**: Log slice `.ptr` and `.len` values
+3. **Test Return Values**: Verify data integrity after function returns
+4. **Use Fixed Sizes**: Replace dynamic allocations with compile-time arrays
+
 ## Migration Strategy
 
 ### Moving Logic from TypeScript to Zig
