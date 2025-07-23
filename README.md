@@ -14,7 +14,7 @@ A Zig implementation of the Nostr protocol for building decentralized social app
 - 🔑 **MLS Signing Keys**: Separate Ed25519/P256 keys for MLS operations (not Nostr identity)
 - 📦 **TLS Wire Format**: Proper MLSMessage serialization per RFC 9420
 - 🔄 **Two-Stage Decryption**: Full encrypt → send → receive → decrypt cycle
-- 🎨 **Interactive Visualizer**: React-based UI demonstrating NIP-EE message flow
+- 🎨 **Interactive NIP-EE Visualizer**: Full-featured React app demonstrating MLS group messaging with real cryptography
 - 🛠️ **CLI Tool**: nak-compatible command-line interface
 - 📋 **Event Types**: Support for various Nostr event kinds
 - 🧪 **Testing**: Comprehensive test suite
@@ -115,6 +115,34 @@ Run the realistic example (with proper event IDs):
 zig build example-realistic
 ```
 
+### Interactive NIP-EE Visualizer
+
+Experience the MLS group messaging protocol in action with our comprehensive visualizer:
+
+```bash
+# Build the WASM module
+zig build wasm
+
+# Start the visualizer (requires Bun)
+cd visualizer
+bun install
+bun dev
+```
+
+Visit `http://localhost:3001` for an interactive demonstration featuring:
+- **Split-screen Interface**: Alice and Bob as separate participants
+- **Real Cryptography**: Actual NIP-44 v2 encryption with MLS signing keys
+- **Protocol Flow**: Visual state transitions and message exchange
+- **Event Inspector**: Click any Nostr event to see its structure
+- **Two-Stage Decryption**: Interactive decryption showing MLS wire format parsing
+
+The visualizer demonstrates the complete NIP-EE workflow:
+1. Identity creation and key generation
+2. MLS Key Package publication (Kind 443)
+3. Group creation and management
+4. Welcome message distribution (Kind 444)
+5. Encrypted group messaging (Kind 445)
+
 ### Running Tests
 
 ```bash
@@ -182,6 +210,7 @@ src/
 ├── mls/               # MLS/NIP-EE group messaging
 │   ├── types.zig      # Core MLS types
 │   └── ...            # MLS modules
+├── wasm_exports.zig   # WebAssembly bindings for visualizer
 ├── secp256k1/         # Custom secp256k1 wrapper
 │   ├── secp256k1.zig  # Zig bindings
 │   └── callbacks.c    # C callbacks
@@ -190,6 +219,11 @@ src/
 deps/
 ├── secp256k1/         # bitcoin-core/secp256k1 (git submodule)
 └── bech32/            # sipa/bech32 reference (git submodule)
+
+visualizer/            # Interactive NIP-EE MLS demonstration
+├── src/components/    # React components (MLSVisualizer, ParticipantPanel, etc.)
+├── src/lib/wasm.ts    # WASM bindings and TypeScript interface
+└── package.json       # Bun project configuration
 
 debug_scripts/         # Debug utilities (not for production use)
 ```
@@ -244,7 +278,9 @@ The project includes comprehensive tests:
 - Unit tests: `zig build test`
 - Integration tests: `zig build test-roundtrip`
 - NIP-44 tests: Included in main test suite (18/18 passing)
-- MLS tests: Included in main test suite (39/41 passing)
+- MLS tests: Included in main test suite (87/87 passing)
+- WASM tests: `bun test` (in wasm_tests/ directory)
+- Visualizer tests: `cd visualizer && bun test`
 
 ### Project Structure
 
