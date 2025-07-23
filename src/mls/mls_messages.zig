@@ -241,52 +241,52 @@ pub const MLSPlaintext = struct {
         var content_buffer = std.ArrayList(u8).init(allocator);
         defer content_buffer.deinit();
         
-        // Serialize manually to avoid TlsWriter/ArrayList incompatibility
+        // Use TLS codec convenience functions
+        const tls = mls_zig.tls_codec;
+        
         // Wire format (u16)
-        var wire_bytes: [2]u8 = undefined;
-        std.mem.writeInt(u16, &wire_bytes, @intFromEnum(self.wire_format), .big);
-        try content_buffer.appendSlice(&wire_bytes);
+        try tls.writeU16ToList(&content_buffer, @intFromEnum(self.wire_format));
         
         // Group ID with length prefix (u8)
-        if (self.group_id.len > 255) return error.ValueTooLarge;
-        try content_buffer.append(@intCast(self.group_id.len));
-        try content_buffer.appendSlice(&self.group_id);
+        try tls.writeVarBytesToList(&content_buffer, u8, &self.group_id);
         
         // Epoch (u64)
-        var epoch_bytes: [8]u8 = undefined;
-        std.mem.writeInt(u64, &epoch_bytes, self.epoch, .big);
-        try content_buffer.appendSlice(&epoch_bytes);
+        try tls.writeU64ToList(&content_buffer, self.epoch);
         
-        // Sender - manual serialization
-        var sender_bytes: [2]u8 = undefined;
-        std.mem.writeInt(u16, &sender_bytes, @intFromEnum(self.sender), .big);
-        try content_buffer.appendSlice(&sender_bytes);
+        // Sender - use proper union serialization
+        switch (self.sender) {
+            .member => |index| {
+                try tls.writeU8ToList(&content_buffer, 1);
+                try tls.writeU32ToList(&content_buffer, index);
+            },
+            .external => |index| {
+                try tls.writeU8ToList(&content_buffer, 2);
+                try tls.writeU32ToList(&content_buffer, index);
+            },
+            .new_member_proposal => {
+                try tls.writeU8ToList(&content_buffer, 3);
+            },
+            .new_member_commit => {
+                try tls.writeU8ToList(&content_buffer, 4);
+            },
+        }
         
         // Authenticated data with length prefix (u32)
-        if (self.authenticated_data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
-        var auth_len: [4]u8 = undefined;
-        std.mem.writeInt(u32, &auth_len, @intCast(self.authenticated_data.len), .big);
-        try content_buffer.appendSlice(&auth_len);
-        try content_buffer.appendSlice(self.authenticated_data);
+        try tls.writeVarBytesToList(&content_buffer, u32, self.authenticated_data);
         
-        // Content - manual serialization
         // Content type (u8)
         const content_type = switch (self.content) {
             .application => ContentType.application,
             .proposal => ContentType.proposal,
             .commit => ContentType.commit,
         };
-        try content_buffer.append(@intFromEnum(content_type));
+        try tls.writeU8ToList(&content_buffer, @intFromEnum(content_type));
         
         // Content data based on type
         switch (self.content) {
             .application => |app_data| {
                 // Application data with length prefix (u32)
-                if (app_data.data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
-                var app_len: [4]u8 = undefined;
-                std.mem.writeInt(u32, &app_len, @intCast(app_data.data.len), .big);
-                try content_buffer.appendSlice(&app_len);
-                try content_buffer.appendSlice(app_data.data);
+                try tls.writeVarBytesToList(&content_buffer, u32, app_data.data);
             },
             .proposal => |_| {
                 // TODO: Implement proposal serialization when needed
@@ -378,35 +378,39 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    // Serialize manually to avoid TlsWriter/ArrayList incompatibility
+    // Use TLS codec convenience functions
     const plaintext = message.plaintext;
+    const tls = mls_zig.tls_codec;
     
     // Wire format (u16)
-    var wire_bytes: [2]u8 = undefined;
-    std.mem.writeInt(u16, &wire_bytes, @intFromEnum(plaintext.wire_format), .big);
-    try buffer.appendSlice(&wire_bytes);
+    try tls.writeU16ToList(&buffer, @intFromEnum(plaintext.wire_format));
     
     // Group ID with length prefix (u8)
-    if (plaintext.group_id.len > 255) return error.ValueTooLarge;
-    try buffer.append(@intCast(plaintext.group_id.len));
-    try buffer.appendSlice(&plaintext.group_id);
+    try tls.writeVarBytesToList(&buffer, u8, &plaintext.group_id);
     
     // Epoch (u64)
-    var epoch_bytes: [8]u8 = undefined;
-    std.mem.writeInt(u64, &epoch_bytes, plaintext.epoch, .big);
-    try buffer.appendSlice(&epoch_bytes);
+    try tls.writeU64ToList(&buffer, plaintext.epoch);
     
-    // Sender (u16)
-    var sender_bytes: [2]u8 = undefined;
-    std.mem.writeInt(u16, &sender_bytes, @intFromEnum(plaintext.sender), .big);
-    try buffer.appendSlice(&sender_bytes);
+    // Sender - use proper union serialization
+    switch (plaintext.sender) {
+        .member => |index| {
+            try tls.writeU8ToList(&buffer, 1);
+            try tls.writeU32ToList(&buffer, index);
+        },
+        .external => |index| {
+            try tls.writeU8ToList(&buffer, 2);
+            try tls.writeU32ToList(&buffer, index);
+        },
+        .new_member_proposal => {
+            try tls.writeU8ToList(&buffer, 3);
+        },
+        .new_member_commit => {
+            try tls.writeU8ToList(&buffer, 4);
+        },
+    }
     
     // Authenticated data with length prefix (u32)
-    if (plaintext.authenticated_data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
-    var auth_len: [4]u8 = undefined;
-    std.mem.writeInt(u32, &auth_len, @intCast(plaintext.authenticated_data.len), .big);
-    try buffer.appendSlice(&auth_len);
-    try buffer.appendSlice(plaintext.authenticated_data);
+    try tls.writeVarBytesToList(&buffer, u32, plaintext.authenticated_data);
     
     // Content type (u8)
     const content_type = switch (plaintext.content) {
@@ -414,17 +418,13 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
         .proposal => ContentType.proposal,
         .commit => ContentType.commit,
     };
-    try buffer.append(@intFromEnum(content_type));
+    try tls.writeU8ToList(&buffer, @intFromEnum(content_type));
     
     // Content data
     switch (plaintext.content) {
         .application => |app_data| {
             // Application data with length prefix (u32)
-            if (app_data.data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
-            var app_len: [4]u8 = undefined;
-            std.mem.writeInt(u32, &app_len, @intCast(app_data.data.len), .big);
-            try buffer.appendSlice(&app_len);
-            try buffer.appendSlice(app_data.data);
+            try tls.writeVarBytesToList(&buffer, u32, app_data.data);
         },
         .proposal => |_| {
             // TODO: Implement proposal serialization when needed
@@ -437,11 +437,7 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
     }
     
     // Signature with length prefix (u16)
-    if (plaintext.signature.len > std.math.maxInt(u16)) return error.ValueTooLarge;
-    var sig_len: [2]u8 = undefined;
-    std.mem.writeInt(u16, &sig_len, @intCast(plaintext.signature.len), .big);
-    try buffer.appendSlice(&sig_len);
-    try buffer.appendSlice(plaintext.signature);
+    try tls.writeVarBytesToList(&buffer, u16, plaintext.signature);
     
     return try buffer.toOwnedSlice();
 }
@@ -494,12 +490,16 @@ test "MLSMessage TLS serialization roundtrip" {
 }
 
 test "WireFormat serialization" {
-    var buffer: [10]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
+    var stream_buffer: [10]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&stream_buffer);
     
+    // Use TLS codec convenience functions
     const wire_format = WireFormat.mls_plaintext;
-    try wire_format.tlsSerialize(&writer);
+    var list_buffer = std.ArrayList(u8).init(std.testing.allocator);
+    defer list_buffer.deinit();
+    
+    try mls_zig.tls_codec.writeU16ToList(&list_buffer, @intFromEnum(wire_format));
+    _ = try stream.write(list_buffer.items);
     
     // Reset stream for reading
     stream.reset();
@@ -517,9 +517,13 @@ test "ApplicationData serialization" {
     
     var buffer: [100]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
     
-    try app_data.tlsSerialize(&writer);
+    // Use TLS codec convenience functions
+    var list_buffer = std.ArrayList(u8).init(allocator);
+    defer list_buffer.deinit();
+    
+    try mls_zig.tls_codec.writeVarBytesToList(&list_buffer, u32, app_data.data);
+    _ = try stream.write(list_buffer.items);
     
     // Reset stream for reading
     stream.reset();

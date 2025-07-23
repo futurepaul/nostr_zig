@@ -236,7 +236,8 @@ pub fn serializeKeyPackage(
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    // Use TLS codec convenience functions
+    const tls = mls_zig.tls_codec;
     
     // Serialize according to MLS KeyPackage format:
     // struct {
@@ -249,30 +250,26 @@ pub fn serializeKeyPackage(
     // } KeyPackage;
     
     // Version (u16)
-    try writer.writeU16(@intFromEnum(key_package.version));
+    try tls.writeU16ToList(&buffer, @intFromEnum(key_package.version));
     
     // Cipher suite (u16)
-    try writer.writeU16(@intFromEnum(key_package.cipher_suite));
+    try tls.writeU16ToList(&buffer, @intFromEnum(key_package.cipher_suite));
     
     // Init key (variable length with u16 length prefix)
-    try writer.writeU16(@intCast(key_package.init_key.data.len));
-    try writer.writer.writeAll(key_package.init_key.data);
+    try tls.writeVarBytesToList(&buffer, u16, key_package.init_key.data);
     
     // Leaf node - serialize as variable length (simplified for now)
     const leaf_node_data = try serializeLeafNode(allocator, key_package.leaf_node);
     defer allocator.free(leaf_node_data);
-    try writer.writeU16(@intCast(leaf_node_data.len));
-    try writer.writer.writeAll(leaf_node_data);
+    try tls.writeVarBytesToList(&buffer, u16, leaf_node_data);
     
     // Extensions - serialize as variable length 
     const extensions_data = try serializeExtensions(allocator, key_package.extensions);
     defer allocator.free(extensions_data);
-    try writer.writeU16(@intCast(extensions_data.len));
-    try writer.writer.writeAll(extensions_data);
+    try tls.writeVarBytesToList(&buffer, u16, extensions_data);
     
     // Signature (variable length with u16 length prefix)
-    try writer.writeU16(@intCast(key_package.signature.len));
-    try writer.writer.writeAll(key_package.signature);
+    try tls.writeVarBytesToList(&buffer, u16, key_package.signature);
     
     return buffer.toOwnedSlice();
 }
@@ -526,43 +523,39 @@ fn serializeLeafNode(allocator: std.mem.Allocator, leaf_node: types.LeafNode) ![
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    // Use TLS codec convenience functions
+    const tls = mls_zig.tls_codec;
     
     // Encryption key
-    try writer.writeU16(@intCast(leaf_node.encryption_key.data.len));
-    try writer.writer.writeAll(leaf_node.encryption_key.data);
+    try tls.writeVarBytesToList(&buffer, u16, leaf_node.encryption_key.data);
     
     // Signature key  
-    try writer.writeU16(@intCast(leaf_node.signature_key.data.len));
-    try writer.writer.writeAll(leaf_node.signature_key.data);
+    try tls.writeVarBytesToList(&buffer, u16, leaf_node.signature_key.data);
     
     // Credential (simplified)
-    try writer.writeU8(@intFromEnum(types.CredentialType.basic));
+    try tls.writeU8ToList(&buffer, @intFromEnum(types.CredentialType.basic));
     switch (leaf_node.credential) {
         .basic => |basic| {
-            try writer.writeU16(@intCast(basic.identity.len));
-            try writer.writer.writeAll(basic.identity);
+            try tls.writeVarBytesToList(&buffer, u16, basic.identity);
         },
         else => return error.UnsupportedCredential,
     }
     
     // Capabilities (simplified - write as empty for now)
-    try writer.writeU16(0);
+    try tls.writeU16ToList(&buffer, 0);
     
     // Leaf node source
-    try writer.writeU8(@intFromEnum(leaf_node.leaf_node_source));
+    try tls.writeU8ToList(&buffer, @intFromEnum(leaf_node.leaf_node_source));
     
     // Extensions (simplified)
-    try writer.writeU16(@intCast(leaf_node.extensions.len));
+    try tls.writeU16ToList(&buffer, @intCast(leaf_node.extensions.len));
     for (leaf_node.extensions) |ext| {
-        try writer.writeU16(@intFromEnum(ext.extension_type));
-        try writer.writeU16(@intCast(ext.extension_data.len));
-        try writer.writer.writeAll(ext.extension_data);
+        try tls.writeU16ToList(&buffer, @intFromEnum(ext.extension_type));
+        try tls.writeVarBytesToList(&buffer, u16, ext.extension_data);
     }
     
     // Signature
-    try writer.writeU16(@intCast(leaf_node.signature.len));
-    try writer.writer.writeAll(leaf_node.signature);
+    try tls.writeVarBytesToList(&buffer, u16, leaf_node.signature);
     
     return buffer.toOwnedSlice();
 }
@@ -644,13 +637,13 @@ fn serializeExtensions(allocator: std.mem.Allocator, extensions: []const types.E
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    // Use TLS codec convenience functions
+    const tls = mls_zig.tls_codec;
     
     for (extensions) |ext| {
-        try writer.writeU16(@intFromEnum(ext.extension_type));
-        try writer.writeU8(if (ext.critical) 1 else 0);
-        try writer.writeU16(@intCast(ext.extension_data.len));
-        try writer.writer.writeAll(ext.extension_data);
+        try tls.writeU16ToList(&buffer, @intFromEnum(ext.extension_type));
+        try tls.writeU8ToList(&buffer, if (ext.critical) 1 else 0);
+        try tls.writeVarBytesToList(&buffer, u16, ext.extension_data);
     }
     
     return buffer.toOwnedSlice();

@@ -405,7 +405,7 @@ pub const CipherSuite = enum(u16) {
     pub fn sign(self: CipherSuite, allocator: Allocator, private_key: []const u8, data: []const u8) ![]u8 {
         const key_package = @import("key_package.zig");
         var signature = try key_package.signWithLabel(allocator, self, private_key, "", data);
-        defer signature.deinit();
+        defer signature.deinit(allocator);
         return allocator.dupe(u8, signature.asSlice());
     }
 

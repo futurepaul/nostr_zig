@@ -16,7 +16,7 @@ interface MessageComposerProps {
 
 export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
-  const { createEncryptedGroupMessage, isReady, generateEphemeralKeys, signSchnorr } = useWasm();
+  const { createEncryptedGroupMessage, isReady, generateEphemeralKeys, signSchnorr, generateExporterSecretForEpoch } = useWasm();
   
   // Check if button should be disabled
   const isButtonDisabled = !isReady || !message.trim() || !state.identity || state.groups.size === 0;
@@ -37,7 +37,7 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
       // This derives the secret from MLS group state with "nostr" label per NIP-EE spec
       let exporterSecret: Uint8Array;
       try {
-        exporterSecret = wasmGenerateExporterSecret(group.state);
+        exporterSecret = generateExporterSecretForEpoch(group.state);
         console.log('Generated exporter secret:', bytesToHex(exporterSecret));
       } catch (error) {
         console.error('Failed to generate exporter secret:', error);
@@ -64,8 +64,8 @@ export function MessageComposer({ state, setState }: MessageComposerProps) {
         groupId.set(new Uint8Array(stateHash));
       }
       
-      // Create encrypted group message using the same function as tests
-      const epoch = BigInt(0); // Simplified - real implementation would track epoch
+      // Create encrypted group message using the current epoch from group state
+      const epoch = BigInt(group.epoch); // Use actual epoch from group state
       const senderIndex = 0; // Simplified - real implementation would track sender
       
       const encryptedPayload = createEncryptedGroupMessage(

@@ -14,6 +14,7 @@ pub const mls_group = @import("mls_group.zig");
 pub const key_package = @import("key_package.zig");
 pub const credentials = @import("credentials.zig");
 pub const nostr_extensions = @import("nostr_extensions.zig");
+pub const key_package_flat = @import("key_package_flat.zig");
 
 // Lower-level modules - you probably don't need these directly
 pub const tree_math = @import("tree_math.zig");
@@ -30,7 +31,9 @@ pub const hpke = @import("hpke");
 pub const CipherSuite = cipher_suite.CipherSuite;
 pub const Secret = cipher_suite.Secret;
 pub const MlsGroup = mls_group.MlsGroup;
-pub const KeyPackageBundle = key_package.KeyPackageBundle;
+// Use flat KeyPackage as the default (WASM-safe, corruption-free)
+pub const KeyPackageBundle = key_package_flat.KeyPackageBundle;
+pub const KeyPackage = key_package_flat.KeyPackage;
 pub const BasicCredential = credentials.BasicCredential;
 pub const Credential = credentials.Credential;
 

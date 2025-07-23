@@ -1,7 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const wasm_random = @import("wasm_random.zig");
 const tls_codec = @import("tls_codec.zig");
 const cipher_suite = @import("cipher_suite.zig");
 
@@ -117,7 +116,7 @@ pub const KeyPackageBundle = struct {
         allocator: Allocator,
         cs: cipher_suite.CipherSuite,
         credential_identity: []const u8,
-        random_fn: ?wasm_random.RandomFunction,
+        random_fn: ?*const fn ([]u8) void,
     ) !KeyPackageBundle {
         _ = allocator; // Not needed for flat approach
         
@@ -131,22 +130,28 @@ pub const KeyPackageBundle = struct {
             rand_fn(&enc_private);
             rand_fn(sig_private[0..32]);
         } else {
-            wasm_random.secure_random.bytes(&init_private);
-            wasm_random.secure_random.bytes(&enc_private);
-            wasm_random.secure_random.bytes(sig_private[0..32]);
+            // For non-WASM targets, use crypto random
+            // In WASM, a random function MUST be provided
+            if (@import("builtin").target.cpu.arch == .wasm32) {
+                return error.RandomFunctionRequired;  
+            }
+            std.crypto.random.bytes(&init_private);
+            std.crypto.random.bytes(&enc_private);
+            std.crypto.random.bytes(sig_private[0..32]);
         }
         
         // Compute public keys
         const init_keypair = try std.crypto.dh.X25519.KeyPair.generateDeterministic(init_private);
         const enc_keypair = try std.crypto.dh.X25519.KeyPair.generateDeterministic(enc_private);
+        // Generate Ed25519 keypair from the 32-byte seed
         const sig_keypair = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(sig_private[0..32].*);
         
-        // Store public key in private key structure (Ed25519 format)
-        @memcpy(sig_private[32..64], &sig_keypair.public_key.bytes);
+        // Store the full secret key (seed + public key) in sig_private
+        sig_private = sig_keypair.secret_key.bytes;
         
         // Create signature over the to-be-signed content
         const signature = try createMlsSignature(
-            sig_keypair.secret_key.bytes[0..32].*,
+            sig_keypair.secret_key.bytes,
             cs,
             init_keypair.public_key,
             enc_keypair.public_key,
@@ -179,7 +184,7 @@ pub const KeyPackageBundle = struct {
 
 /// Create MLS signature with proper label (RFC 9420 Section 5.1.2)
 fn createMlsSignature(
-    private_key: [32]u8,
+    private_key: [64]u8,
     cs: cipher_suite.CipherSuite,
     init_key: [32]u8,
     enc_key: [32]u8,
@@ -234,8 +239,9 @@ fn createMlsSignature(
     
     const to_sign = full_content[0..mls_prefix.len + tbs_content.len];
     
-    // Sign with Ed25519
-    const keypair = try std.crypto.sign.Ed25519.KeyPair.fromSecretKey(private_key);
+    // Sign with Ed25519 - need to convert array to SecretKey struct
+    const secret_key = std.crypto.sign.Ed25519.SecretKey{ .bytes = private_key };
+    const keypair = try std.crypto.sign.Ed25519.KeyPair.fromSecretKey(secret_key);
     const signature = try keypair.sign(to_sign, null);
     
     return signature.toBytes();
