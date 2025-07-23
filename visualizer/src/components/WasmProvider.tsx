@@ -30,6 +30,12 @@ interface WasmContextType {
   pubkeyToHex: (publicKey: Uint8Array) => string;
   verifyEvent: (eventJson: string) => boolean;
   
+  // MLS Welcome Message Functions
+  createWelcomeMessage: (state: Uint8Array, newMemberIndex: number) => Uint8Array;
+  
+  // NIP-59 Gift Wrapping
+  createGiftWrap: (senderPrivkey: Uint8Array, recipientPubkey: Uint8Array, rumorEvent: any) => string;
+  
   // Real MLS State Machine Functions
   initGroup: (groupId: Uint8Array, creatorIdentityPubkey: Uint8Array, creatorSigningKey: Uint8Array) => { 
     state: Uint8Array; 
@@ -95,6 +101,12 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
     getPublicKey: (privateKey) => wasm.getPublicKey(privateKey),
     pubkeyToHex: (publicKey) => wasm.pubkeyToHex(publicKey),
     verifyEvent: (eventJson) => wasm.verifyEvent(eventJson),
+    
+    // MLS Welcome Message Functions
+    createWelcomeMessage: (state, newMemberIndex) => wasm.createWelcomeMessage(state, newMemberIndex),
+    
+    // NIP-59 Gift Wrapping
+    createGiftWrap: (senderPrivkey, recipientPubkey, rumorEvent) => wasm.createGiftWrap(senderPrivkey, recipientPubkey, rumorEvent),
     
     // Real MLS State Machine Functions
     initGroup: (groupId, creatorIdentityPubkey, creatorSigningKey) => 

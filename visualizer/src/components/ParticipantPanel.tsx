@@ -33,6 +33,10 @@ export function ParticipantPanel({
     createIdentity, 
     generateMLSSigningKeys,
     createKeyPackage,
+    // MLS Welcome Message Functions
+    createWelcomeMessage,
+    // NIP-59 Gift Wrapping
+    createGiftWrap,
     // Real MLS State Machine Functions
     initGroup,
     proposeAddMember,
@@ -307,43 +311,75 @@ export function ParticipantPanel({
   const handleSendWelcome = () => {
     if (!isReady || !state.identity || !isCreator) return;
     
-    // In a real implementation, this would add Bob to the group
-    // and generate a welcome message
-    // For now, we'll simulate this
+    // Find the KeyPackage Event ID from Bob's (otherState) KeyPackage event
+    const bobKeyPackageEvent = otherState.events.find(event => event.kind === 443);
+    if (!bobKeyPackageEvent) {
+      console.error('No KeyPackage event found for recipient');
+      return;
+    }
     
     // Create a real welcome event
     const pubkey = Array.from(state.identity.publicKey).map(b => b.toString(16).padStart(2, '0')).join('');
-    const recipientPubkey = Array.from(otherState.identity!.publicKey).map(b => b.toString(16).padStart(2, '0')).join('');
     
-    // In a real implementation, this would be the serialized MLS Welcome message
-    // For now, we'll use a placeholder that indicates it's a welcome message
-    const welcomeData = {
-      type: 'mls_welcome',
-      group_id: Array.from(state.groups.values())[0]?.id || 'unknown',
-      timestamp: Date.now()
-    };
-    const content = btoa(JSON.stringify(welcomeData));
+    // Create real MLS Welcome message
+    // For the demo, we'll create a welcome for member index 1 (Bob would be the second member)
+    const group = Array.from(state.groups.values())[0];
+    if (!group) {
+      console.error('No group found to create welcome for');
+      return;
+    }
+    
+    let content: string;
+    try {
+      // Create real MLS Welcome message using the group state
+      const mlsWelcomeBytes = createWelcomeMessage(group.state, 1); // Index 1 for second member (Bob)
+      
+      // Convert to hex string for content (as per NIP-EE spec)
+      content = Array.from(mlsWelcomeBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+      
+      console.log('Created real MLS Welcome message:', {
+        welcomeLength: mlsWelcomeBytes.length,
+        hexLength: content.length
+      });
+    } catch (error) {
+      console.error('Failed to create MLS welcome message:', error);
+      // Fallback to placeholder for demo
+      const welcomeData = {
+        type: 'mls_welcome_fallback',
+        group_id: group.id,
+        timestamp: Date.now(),
+        error: error.message
+      };
+      content = btoa(JSON.stringify(welcomeData));
+    }
     const created_at = Math.floor(Date.now() / 1000);
     
-    const eventData = {
+    // According to NIP-EE spec, welcome events should have:
+    // - 'e' tag with KeyPackage Event ID that was used to add user
+    // - 'relays' tag with array of relay URLs
+    // - Must be unsigned rumor for NIP-59 gift wrapping
+    const rumorEvent = {
       pubkey,
       created_at,
       kind: 444,
-      tags: [['p', recipientPubkey]],
+      tags: [
+        ['e', bobKeyPackageEvent.id],
+        ['relays', 'ws://localhost:10547', 'wss://relay.example.com'],
+      ],
       content,
+      sig: '', // Unsigned rumor as per NIP-59
     };
 
-    // Generate real Nostr event ID
-    const eventId = createNostrEventIdSync(eventData);
+    // Generate event ID for the rumor
+    const eventId = createNostrEventIdSync(rumorEvent);
+    const rumorWithId = { ...rumorEvent, id: eventId };
     
-    // Sign the event with identity private key
-    const eventWithId = { ...eventData, id: eventId };
-    const signature = signNostrEvent(eventWithId, state.identity.privateKey);
-
-    const welcomeEvent = {
-      ...eventWithId,
-      sig: signature,
-    };
+    // Get recipient's public key  
+    const recipientPubkey = otherState.identity!.publicKey;
+    
+    // Create NIP-59 gift wrap (this creates a kind 1059 event)
+    const giftWrappedJson = createGiftWrap(state.identity.privateKey, recipientPubkey, rumorWithId);
+    const welcomeEvent = JSON.parse(giftWrappedJson);
 
     setState(prev => ({
       ...prev,

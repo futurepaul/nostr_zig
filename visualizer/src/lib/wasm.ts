@@ -1248,6 +1248,129 @@ class WasmWrapper {
 
     return secret;
   }
+
+  // MLS Welcome Message Functions
+  createWelcomeMessage(state: Uint8Array, newMemberIndex: number): Uint8Array {
+    const exports = this.ensureInitialized();
+    
+    const maxWelcomeSize = 8192; // Generous buffer for welcome message
+    const statePtr = exports.wasm_alloc(state.length);
+    const outWelcomePtr = exports.wasm_alloc(maxWelcomeSize);
+    const outWelcomeLenPtr = exports.wasm_alloc_u32(1);
+    
+    if (!statePtr || !outWelcomePtr || !outWelcomeLenPtr) {
+      throw new Error('Failed to allocate WASM memory for welcome message');
+    }
+    
+    try {
+      // Copy state data to WASM memory
+      new Uint8Array(exports.memory.buffer, statePtr, state.length).set(state);
+      new Uint32Array(exports.memory.buffer, outWelcomeLenPtr, 1)[0] = maxWelcomeSize;
+      
+      // Create welcome message
+      const success = exports.wasm_state_machine_create_welcome(
+        statePtr,
+        state.length,
+        newMemberIndex,
+        outWelcomePtr,
+        outWelcomeLenPtr
+      );
+      
+      if (!success) {
+        throw new Error('Failed to create MLS welcome message');
+      }
+      
+      // Read result
+      const welcomeLen = new Uint32Array(exports.memory.buffer, outWelcomeLenPtr, 1)[0];
+      const welcome = this.readBytes(outWelcomePtr, welcomeLen);
+      
+      console.log('Created MLS welcome message:', {
+        stateLength: state.length,
+        memberIndex: newMemberIndex,
+        welcomeLength: welcome.length
+      });
+      
+      return welcome;
+      
+    } finally {
+      // Clean up memory
+      exports.wasm_free(statePtr, state.length);
+      exports.wasm_free(outWelcomePtr, maxWelcomeSize);
+      exports.wasm_free_u32(outWelcomeLenPtr, 1);
+    }
+  }
+
+  // NIP-59 Gift Wrapping
+  createGiftWrap(
+    senderPrivkey: Uint8Array,
+    recipientPubkey: Uint8Array, 
+    rumorEvent: any // The inner event (kind 444 for welcome events)
+  ): string {
+    const exports = this.ensureInitialized();
+    
+    if (senderPrivkey.length !== 32) {
+      throw new Error('Sender private key must be 32 bytes');
+    }
+    if (recipientPubkey.length !== 32) {
+      throw new Error('Recipient public key must be 32 bytes');
+    }
+    
+    // Convert rumor event to JSON
+    const rumorJson = JSON.stringify(rumorEvent);
+    const rumorBytes = new TextEncoder().encode(rumorJson);
+    
+    // Allocate memory
+    const senderPrivkeyPtr = exports.wasm_alloc(32);
+    const recipientPubkeyPtr = exports.wasm_alloc(32);
+    const rumorJsonPtr = exports.wasm_alloc(rumorBytes.length);
+    const outWrappedPtr = exports.wasm_alloc(8192); // Generous buffer for wrapped event
+    const outLenPtr = exports.wasm_alloc_u32(1);
+    
+    if (!senderPrivkeyPtr || !recipientPubkeyPtr || !rumorJsonPtr || !outWrappedPtr || !outLenPtr) {
+      throw new Error('Failed to allocate WASM memory for gift wrapping');
+    }
+    
+    try {
+      // Copy data to WASM memory
+      new Uint8Array(exports.memory.buffer, senderPrivkeyPtr, 32).set(senderPrivkey);
+      new Uint8Array(exports.memory.buffer, recipientPubkeyPtr, 32).set(recipientPubkey);
+      new Uint8Array(exports.memory.buffer, rumorJsonPtr, rumorBytes.length).set(rumorBytes);
+      new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0] = 8192;
+      
+      // Call WASM function
+      const success = exports.wasm_create_gift_wrap(
+        senderPrivkeyPtr,
+        recipientPubkeyPtr,
+        rumorJsonPtr,
+        rumorBytes.length,
+        outWrappedPtr,
+        outLenPtr
+      );
+      
+      if (!success) {
+        throw new Error('Failed to create gift wrap');
+      }
+      
+      // Read result
+      const resultLen = new Uint32Array(exports.memory.buffer, outLenPtr, 1)[0];
+      const wrappedJson = this.readString(outWrappedPtr, resultLen);
+      
+      console.log('Created gift wrap:', {
+        rumorKind: rumorEvent.kind,
+        wrappedLength: resultLen
+      });
+      
+      return wrappedJson;
+      
+    } finally {
+      // Clean up memory
+      exports.wasm_free(senderPrivkeyPtr, 32);
+      exports.wasm_free(recipientPubkeyPtr, 32);
+      exports.wasm_free(rumorJsonPtr, rumorBytes.length);
+      exports.wasm_free(outWrappedPtr, 8192);
+      exports.wasm_free_u32(outLenPtr, 1);
+    }
+  }
 }
 
 export const wasm = new WasmWrapper();

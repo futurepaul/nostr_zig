@@ -4,6 +4,7 @@ import { StateTransitionDiagram } from './StateTransitionDiagram';
 import { EventTimeline } from './EventTimeline';
 import { MessageFlow } from './MessageFlow';
 import { NostrEventViewer } from './NostrEventViewer';
+import { InfoWrapper } from './InfoPanel';
 import { MLSState, NostrEvent, ProtocolStep } from './MLSVisualizer';
 
 interface ProtocolFlowProps {
@@ -39,7 +40,9 @@ export function ProtocolFlow({
       {/* Event Timeline - Now at the top */}
       <Card>
         <CardHeader>
-          <CardTitle>Nostr Events</CardTitle>
+          <InfoWrapper tooltip="Events shown in chronological order by creation time. Note: Gift-wrapped Welcome events (🎁) use randomized timestamps between 2 weeks ago and now as per NIP-59 for metadata protection - the real timestamp is encrypted inside the gift wrap. This privacy feature prevents timing correlation attacks.">
+            <CardTitle>Nostr Events</CardTitle>
+          </InfoWrapper>
         </CardHeader>
         <CardContent>
           <EventTimeline events={events} onEventClick={onEventClick} knownIdentities={knownIdentities} />

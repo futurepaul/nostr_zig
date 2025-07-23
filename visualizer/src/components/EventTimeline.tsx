@@ -13,18 +13,21 @@ const eventKindNames: Record<number, string> = {
   443: 'Key Package',
   444: 'Welcome',
   445: 'Group Message',
+  1059: 'Gift-wrapped Welcome',
 };
 
 const eventKindIcons: Record<number, string> = {
   443: '📦',
   444: '✉️',
   445: '💬',
+  1059: '🎁',
 };
 
 const eventKindColors: Record<number, string> = {
   443: 'bg-blue-100 border-blue-300',
   444: 'bg-green-100 border-green-300',
   445: 'bg-purple-100 border-purple-300',
+  1059: 'bg-yellow-100 border-yellow-300',
 };
 
 export function EventTimeline({ events, onEventClick, knownIdentities }: EventTimelineProps) {
@@ -66,6 +69,11 @@ export function EventTimeline({ events, onEventClick, knownIdentities }: EventTi
               {event.kind === 445 && knownIdentities && isEphemeralKey(event.pubkey, knownIdentities) && (
                 <span className="text-xs bg-green-500 text-white px-2 py-1 rounded-full">
                   EPH
+                </span>
+              )}
+              {event.kind === 1059 && (
+                <span className="text-xs bg-purple-500 text-white px-2 py-1 rounded-full" title="Random timestamp for privacy">
+                  🕶️
                 </span>
               )}
               <div className="text-xs font-mono text-gray-500">
