@@ -331,8 +331,8 @@ pub const CipherSuite = enum(u16) {
         var info_list = std.ArrayList(u8).init(allocator);
         defer info_list.deinit();
 
-        var tls_writer = tls_codec.TlsWriter(@TypeOf(info_list.writer())).init(info_list.writer());
-        try tls_writer.writeU16(length);
+        // Manual serialization instead of TlsWriter
+        try tls_codec.writeU16ToList(&info_list, length);
         
         // Create full label by concatenating MLS prefix as bytes + label bytes
         // This handles binary labels correctly (like from OpenMLS test vectors)
@@ -343,8 +343,8 @@ pub const CipherSuite = enum(u16) {
         @memcpy(full_label[0..prefix_bytes.len], prefix_bytes);
         @memcpy(full_label[prefix_bytes.len..], label);
         
-        try tls_writer.writeVarBytes(u8, full_label);
-        try tls_writer.writeVarBytes(u8, context);
+        try tls_codec.writeVarBytesToList(&info_list, u8, full_label);
+        try tls_codec.writeVarBytesToList(&info_list, u8, context);
 
         return self.hkdfExpand(allocator, prk, info_list.items, length);
     }

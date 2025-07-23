@@ -11,19 +11,23 @@ const credentials = @import("credentials.zig");
 pub const MLS_PROTOCOL_VERSION: u16 = 0x0001;
 
 pub const HpkePublicKey = struct {
-    data: []u8,
-    allocator: Allocator,
+    data: []const u8,
 
-    pub fn init(allocator: Allocator, key_data: []const u8) !HpkePublicKey {
-        const data = try allocator.dupe(u8, key_data);
+    pub fn init(key_data: []const u8) HpkePublicKey {
         return HpkePublicKey{
-            .data = data,
-            .allocator = allocator,
+            .data = key_data,
         };
     }
 
-    pub fn deinit(self: *HpkePublicKey) void {
-        self.allocator.free(self.data);
+    pub fn initOwned(allocator: Allocator, key_data: []const u8) !HpkePublicKey {
+        const data = try allocator.dupe(u8, key_data);
+        return HpkePublicKey{
+            .data = data,
+        };
+    }
+
+    pub fn deinit(self: *HpkePublicKey, allocator: Allocator) void {
+        allocator.free(self.data);
         self.data = &[_]u8{};
     }
 
@@ -34,23 +38,32 @@ pub const HpkePublicKey = struct {
     pub fn len(self: HpkePublicKey) usize {
         return self.data.len;
     }
+    
+    /// Create a deep copy of this HpkePublicKey
+    pub fn clone(self: HpkePublicKey, allocator: Allocator) !HpkePublicKey {
+        return HpkePublicKey.initOwned(allocator, self.data);
+    }
 };
 
 pub const HpkePrivateKey = struct {
     data: []u8,
-    allocator: Allocator,
 
-    pub fn init(allocator: Allocator, key_data: []const u8) !HpkePrivateKey {
-        const data = try allocator.dupe(u8, key_data);
+    pub fn init(key_data: []u8) HpkePrivateKey {
         return HpkePrivateKey{
-            .data = data,
-            .allocator = allocator,
+            .data = key_data,
         };
     }
 
-    pub fn deinit(self: *HpkePrivateKey) void {
+    pub fn initOwned(allocator: Allocator, key_data: []const u8) !HpkePrivateKey {
+        const data = try allocator.dupe(u8, key_data);
+        return HpkePrivateKey{
+            .data = data,
+        };
+    }
+
+    pub fn deinit(self: *HpkePrivateKey, allocator: Allocator) void {
         crypto.secureZero(u8, self.data);
-        self.allocator.free(self.data);
+        allocator.free(self.data);
         self.data = &[_]u8{};
     }
 
@@ -64,19 +77,23 @@ pub const HpkePrivateKey = struct {
 };
 
 pub const SignaturePublicKey = struct {
-    data: []u8,
-    allocator: Allocator,
+    data: []const u8,
 
-    pub fn init(allocator: Allocator, key_data: []const u8) !SignaturePublicKey {
-        const data = try allocator.dupe(u8, key_data);
+    pub fn init(key_data: []const u8) SignaturePublicKey {
         return SignaturePublicKey{
-            .data = data,
-            .allocator = allocator,
+            .data = key_data,
         };
     }
 
-    pub fn deinit(self: *SignaturePublicKey) void {
-        self.allocator.free(self.data);
+    pub fn initOwned(allocator: Allocator, key_data: []const u8) !SignaturePublicKey {
+        const data = try allocator.dupe(u8, key_data);
+        return SignaturePublicKey{
+            .data = data,
+        };
+    }
+
+    pub fn deinit(self: *SignaturePublicKey, allocator: Allocator) void {
+        allocator.free(self.data);
         self.data = &[_]u8{};
     }
 
@@ -87,23 +104,31 @@ pub const SignaturePublicKey = struct {
     pub fn len(self: SignaturePublicKey) usize {
         return self.data.len;
     }
+    
+    pub fn clone(self: SignaturePublicKey, allocator: Allocator) !SignaturePublicKey {
+        return SignaturePublicKey.initOwned(allocator, self.data);
+    }
 };
 
 pub const SignaturePrivateKey = struct {
     data: []u8,
-    allocator: Allocator,
 
-    pub fn init(allocator: Allocator, key_data: []const u8) !SignaturePrivateKey {
-        const data = try allocator.dupe(u8, key_data);
+    pub fn init(key_data: []u8) SignaturePrivateKey {
         return SignaturePrivateKey{
-            .data = data,
-            .allocator = allocator,
+            .data = key_data,
         };
     }
 
-    pub fn deinit(self: *SignaturePrivateKey) void {
+    pub fn initOwned(allocator: Allocator, key_data: []const u8) !SignaturePrivateKey {
+        const data = try allocator.dupe(u8, key_data);
+        return SignaturePrivateKey{
+            .data = data,
+        };
+    }
+
+    pub fn deinit(self: *SignaturePrivateKey, allocator: Allocator) void {
         crypto.secureZero(u8, self.data);
-        self.allocator.free(self.data);
+        allocator.free(self.data);
         self.data = &[_]u8{};
     }
 
@@ -117,19 +142,23 @@ pub const SignaturePrivateKey = struct {
 };
 
 pub const Signature = struct {
-    data: []u8,
-    allocator: Allocator,
+    data: []const u8,
 
-    pub fn init(allocator: Allocator, signature_data: []const u8) !Signature {
-        const data = try allocator.dupe(u8, signature_data);
+    pub fn init(signature_data: []const u8) Signature {
         return Signature{
-            .data = data,
-            .allocator = allocator,
+            .data = signature_data,
         };
     }
 
-    pub fn deinit(self: *Signature) void {
-        self.allocator.free(self.data);
+    pub fn initOwned(allocator: Allocator, signature_data: []const u8) !Signature {
+        const data = try allocator.dupe(u8, signature_data);
+        return Signature{
+            .data = data,
+        };
+    }
+
+    pub fn deinit(self: *Signature, allocator: Allocator) void {
+        allocator.free(self.data);
         self.data = &[_]u8{};
     }
 
@@ -139,6 +168,10 @@ pub const Signature = struct {
 
     pub fn len(self: Signature) usize {
         return self.data.len;
+    }
+    
+    pub fn clone(self: Signature, allocator: Allocator) !Signature {
+        return Signature.initOwned(allocator, self.data);
     }
 };
 
@@ -169,6 +202,18 @@ pub const LeafNodeSource = union(enum) {
             else => {},
         }
     }
+    
+    pub fn clone(self: LeafNodeSource, allocator: Allocator) !LeafNodeSource {
+        switch (self) {
+            .key_package => |lifetime| return LeafNodeSource{ .key_package = lifetime },
+            .update => return LeafNodeSource{ .update = {} },
+            .commit => |parent_hash| {
+                const cloned_hash = try allocator.dupe(u8, parent_hash);
+                return LeafNodeSource{ .commit = cloned_hash };
+            },
+        }
+    }
+    
 };
 
 pub const Capabilities = struct {
@@ -211,6 +256,18 @@ pub const Capabilities = struct {
         }
         return false;
     }
+    
+    pub fn clone(self: Capabilities, allocator: Allocator) !Capabilities {
+        return Capabilities{
+            .versions = try allocator.dupe(u16, self.versions),
+            .cipher_suites = try allocator.dupe(cipher_suite.CipherSuite, self.cipher_suites),
+            .extensions = try allocator.dupe(u16, self.extensions),
+            .proposals = try allocator.dupe(u8, self.proposals),
+            .credentials = try allocator.dupe(u8, self.credentials),
+            .allocator = allocator,
+        };
+    }
+    
 };
 
 pub const Extension = struct {
@@ -231,6 +288,11 @@ pub const Extension = struct {
         self.allocator.free(self.extension_data);
         self.extension_data = &[_]u8{};
     }
+    
+    pub fn clone(self: Extension, allocator: Allocator) !Extension {
+        return Extension.init(allocator, self.extension_type, self.extension_data);
+    }
+    
 };
 
 pub const Extensions = struct {
@@ -263,6 +325,16 @@ pub const Extensions = struct {
         }
         return null;
     }
+    
+    pub fn clone(self: Extensions, allocator: Allocator) !Extensions {
+        var result = Extensions.init(allocator);
+        for (self.extensions) |ext| {
+            const cloned_ext = try ext.clone(allocator);
+            try result.addExtension(cloned_ext);
+        }
+        return result;
+    }
+    
 };
 
 pub const LeafNode = struct {
@@ -274,14 +346,26 @@ pub const LeafNode = struct {
     extensions: Extensions,
     signature: Signature,
 
-    pub fn deinit(self: *LeafNode) void {
-        self.encryption_key.deinit();
-        self.signature_key.deinit();
+    pub fn deinit(self: *LeafNode, allocator: Allocator) void {
+        self.encryption_key.deinit(allocator);
+        self.signature_key.deinit(allocator);
         self.credential.deinit();
         self.capabilities.deinit();
-        self.leaf_node_source.deinit(self.capabilities.allocator);
+        self.leaf_node_source.deinit(allocator);
         self.extensions.deinit();
-        self.signature.deinit();
+        self.signature.deinit(allocator);
+    }
+    
+    pub fn clone(self: LeafNode, allocator: Allocator) !LeafNode {
+        return LeafNode{
+            .encryption_key = try self.encryption_key.clone(allocator),
+            .signature_key = try self.signature_key.clone(allocator),
+            .credential = try self.credential.clone(allocator),
+            .capabilities = try self.capabilities.clone(allocator),
+            .leaf_node_source = try self.leaf_node_source.clone(allocator),
+            .extensions = try self.extensions.clone(allocator),
+            .signature = try self.signature.clone(allocator),
+        };
     }
 };
 
@@ -292,20 +376,31 @@ pub const KeyPackageTBS = struct {
     leaf_node: LeafNode,
     extensions: Extensions,
 
-    pub fn deinit(self: *KeyPackageTBS) void {
-        self.init_key.deinit();
-        self.leaf_node.deinit();
+    pub fn deinit(self: *KeyPackageTBS, allocator: Allocator) void {
+        self.init_key.deinit(allocator);
+        self.leaf_node.deinit(allocator);
         self.extensions.deinit();
     }
+    
+    pub fn clone(self: KeyPackageTBS, allocator: Allocator) !KeyPackageTBS {
+        return KeyPackageTBS{
+            .protocol_version = self.protocol_version,
+            .cipher_suite = self.cipher_suite,
+            .init_key = try self.init_key.clone(allocator),
+            .leaf_node = try self.leaf_node.clone(allocator),
+            .extensions = try self.extensions.clone(allocator),
+        };
+    }
+    
 };
 
 pub const KeyPackage = struct {
     payload: KeyPackageTBS,
     signature: Signature,
 
-    pub fn deinit(self: *KeyPackage) void {
-        self.payload.deinit();
-        self.signature.deinit();
+    pub fn deinit(self: *KeyPackage, allocator: Allocator) void {
+        self.payload.deinit(allocator);
+        self.signature.deinit(allocator);
     }
 
     pub fn cipherSuite(self: KeyPackage) cipher_suite.CipherSuite {
@@ -361,15 +456,29 @@ pub const KeyPackageBundle = struct {
         var enc_keypair = try generateHpkeKeyPair(allocator, cs, random_fn);
         defer enc_keypair.deinit();
 
-        // Create public key wrappers
-        var init_key = try HpkePublicKey.init(allocator, init_keypair.public_key);
-        errdefer init_key.deinit();
+        // Create public key wrappers - these now own the memory from the keypairs
+        var init_key = try HpkePublicKey.initOwned(allocator, init_keypair.public_key);
+        errdefer init_key.deinit(allocator);
+        
+        // DEBUG: Check init_key immediately after creation
+        if (@import("builtin").target.cpu.arch == .wasm32) {
+            // Simple debug without complex logging for WASM
+            const debug_len = init_key.asSlice().len;
+            const debug_data = init_key.asSlice();
+            // Log the length and first few bytes
+            if (debug_len != 32) {
+                @panic("CRITICAL: init_key length is not 32 bytes immediately after creation!");
+            }
+            if (debug_len > 0 and debug_data[0] == 0x20) {
+                @panic("CRITICAL: init_key starts with 0x20 immediately after creation!");
+            }
+        }
 
-        var enc_key = try HpkePublicKey.init(allocator, enc_keypair.public_key);
-        errdefer enc_key.deinit();
+        var enc_key = try HpkePublicKey.initOwned(allocator, enc_keypair.public_key);
+        errdefer enc_key.deinit(allocator);
 
-        var sig_key = try SignaturePublicKey.init(allocator, sig_keypair.public_key);
-        errdefer sig_key.deinit();
+        var sig_key = try SignaturePublicKey.initOwned(allocator, sig_keypair.public_key);
+        errdefer sig_key.deinit(allocator);
 
         // Create basic capabilities
         var capabilities = Capabilities.init(allocator);
@@ -391,7 +500,7 @@ pub const KeyPackageBundle = struct {
         const leaf_source = LeafNodeSource{ .key_package = lifetime };
 
         // Create a dummy signature (will be replaced)
-        const dummy_sig = try Signature.init(allocator, &[_]u8{0x00} ** 64);
+        const dummy_sig = try Signature.initOwned(allocator, &[_]u8{0x00} ** 64);
 
         // Clone the credential to avoid ownership issues
         var cloned_cred = try credentials.Credential.init(
@@ -401,7 +510,8 @@ pub const KeyPackageBundle = struct {
         );
         errdefer cloned_cred.deinit();
 
-        // Create the LeafNode
+        // Create the LeafNode - we need to be careful about ownership
+        // Since we're moving these structs around, we need to ensure the data stays valid
         const leaf_node = LeafNode{
             .encryption_key = enc_key,
             .signature_key = sig_key,
@@ -413,6 +523,7 @@ pub const KeyPackageBundle = struct {
         };
 
         // Create KeyPackageTBS for signing
+        // IMPORTANT: We're moving init_key and leaf_node here, so we can't use them after this
         var key_package_tbs = KeyPackageTBS{
             .protocol_version = MLS_PROTOCOL_VERSION,
             .cipher_suite = cs,
@@ -421,18 +532,42 @@ pub const KeyPackageBundle = struct {
             .extensions = Extensions.init(allocator),
         };
 
-        // Serialize KeyPackageTBS for signing
+        // Serialize KeyPackageTBS manually to avoid TlsWriter/ArrayList incompatibility
         var tbs_data = std.ArrayList(u8).init(allocator);
         defer tbs_data.deinit();
         
-        var writer = tls_codec.TlsWriter(@TypeOf(tbs_data.writer())).init(tbs_data.writer());
-        try writer.writeU16(key_package_tbs.protocol_version);
-        try writer.writeU16(@intFromEnum(key_package_tbs.cipher_suite));
-        try writer.writeVarBytes(u16, key_package_tbs.init_key.asSlice());
+        // Protocol version (u16)
+        var proto_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &proto_bytes, key_package_tbs.protocol_version, .big);
+        try tbs_data.appendSlice(&proto_bytes);
         
-        // Serialize leaf node (simplified)
-        try writer.writeVarBytes(u16, key_package_tbs.leaf_node.encryption_key.asSlice());
-        try writer.writeVarBytes(u16, key_package_tbs.leaf_node.signature_key.asSlice());
+        // Cipher suite (u16)
+        var cs_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &cs_bytes, @intFromEnum(key_package_tbs.cipher_suite), .big);
+        try tbs_data.appendSlice(&cs_bytes);
+        
+        // Init key with length prefix (u16)
+        const init_key_slice = key_package_tbs.init_key.asSlice();
+        if (init_key_slice.len > std.math.maxInt(u16)) return error.ValueTooLarge;
+        var init_key_len: [2]u8 = undefined;
+        std.mem.writeInt(u16, &init_key_len, @intCast(init_key_slice.len), .big);
+        try tbs_data.appendSlice(&init_key_len);
+        try tbs_data.appendSlice(init_key_slice);
+        
+        // Serialize leaf node (simplified) with length prefixes (u16)
+        const enc_key_slice = key_package_tbs.leaf_node.encryption_key.asSlice();
+        if (enc_key_slice.len > std.math.maxInt(u16)) return error.ValueTooLarge;
+        var enc_key_len: [2]u8 = undefined;
+        std.mem.writeInt(u16, &enc_key_len, @intCast(enc_key_slice.len), .big);
+        try tbs_data.appendSlice(&enc_key_len);
+        try tbs_data.appendSlice(enc_key_slice);
+        
+        const sig_key_slice = key_package_tbs.leaf_node.signature_key.asSlice();
+        if (sig_key_slice.len > std.math.maxInt(u16)) return error.ValueTooLarge;
+        var sig_key_len: [2]u8 = undefined;
+        std.mem.writeInt(u16, &sig_key_len, @intCast(sig_key_slice.len), .big);
+        try tbs_data.appendSlice(&sig_key_len);
+        try tbs_data.appendSlice(sig_key_slice);
         
         // Sign the KeyPackageTBS
         const signature = try signWithLabel(
@@ -443,35 +578,81 @@ pub const KeyPackageBundle = struct {
             tbs_data.items
         );
 
-        // Create the final KeyPackage
+        // Create the final KeyPackage - transfer ownership
         const key_package = KeyPackage{
             .payload = key_package_tbs,
             .signature = signature,
         };
+        
+        // DEBUG: Check key lengths after KeyPackage creation
+        if (@import("builtin").target.cpu.arch == .wasm32) {
+            const kp_init_key_len = key_package.initKey().asSlice().len;
+            const kp_init_key_data = key_package.initKey().asSlice();
+            if (kp_init_key_len != 32) {
+                @panic("CRITICAL: KeyPackage init_key length is not 32 bytes after creation!");
+            }
+            if (kp_init_key_len > 0 and kp_init_key_data[0] == 0x20) {
+                @panic("CRITICAL: KeyPackage init_key starts with 0x20 after creation!");
+            }
+        }
 
         // Create private key wrappers
-        var private_init_key = try HpkePrivateKey.init(allocator, init_keypair.private_key);
-        errdefer private_init_key.deinit();
+        var private_init_key = try HpkePrivateKey.initOwned(allocator, init_keypair.private_key);
+        errdefer private_init_key.deinit(allocator);
 
-        var private_enc_key = try HpkePrivateKey.init(allocator, enc_keypair.private_key);
-        errdefer private_enc_key.deinit();
+        var private_enc_key = try HpkePrivateKey.initOwned(allocator, enc_keypair.private_key);
+        errdefer private_enc_key.deinit(allocator);
 
-        var private_sig_key = try SignaturePrivateKey.init(allocator, sig_keypair.private_key);
-        errdefer private_sig_key.deinit();
+        var private_sig_key = try SignaturePrivateKey.initOwned(allocator, sig_keypair.private_key);
+        errdefer private_sig_key.deinit(allocator);
 
-        return KeyPackageBundle{
+        // DEBUG: Check keys are valid before creating bundle
+        if (@import("builtin").target.cpu.arch == .wasm32) {
+            const pre_bundle_init_len = key_package.initKey().asSlice().len;
+            const pre_bundle_enc_len = key_package.leafNode().encryption_key.asSlice().len;
+            const pre_bundle_sig_len = key_package.leafNode().signature_key.asSlice().len;
+            
+            if (pre_bundle_init_len != 32 or pre_bundle_enc_len != 32 or pre_bundle_sig_len != 32) {
+                @panic("CRITICAL: Keys corrupted before creating KeyPackageBundle!");
+            }
+        }
+        
+        const result = KeyPackageBundle{
             .key_package = key_package,
             .private_init_key = private_init_key,
             .private_encryption_key = private_enc_key,
             .private_signature_key = private_sig_key,
         };
+        
+        // DEBUG: Check if keys are valid just before returning
+        if (@import("builtin").target.cpu.arch == .wasm32) {
+            const debug_init_len = result.key_package.initKey().asSlice().len;
+            const debug_init_data = result.key_package.initKey().asSlice();
+            const debug_enc_len = result.key_package.leafNode().encryption_key.asSlice().len;
+            const debug_sig_len = result.key_package.leafNode().signature_key.asSlice().len;
+            
+            if (debug_init_len != 32) {
+                @panic("CRITICAL: Final KeyPackageBundle init_key length is not 32 bytes!");
+            }
+            if (debug_init_len > 0 and debug_init_data[0] == 0x20) {
+                @panic("CRITICAL: Final KeyPackageBundle init_key starts with 0x20!");
+            }
+            if (debug_enc_len != 32) {
+                @panic("CRITICAL: Final KeyPackageBundle enc_key length is not 32 bytes!");
+            }
+            if (debug_sig_len != 32) {
+                @panic("CRITICAL: Final KeyPackageBundle sig_key length is not 32 bytes!");
+            }
+        }
+        
+        return result;
     }
 
-    pub fn deinit(self: *KeyPackageBundle) void {
-        self.key_package.deinit();
-        self.private_init_key.deinit();
-        self.private_encryption_key.deinit();
-        self.private_signature_key.deinit();
+    pub fn deinit(self: *KeyPackageBundle, allocator: Allocator) void {
+        self.key_package.deinit(allocator);
+        self.private_init_key.deinit(allocator);
+        self.private_encryption_key.deinit(allocator);
+        self.private_signature_key.deinit(allocator);
     }
 };
 
@@ -495,7 +676,11 @@ pub fn generateSignatureKeyPair(
 ) !KeyPair {
     return switch (cs.signatureScheme()) {
         .ED25519 => {
-            const key_pair = crypto.sign.Ed25519.KeyPair.generate();
+            // Generate Ed25519 key pair using WASM-compatible random (needs 32-byte seed)
+            var seed: [32]u8 = undefined;
+            wasm_random.secure_random.bytes(&seed);
+            
+            const key_pair = try crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
             
             const public_key = try allocator.dupe(u8, &key_pair.public_key.toBytes());
             const private_key = try allocator.dupe(u8, &key_pair.secret_key.toBytes());
@@ -507,13 +692,18 @@ pub fn generateSignatureKeyPair(
             };
         },
         .ECDSA_SECP256R1_SHA256 => {
-            const private_scalar = crypto.ecc.P256.scalar.random(.big);
-            const public_point = crypto.ecc.P256.basePoint.mul(private_scalar, .big) catch return error.InvalidKeyGeneration;
+            // Generate random scalar bytes using WASM-compatible random
+            var private_scalar_bytes: [32]u8 = undefined;
+            wasm_random.secure_random.bytes(&private_scalar_bytes);
+            
+            const private_scalar = try crypto.ecc.P256.scalar.Scalar.fromBytes(private_scalar_bytes, .big);
+            const public_point = crypto.ecc.P256.basePoint.mul(private_scalar.toBytes(.big), .big) catch return error.InvalidKeyGeneration;
             
             const public_bytes = public_point.toUncompressedSec1();
             
             const public_key = try allocator.dupe(u8, &public_bytes);
-            const private_key = try allocator.dupe(u8, &private_scalar);
+            const private_key_bytes = private_scalar.toBytes(.big);
+            const private_key = try allocator.dupe(u8, &private_key_bytes);
             
             return KeyPair{
                 .public_key = public_key,
@@ -541,7 +731,7 @@ pub fn generateHpkeKeyPair(
             }
             
             // Create key pair from private key
-            const key_pair = crypto.dh.X25519.KeyPair.fromSecretKey(private_key_bytes);
+            const key_pair = try crypto.dh.X25519.KeyPair.generateDeterministic(private_key_bytes);
             
             const public_key = try allocator.dupe(u8, &key_pair.public_key);
             const private_key = try allocator.dupe(u8, &key_pair.secret_key);
@@ -561,13 +751,14 @@ pub fn generateHpkeKeyPair(
                 wasm_random.secure_random.bytes(&private_scalar_bytes);
             }
             
-            const private_scalar = crypto.ecc.P256.scalar.fromBytes(private_scalar_bytes, .big);
-            const public_point = crypto.ecc.P256.basePoint.mul(private_scalar, .big) catch return error.InvalidKeyGeneration;
+            const private_scalar = try crypto.ecc.P256.scalar.Scalar.fromBytes(private_scalar_bytes, .big);
+            const public_point = crypto.ecc.P256.basePoint.mul(private_scalar.toBytes(.big), .big) catch return error.InvalidKeyGeneration;
             
             const public_bytes = public_point.toUncompressedSec1();
             
             const public_key = try allocator.dupe(u8, &public_bytes);
-            const private_key = try allocator.dupe(u8, &private_scalar);
+            const private_key_bytes = private_scalar.toBytes(.big);
+            const private_key = try allocator.dupe(u8, &private_key_bytes);
             
             return KeyPair{
                 .public_key = public_key,
@@ -589,13 +780,12 @@ pub fn signWithLabel(
     var sign_content = std.ArrayList(u8).init(allocator);
     defer sign_content.deinit();
 
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(sign_content.writer())).init(sign_content.writer());
-    
+    // Manual serialization instead of TlsWriter
     const full_label = try std.fmt.allocPrint(allocator, "{s}{s}", .{ cipher_suite.MLS_LABEL_PREFIX, label });
     defer allocator.free(full_label);
     
-    try tls_writer.writeVarBytes(u8, full_label);
-    try tls_writer.writeVarBytes(u32, content);
+    try tls_codec.writeVarBytesToList(&sign_content, u8, full_label);
+    try tls_codec.writeVarBytesToList(&sign_content, u32, content);
 
     const signature_data = switch (cs.signatureScheme()) {
         .ED25519 => blk: {
@@ -627,7 +817,7 @@ pub fn signWithLabel(
     };
 
     defer allocator.free(signature_data);
-    return Signature.init(allocator, signature_data);
+    return Signature.initOwned(allocator, signature_data);
 }
 
 pub fn verifyWithLabel(
@@ -641,13 +831,12 @@ pub fn verifyWithLabel(
     var sign_content = std.ArrayList(u8).init(allocator);
     defer sign_content.deinit();
 
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(sign_content.writer())).init(sign_content.writer());
-    
+    // Manual serialization instead of TlsWriter
     const full_label = try std.fmt.allocPrint(allocator, "{s}{s}", .{ cipher_suite.MLS_LABEL_PREFIX, label });
     defer allocator.free(full_label);
     
-    try tls_writer.writeVarBytes(u8, full_label);
-    try tls_writer.writeVarBytes(u32, content);
+    try tls_codec.writeVarBytesToList(&sign_content, u8, full_label);
+    try tls_codec.writeVarBytesToList(&sign_content, u32, content);
 
     return switch (cs.signatureScheme()) {
         .ED25519 => blk: {
@@ -675,8 +864,8 @@ test "key package structures" {
     const allocator = testing.allocator;
     
     const test_key_data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
-    var hpke_key = try HpkePublicKey.init(allocator, &test_key_data);
-    defer hpke_key.deinit();
+    var hpke_key = try HpkePublicKey.initOwned(allocator, &test_key_data);
+    defer hpke_key.deinit(allocator);
     
     try testing.expectEqual(@as(usize, 4), hpke_key.len());
     try testing.expectEqualSlices(u8, &test_key_data, hpke_key.asSlice());
@@ -762,7 +951,7 @@ test "ed25519 signing and verification" {
     const test_label = "test_label";
     
     var signature = try signWithLabel(allocator, cs, key_pair.private_key, test_label, test_content);
-    defer signature.deinit();
+    defer signature.deinit(allocator);
     
     const is_valid = try verifyWithLabel(cs, key_pair.public_key, signature.asSlice(), test_label, test_content, allocator);
     try testing.expect(is_valid);
@@ -782,7 +971,7 @@ test "p256 signing and verification" {
     const test_label = "test_label";
     
     var signature = try signWithLabel(allocator, cs, key_pair.private_key, test_label, test_content);
-    defer signature.deinit();
+    defer signature.deinit(allocator);
     
     const is_valid = try verifyWithLabel(cs, key_pair.public_key, signature.asSlice(), test_label, test_content, allocator);
     try testing.expect(is_valid);
@@ -807,7 +996,7 @@ test "KeyPackageBundle creation and validation" {
 
     // Create KeyPackageBundle
     var bundle = try KeyPackageBundle.init(allocator, cs, credential, null);
-    defer bundle.deinit();
+    defer bundle.deinit(allocator);
 
     // Validate the bundle
     try testing.expectEqual(cs, bundle.key_package.cipherSuite());

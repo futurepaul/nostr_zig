@@ -339,6 +339,45 @@ const encrypted_payload = nip44.encrypt(
 
 **Lesson**: Always use `secp256k1_context_create()` with appropriate capability flags, never rely on the static no-precomp context for actual cryptographic operations.
 
+## TypeScript Type Definitions 🆕
+
+### Keeping Types in Sync
+To prevent function signature mismatches between Zig and TypeScript:
+
+1. **Type Definition File**: `visualizer/src/lib/wasm-types.d.ts` contains all WASM export signatures
+2. **When Adding/Changing WASM Functions**:
+   - Update the corresponding interface in `wasm-types.d.ts`
+   - TypeScript will catch any signature mismatches at compile time
+
+### Example Type Definition:
+```typescript
+// In wasm-types.d.ts
+export interface NostrMLSWasmExports {
+  // State machine function with exact parameter types
+  wasm_state_machine_get_info(
+    state_data: number,            // [*]const u8
+    state_data_len: number,        // u32
+    out_epoch: number,             // *u64
+    out_member_count: number,      // *u32
+    out_pending_proposals: number, // *u32
+    out_exporter_secret: number,   // [*]u8 - 32 bytes
+    out_tree_hash: number          // [*]u8 - 32 bytes
+  ): boolean;
+}
+```
+
+### Benefits:
+- ✅ Compile-time checking of function signatures
+- ✅ IntelliSense/autocomplete for WASM functions
+- ✅ Prevents runtime errors from parameter mismatches
+- ✅ Documentation of expected parameter sizes/types
+
+### Maintenance:
+When you change a WASM export signature in Zig:
+1. Update the corresponding signature in `wasm-types.d.ts`
+2. TypeScript will highlight any calling code that needs updating
+3. Fix all TypeScript errors before testing
+
 ## References
 
 - [WebAssembly Memory Model](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances)

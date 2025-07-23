@@ -301,7 +301,7 @@ pub fn serializeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) ![
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
+    // Manual serialization instead of TlsWriter
     
     // Welcome message format:
     // struct {
@@ -311,23 +311,23 @@ pub fn serializeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) ![
     // } Welcome;
     
     // Cipher suite (u16)
-    try writer.writeU16(@intFromEnum(welcome.cipher_suite));
+    try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(welcome.cipher_suite));
     
     // Secrets array (variable length with u16 count prefix)
-    try writer.writeU16(@intCast(welcome.secrets.len));
+    try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(welcome.secrets.len));
     for (welcome.secrets) |secret| {
         // new_member (variable length with u16 length prefix)
-        try writer.writeU16(@intCast(secret.new_member.len));
-        try writer.writer.writeAll(secret.new_member);
+        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(secret.new_member.len));
+        try buffer.appendSlice(secret.new_member);
         
         // encrypted_group_secrets (variable length with u16 length prefix)
-        try writer.writeU16(@intCast(secret.encrypted_group_secrets.len));
-        try writer.writer.writeAll(secret.encrypted_group_secrets);
+        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(secret.encrypted_group_secrets.len));
+        try buffer.appendSlice(secret.encrypted_group_secrets);
     }
     
     // Encrypted group info (variable length with u16 length prefix)
-    try writer.writeU16(@intCast(welcome.encrypted_group_info.len));
-    try writer.writer.writeAll(welcome.encrypted_group_info);
+    try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(welcome.encrypted_group_info.len));
+    try buffer.appendSlice(welcome.encrypted_group_info);
     
     return buffer.toOwnedSlice();
 }

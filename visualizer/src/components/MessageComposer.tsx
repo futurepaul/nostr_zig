@@ -16,7 +16,7 @@ interface MessageComposerProps {
 
 export function MessageComposer({ state, setState }: MessageComposerProps) {
   const [message, setMessage] = useState('');
-  const { createEncryptedGroupMessage, isReady, generateEphemeralKeys, generateExporterSecret: wasmGenerateExporterSecret, signSchnorr } = useWasm();
+  const { createEncryptedGroupMessage, isReady, generateEphemeralKeys, signSchnorr } = useWasm();
   
   // Check if button should be disabled
   const isButtonDisabled = !isReady || !message.trim() || !state.identity || state.groups.size === 0;

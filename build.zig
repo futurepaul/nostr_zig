@@ -779,6 +779,11 @@ pub fn build(b: *std.Build) void {
     wasm_lib.entry = .disabled;
     wasm_lib.export_memory = true;
     
+    // Increase WASM memory limits for 128MB buffer
+    wasm_lib.stack_size = 1024 * 1024; // 1MB stack
+    wasm_lib.initial_memory = 256 * 1024 * 1024; // 256MB initial memory
+    wasm_lib.max_memory = 512 * 1024 * 1024; // 512MB max memory
+    
     // Add secp256k1 import for WASM
     wasm_lib.root_module.addImport("secp256k1", secp256k1_wasm_mod);
     wasm_lib.linkLibrary(secp256k1_wasm_lib);

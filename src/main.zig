@@ -330,8 +330,8 @@ fn parseAndDisplay(allocator: std.mem.Allocator, json_str: []const u8, writer: a
     
     // Basic validation
     try writer.print("\n=== Validation ===\n", .{});
-    try writer.print("ID format: {s}\n", .{if (event.validateId()) "✓ Valid" else "✗ Invalid"});
-    try writer.print("Signature format: {s}\n", .{if (event.validateSignature()) "✓ Valid" else "✗ Invalid"});
+    try writer.print("ID format: {s}\n", .{if (event.validateId(allocator) catch false) "✓ Valid" else "✗ Invalid"});
+    try writer.print("Signature format: {s}\n", .{if (event.validateSignature() catch false) "✓ Valid" else "✗ Invalid"});
     
     // Serialize back to JSON
     try writer.print("\n=== Serialized JSON ===\n", .{});

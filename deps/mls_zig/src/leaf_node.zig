@@ -30,17 +30,35 @@ fn serializeEnumList(comptime T: type, items: []const T, writer: anytype) !void 
     }
 }
 
+/// Helper function to serialize enum lists to ArrayList
+fn serializeEnumListToList(comptime T: type, items: []const T, list: *std.ArrayList(u8)) !void {
+    try tls_codec.writeU16ToList(list, @intCast(items.len));
+    for (items) |item| {
+        try tls_codec.writeU16ToList(list, @intFromEnum(item));
+    }
+}
+
 /// Helper function to serialize a list with items that need allocator in serialize
 fn serializeListWithAllocator(comptime T: type, items: []const T, writer: anytype) !void {
-    try writer.writeU16(@intCast(items.len));
+    var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
+    try tls_writer.writeU16(@intCast(items.len));
     for (items) |item| {
         try item.serialize(writer);
     }
 }
 
+/// Helper function to serialize a list to ArrayList
+fn serializeListToList(comptime T: type, items: []const T, list: *std.ArrayList(u8)) !void {
+    try tls_codec.writeU16ToList(list, @intCast(items.len));
+    for (items) |item| {
+        try item.serializeToList(list);
+    }
+}
+
 /// Helper function to deserialize a list with length prefix
 fn deserializeList(comptime T: type, allocator: Allocator, reader: anytype) ![]T {
-    const len = try reader.readU16();
+    var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+    const len = try tls_reader.readU16();
     const result = try allocator.alloc(T, len);
     for (result) |*item| {
         item.* = try T.deserialize(reader);
@@ -50,7 +68,8 @@ fn deserializeList(comptime T: type, allocator: Allocator, reader: anytype) ![]T
 
 /// Helper function to deserialize a list that needs allocator
 fn deserializeListWithAllocator(comptime T: type, allocator: Allocator, reader: anytype) ![]T {
-    const len = try reader.readU16();
+    var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+    const len = try tls_reader.readU16();
     const result = try allocator.alloc(T, len);
     for (result) |*item| {
         item.* = try T.deserialize(allocator, reader);
@@ -60,10 +79,11 @@ fn deserializeListWithAllocator(comptime T: type, allocator: Allocator, reader: 
 
 /// Helper function to deserialize enum lists
 fn deserializeEnumList(comptime T: type, allocator: Allocator, reader: anytype) ![]T {
-    const len = try reader.readU16();
+    var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+    const len = try tls_reader.readU16();
     const result = try allocator.alloc(T, len);
     for (result) |*item| {
-        const value = try reader.readU16();
+        const value = try tls_reader.readU16();
         item.* = @enumFromInt(value);
     }
     return result;
@@ -110,6 +130,27 @@ pub const LeafNodeSource = union(enum) {
         }
     }
 
+    pub fn serializeToList(self: LeafNodeSource, list: *std.ArrayList(u8)) !void {
+        switch (self) {
+            .KeyPackage => |lifetime| {
+                try tls_codec.writeU8ToList(list, 0); // Tag for KeyPackage
+                if (lifetime) |lt| {
+                    try tls_codec.writeU8ToList(list, 1); // Has lifetime
+                    try tls_codec.writeU64ToList(list, lt);
+                } else {
+                    try tls_codec.writeU8ToList(list, 0); // No lifetime
+                }
+            },
+            .Update => {
+                try tls_codec.writeU8ToList(list, 1); // Tag for Update
+            },
+            .Commit => |parent_hash| {
+                try tls_codec.writeU8ToList(list, 2); // Tag for Commit
+                try tls_codec.writeBytesToList(list, &parent_hash);
+            },
+        }
+    }
+
     pub fn deserialize(reader: anytype) !LeafNodeSource {
         const tag = try reader.readU8();
         return switch (tag) {
@@ -138,11 +179,13 @@ pub const ProtocolVersion = enum(u16) {
     mls10 = 0x0001,
 
     pub fn serialize(self: ProtocolVersion, writer: anytype) !void {
-        try writer.writeU16(@intFromEnum(self));
+        var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
+        try tls_writer.writeU16(@intFromEnum(self));
     }
 
     pub fn deserialize(reader: anytype) !ProtocolVersion {
-        const value = try reader.readU16();
+        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+        const value = try tls_reader.readU16();
         return switch (value) {
             0x0001 => .mls10,
             else => LeafNodeError.SerializationError,
@@ -161,11 +204,13 @@ pub const ProposalType = enum(u16) {
     group_context_extensions = 0x0007,
 
     pub fn serialize(self: ProposalType, writer: anytype) !void {
-        try writer.writeU16(@intFromEnum(self));
+        var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
+        try tls_writer.writeU16(@intFromEnum(self));
     }
 
     pub fn deserialize(reader: anytype) !ProposalType {
-        const value = try reader.readU16();
+        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+        const value = try tls_reader.readU16();
         return switch (value) {
             0x0001 => .add,
             0x0002 => .update,
@@ -185,11 +230,13 @@ pub const CredentialType = enum(u16) {
     x509 = 0x0002,
 
     pub fn serialize(self: CredentialType, writer: anytype) !void {
-        try writer.writeU16(@intFromEnum(self));
+        var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
+        try tls_writer.writeU16(@intFromEnum(self));
     }
 
     pub fn deserialize(reader: anytype) !CredentialType {
-        const value = try reader.readU16();
+        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+        const value = try tls_reader.readU16();
         return switch (value) {
             0x0001 => .basic,
             0x0002 => .x509,
@@ -209,11 +256,17 @@ pub const ExtensionType = enum(u16) {
     last_resort = 0xFF01, // Custom for preventing key package reuse
 
     pub fn serialize(self: ExtensionType, writer: anytype) !void {
-        try writer.writeU16(@intFromEnum(self));
+        var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
+        try tls_writer.writeU16(@intFromEnum(self));
+    }
+
+    pub fn serializeToList(self: ExtensionType, list: *std.ArrayList(u8)) !void {
+        try tls_codec.writeU16ToList(list, @intFromEnum(self));
     }
 
     pub fn deserialize(reader: anytype) !ExtensionType {
-        const value = try reader.readU16();
+        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+        const value = try tls_reader.readU16();
         return switch (value) {
             0x0001 => .capabilities,
             0x0002 => .lifetime,
@@ -247,6 +300,11 @@ pub const Extension = struct {
     pub fn serialize(self: Extension, writer: anytype) !void {
         try self.extension_type.serialize(writer);
         try writer.writeVarBytes(u16, self.extension_data.asSlice());
+    }
+
+    pub fn serializeToList(self: Extension, list: *std.ArrayList(u8)) !void {
+        try self.extension_type.serializeToList(list);
+        try tls_codec.writeVarBytesToList(list, u16, self.extension_data.asSlice());
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !Extension {
@@ -284,6 +342,10 @@ pub const Extensions = struct {
 
     pub fn serialize(self: Extensions, writer: anytype) !void {
         try serializeListWithAllocator(Extension, self.extensions.items, writer);
+    }
+
+    pub fn serializeToList(self: Extensions, list: *std.ArrayList(u8)) !void {
+        try serializeListToList(Extension, self.extensions.items, list);
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !Extensions {
@@ -350,6 +412,14 @@ pub const Capabilities = struct {
         try serializeEnumList(ExtensionType, self.extensions.items, writer);
         try serializeEnumList(ProposalType, self.proposals.items, writer);
         try serializeEnumList(CredentialType, self.credentials.items, writer);
+    }
+
+    pub fn serializeToList(self: Capabilities, list: *std.ArrayList(u8)) !void {
+        try serializeEnumListToList(ProtocolVersion, self.versions.items, list);
+        try serializeEnumListToList(CipherSuite, self.ciphersuites.items, list);
+        try serializeEnumListToList(ExtensionType, self.extensions.items, list);
+        try serializeEnumListToList(ProposalType, self.proposals.items, list);
+        try serializeEnumListToList(CredentialType, self.credentials.items, list);
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !Capabilities {
@@ -427,6 +497,15 @@ pub const LeafNodePayload = struct {
         try self.extensions.serialize(writer);
     }
 
+    pub fn serializeToList(self: LeafNodePayload, list: *std.ArrayList(u8)) !void {
+        try tls_codec.writeVarBytesToList(list, u16, self.encryption_key.asSlice());
+        try tls_codec.writeVarBytesToList(list, u16, self.signature_key.asSlice());
+        try self.credential.tlsSerializeToList(list);
+        try self.capabilities.serializeToList(list);
+        try self.leaf_node_source.serializeToList(list);
+        try self.extensions.serializeToList(list);
+    }
+
     pub fn deserialize(allocator: Allocator, reader: anytype) !LeafNodePayload {
         const enc_key_bytes = try reader.readVarBytes(u16, allocator);
         defer allocator.free(enc_key_bytes);
@@ -482,10 +561,20 @@ pub const TreeInfoTbs = struct {
     pub fn serialize(self: TreeInfoTbs, writer: anytype) !void {
         if (self.group_id) |group_id| {
             try writer.writeU8(1); // Has group info
-            try group_id.serialize(writer);
+            try writer.writeVarBytes(u32, group_id.asSlice());
             try writer.writeU32(self.leaf_index.?);
         } else {
             try writer.writeU8(0); // No group info
+        }
+    }
+
+    pub fn serializeToList(self: TreeInfoTbs, list: *std.ArrayList(u8)) !void {
+        if (self.group_id) |group_id| {
+            try tls_codec.writeU8ToList(list, 1); // Has group info
+            try tls_codec.writeVarBytesToList(list, u32, group_id.asSlice());
+            try tls_codec.writeU32ToList(list, self.leaf_index.?);
+        } else {
+            try tls_codec.writeU8ToList(list, 0); // No group info
         }
     }
 };
@@ -517,8 +606,11 @@ pub const LeafNodeTbs = struct {
     pub fn unsignedPayload(self: LeafNodeTbs, allocator: Allocator) ![]u8 {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();
-        var writer = TlsWriter(std.ArrayList(u8).Writer).init(buffer.writer());
-        try self.serialize(&writer);
+        
+        // Manual serialization instead of TlsWriter
+        try self.payload.serializeToList(&buffer);
+        try self.tree_info.serializeToList(&buffer);
+        
         return try allocator.dupe(u8, buffer.items);
     }
 };
@@ -550,15 +642,20 @@ pub const LeafNode = struct {
         var payload = LeafNodePayload.init(allocator);
         
         // Copy encryption key from key package
-        const enc_key_slice = key_package.init_key.asSlice();
+        const enc_key_slice = key_package.initKey().asSlice();
         payload.encryption_key = try VarBytes.init(allocator, enc_key_slice);
 
         // Copy signature key from credential
-        const sig_key_slice = key_package.credential.signature_key.asSlice();
+        const sig_key_slice = key_package.signatureKey().asSlice();
         payload.signature_key = try VarBytes.init(allocator, sig_key_slice);
 
         // Copy credential
-        payload.credential = try key_package.credential.credential.clone(allocator);
+        const kp_credential = key_package.credential();
+        payload.credential = try Credential.init(
+            allocator, 
+            kp_credential.getType(), 
+            kp_credential.getSerializedContent()
+        );
 
         // Set default capabilities
         try payload.capabilities.addVersion(.mls10);
@@ -579,14 +676,14 @@ pub const LeafNode = struct {
         const tbs_bytes = try tbs.unsignedPayload(allocator);
         defer allocator.free(tbs_bytes);
         
-        const signature_bytes = try @import("key_package.zig").signWithLabel(
+        var signature_bytes = try @import("key_package.zig").signWithLabel(
             allocator,
             cs,
             signature_private_key.asSlice(),
             "LeafNodeTBS",
             tbs_bytes,
         );
-        defer signature_bytes.deinit();
+        defer signature_bytes.deinit(allocator);
 
         const signature = try VarBytes.init(allocator, signature_bytes.asSlice());
 
@@ -664,8 +761,10 @@ test "LeafNodeSource serialization" {
     const source1 = LeafNodeSource{ .KeyPackage = null };
     var buffer1 = std.ArrayList(u8).init(allocator);
     defer buffer1.deinit();
-    var writer1 = TlsWriter(std.ArrayList(u8).Writer).init(buffer1.writer());
+    var buffered_writer1 = std.io.bufferedWriter(buffer1.writer());
+    var writer1 = TlsWriter(@TypeOf(buffered_writer1.writer())).init(buffered_writer1.writer());
     try source1.serialize(&writer1);
+    try buffered_writer1.flush();
     
     var stream1 = std.io.fixedBufferStream(buffer1.items);
     var reader1 = TlsReader(@TypeOf(stream1.reader())).init(stream1.reader());
@@ -677,8 +776,10 @@ test "LeafNodeSource serialization" {
     const source2 = LeafNodeSource{ .KeyPackage = 3600 };
     var buffer2 = std.ArrayList(u8).init(allocator);
     defer buffer2.deinit();
-    var writer2 = TlsWriter(std.ArrayList(u8).Writer).init(buffer2.writer());
+    var buffered_writer2 = std.io.bufferedWriter(buffer2.writer());
+    var writer2 = TlsWriter(@TypeOf(buffered_writer2.writer())).init(buffered_writer2.writer());
     try source2.serialize(&writer2);
+    try buffered_writer2.flush();
     
     var stream2 = std.io.fixedBufferStream(buffer2.items);
     var reader2 = TlsReader(@TypeOf(stream2.reader())).init(stream2.reader());
@@ -690,8 +791,10 @@ test "LeafNodeSource serialization" {
     const source3: LeafNodeSource = LeafNodeSource.Update;
     var buffer3 = std.ArrayList(u8).init(allocator);
     defer buffer3.deinit();
-    var writer3 = TlsWriter(std.ArrayList(u8).Writer).init(buffer3.writer());
+    var buffered_writer3 = std.io.bufferedWriter(buffer3.writer());
+    var writer3 = TlsWriter(@TypeOf(buffered_writer3.writer())).init(buffered_writer3.writer());
     try source3.serialize(&writer3);
+    try buffered_writer3.flush();
     
     var stream3 = std.io.fixedBufferStream(buffer3.items);
     var reader3 = TlsReader(@TypeOf(stream3.reader())).init(stream3.reader());
@@ -704,8 +807,10 @@ test "LeafNodeSource serialization" {
     const source4 = LeafNodeSource{ .Commit = parent_hash };
     var buffer4 = std.ArrayList(u8).init(allocator);
     defer buffer4.deinit();
-    var writer4 = TlsWriter(std.ArrayList(u8).Writer).init(buffer4.writer());
+    var buffered_writer4 = std.io.bufferedWriter(buffer4.writer());
+    var writer4 = TlsWriter(@TypeOf(buffered_writer4.writer())).init(buffered_writer4.writer());
     try source4.serialize(&writer4);
+    try buffered_writer4.flush();
     
     var stream4 = std.io.fixedBufferStream(buffer4.items);
     var reader4 = TlsReader(@TypeOf(stream4.reader())).init(stream4.reader());
@@ -725,8 +830,10 @@ test "Extension creation and serialization" {
     // Serialize
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
-    var writer = TlsWriter(std.ArrayList(u8).Writer).init(buffer.writer());
+    var buffered_writer = std.io.bufferedWriter(buffer.writer());
+    var writer = TlsWriter(@TypeOf(buffered_writer.writer())).init(buffered_writer.writer());
     try ext.serialize(&writer);
+    try buffered_writer.flush();
 
     // Deserialize
     var stream = std.io.fixedBufferStream(buffer.items);
@@ -762,8 +869,10 @@ test "Capabilities creation and operations" {
     // Test serialization
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
-    var writer = TlsWriter(std.ArrayList(u8).Writer).init(buffer.writer());
+    var buffered_writer = std.io.bufferedWriter(buffer.writer());
+    var writer = TlsWriter(@TypeOf(buffered_writer.writer())).init(buffered_writer.writer());
     try caps.serialize(&writer);
+    try buffered_writer.flush();
 
     var stream = std.io.fixedBufferStream(buffer.items);
     var reader = TlsReader(@TypeOf(stream.reader())).init(stream.reader());

@@ -13,75 +13,58 @@ pub const TlsCodecError = error{
     OutOfMemory,
     /// End of stream reached unexpectedly
     EndOfStream,
+    /// Write operation didn't write all bytes
+    ShortWrite,
 };
 
-/// Writer interface for TLS serialization
-pub fn TlsWriter(comptime WriterType: type) type {
-    return struct {
-        const Self = @This();
-        
-        writer: WriterType,
-        bytes_written: usize,
+/// Helper functions for manual TLS serialization
+/// Use these instead of the removed TlsWriter for ArrayList operations
 
-        pub fn init(writer: WriterType) Self {
-            return .{
-                .writer = writer,
-                .bytes_written = 0,
-            };
-        }
+/// Write a u8 to ArrayList
+pub fn writeU8ToList(list: *std.ArrayList(u8), value: u8) !void {
+    try list.append(value);
+}
 
-        /// Write a u8
-        pub fn writeU8(self: *Self, value: u8) !void {
-            try self.writer.writeByte(value);
-            self.bytes_written += 1;
-        }
+/// Write a u16 in big-endian to ArrayList
+pub fn writeU16ToList(list: *std.ArrayList(u8), value: u16) !void {
+    var buf: [2]u8 = undefined;
+    std.mem.writeInt(u16, &buf, value, .big);
+    try list.appendSlice(&buf);
+}
 
-        /// Write a u16 in big-endian
-        pub fn writeU16(self: *Self, value: u16) !void {
-            var buf: [2]u8 = undefined;
-            std.mem.writeInt(u16, &buf, value, .big);
-            try self.writer.writeAll(&buf);
-            self.bytes_written += 2;
-        }
+/// Write a u32 in big-endian to ArrayList
+pub fn writeU32ToList(list: *std.ArrayList(u8), value: u32) !void {
+    var buf: [4]u8 = undefined;
+    std.mem.writeInt(u32, &buf, value, .big);
+    try list.appendSlice(&buf);
+}
 
-        /// Write a u32 in big-endian
-        pub fn writeU32(self: *Self, value: u32) !void {
-            var buf: [4]u8 = undefined;
-            std.mem.writeInt(u32, &buf, value, .big);
-            try self.writer.writeAll(&buf);
-            self.bytes_written += 4;
-        }
+/// Write a u64 in big-endian to ArrayList
+pub fn writeU64ToList(list: *std.ArrayList(u8), value: u64) !void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buf, value, .big);
+    try list.appendSlice(&buf);
+}
 
-        /// Write a u64 in big-endian
-        pub fn writeU64(self: *Self, value: u64) !void {
-            var buf: [8]u8 = undefined;
-            std.mem.writeInt(u64, &buf, value, .big);
-            try self.writer.writeAll(&buf);
-            self.bytes_written += 8;
-        }
+/// Write raw bytes to ArrayList
+pub fn writeBytesToList(list: *std.ArrayList(u8), bytes: []const u8) !void {
+    try list.appendSlice(bytes);
+}
 
-        /// Write raw bytes
-        pub fn writeBytes(self: *Self, bytes: []const u8) !void {
-            try self.writer.writeAll(bytes);
-            self.bytes_written += bytes.len;
-        }
-
-        /// Write variable-length bytes with length prefix
-        pub fn writeVarBytes(self: *Self, comptime LenType: type, bytes: []const u8) !void {
-            if (bytes.len > std.math.maxInt(LenType)) {
-                return TlsCodecError.ValueTooLarge;
-            }
-            
-            switch (LenType) {
-                u8 => try self.writeU8(@intCast(bytes.len)),
-                u16 => try self.writeU16(@intCast(bytes.len)),
-                u32 => try self.writeU32(@intCast(bytes.len)),
-                else => @compileError("Unsupported length type"),
-            }
-            
-            try self.writeBytes(bytes);
-        }
-    };
+/// Write variable-length bytes with length prefix to ArrayList
+pub fn writeVarBytesToList(list: *std.ArrayList(u8), comptime LenType: type, bytes: []const u8) !void {
+    if (bytes.len > std.math.maxInt(LenType)) {
+        return TlsCodecError.ValueTooLarge;
+    }
+    
+    switch (LenType) {
+        u8 => try writeU8ToList(list, @intCast(bytes.len)),
+        u16 => try writeU16ToList(list, @intCast(bytes.len)),
+        u32 => try writeU32ToList(list, @intCast(bytes.len)),
+        else => @compileError("Unsupported length type"),
+    }
+    
+    try writeBytesToList(list, bytes);
 }
 
 /// Reader interface for TLS deserialization
@@ -155,24 +138,57 @@ pub fn TlsReader(comptime ReaderType: type) type {
 }
 
 /// Variable-length bytes wrapper
+/// Arena-based VarBytes - simple and WASM-friendly memory management
 pub const VarBytes = struct {
     data: []const u8,
-    allocator: std.mem.Allocator,
-
+    
+    /// Create VarBytes from data - data is owned by the caller's arena
     pub fn init(allocator: std.mem.Allocator, data: []const u8) !VarBytes {
         const owned_data = try allocator.dupe(u8, data);
         return VarBytes{
             .data = owned_data,
-            .allocator = allocator,
+        };
+    }
+    
+    /// Create VarBytes that directly references external data (no copy)
+    /// Use this when data is already managed by an arena
+    pub fn fromSlice(data: []const u8) VarBytes {
+        return VarBytes{
+            .data = data,
         };
     }
 
+    /// No-op deinit - arena manages all memory
+    /// Kept for API compatibility
     pub fn deinit(self: *VarBytes) void {
-        self.allocator.free(self.data);
+        _ = self;
     }
 
     pub fn asSlice(self: *const VarBytes) []const u8 {
         return self.data;
+    }
+
+    /// Get the length of the data
+    pub fn len(self: *const VarBytes) usize {
+        return self.data.len;
+    }
+
+    /// Create a copy of this VarBytes in a new arena
+    pub fn clone(self: *const VarBytes, allocator: std.mem.Allocator) !VarBytes {
+        return VarBytes.init(allocator, self.data);
+    }
+    
+    /// Create a shared copy (no allocation needed with arena pattern)
+    pub fn share(self: *const VarBytes) VarBytes {
+        return VarBytes{
+            .data = self.data,
+        };
+    }
+    
+    /// No-op for arena pattern - always "owned" by arena
+    pub fn makeOwned(self: *VarBytes, allocator: std.mem.Allocator) !void {
+        _ = self;
+        _ = allocator;
     }
 };
 
@@ -200,17 +216,16 @@ pub fn TlsDeserializable(comptime T: type) type {
 
 // Tests
 
-test "TLS writer basic types" {
-    var buf: [100]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    var writer = TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
+test "TLS helper functions basic types" {
+    var list = std.ArrayList(u8).init(testing.allocator);
+    defer list.deinit();
     
-    try writer.writeU8(0x42);
-    try writer.writeU16(0x1234);
-    try writer.writeU32(0x12345678);
+    try writeU8ToList(&list, 0x42);
+    try writeU16ToList(&list, 0x1234);
+    try writeU32ToList(&list, 0x12345678);
     
-    try testing.expectEqual(@as(usize, 7), writer.bytes_written);
-    try testing.expectEqualSlices(u8, &[_]u8{ 0x42, 0x12, 0x34, 0x12, 0x34, 0x56, 0x78 }, buf[0..7]);
+    try testing.expectEqual(@as(usize, 7), list.items.len);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x42, 0x12, 0x34, 0x12, 0x34, 0x56, 0x78 }, list.items);
 }
 
 test "TLS reader basic types" {
@@ -228,19 +243,18 @@ test "TLS variable-length bytes" {
     const allocator = testing.allocator;
     
     // Test writing
-    var buf: [100]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    var writer = TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
+    var list = std.ArrayList(u8).init(testing.allocator);
+    defer list.deinit();
     
     const test_data = "Hello, TLS!";
-    try writer.writeVarBytes(u8, test_data);
+    try writeVarBytesToList(&list, u8, test_data);
     
     // Should write: [length byte][data...]
-    try testing.expectEqual(@as(u8, test_data.len), buf[0]);
-    try testing.expectEqualSlices(u8, test_data, buf[1..1 + test_data.len]);
+    try testing.expectEqual(@as(u8, test_data.len), list.items[0]);
+    try testing.expectEqualSlices(u8, test_data, list.items[1..1 + test_data.len]);
     
     // Test reading
-    stream.reset();
+    var stream = std.io.fixedBufferStream(list.items);
     var reader = TlsReader(@TypeOf(stream.reader())).init(stream.reader());
     
     const read_data = try reader.readVarBytes(u8, allocator);
@@ -252,19 +266,18 @@ test "TLS variable-length bytes" {
 test "TLS u16 length prefix" {
     const allocator = testing.allocator;
     
-    var buf: [1000]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    var writer = TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
+    var list = std.ArrayList(u8).init(testing.allocator);
+    defer list.deinit();
     
     // Create data longer than 255 bytes
     const test_data = [_]u8{0x55} ** 300;
-    try writer.writeVarBytes(u16, &test_data);
+    try writeVarBytesToList(&list, u16, &test_data);
     
     // Check length encoding
-    try testing.expectEqual(@as(u16, 300), std.mem.readInt(u16, buf[0..2], .big));
+    try testing.expectEqual(@as(u16, 300), std.mem.readInt(u16, list.items[0..2], .big));
     
     // Test reading
-    stream.reset();
+    var stream = std.io.fixedBufferStream(list.items);
     var reader = TlsReader(@TypeOf(stream.reader())).init(stream.reader());
     
     const read_data = try reader.readVarBytes(u16, allocator);

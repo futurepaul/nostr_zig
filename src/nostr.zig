@@ -7,3 +7,4 @@ pub const MetadataBuilder = @import("nostr/builder.zig").MetadataBuilder;
 pub const TagBuilder = @import("nostr/tag_builder.zig").TagBuilder;
 pub const createTagBatch = @import("nostr/tag_builder.zig").createTagBatch;
 pub const freeTagBatch = @import("nostr/tag_builder.zig").freeTagBatch;
+pub const freeBuiltTags = @import("nostr/tag_builder.zig").freeBuiltTags;

@@ -5,23 +5,46 @@ const nostr = @import("nostr.zig");
 const welcome_events = @import("mls/welcome_events.zig");
 const nip59 = @import("mls/nip59.zig");
 
-// Import MLS state machine functions to make them available
-const _ = @import("wasm_state_machine.zig");
+// Import MLS integration functions (REAL MLS only)
+const wasm_mls = @import("wasm_mls.zig");
+
+// Re-export to make functions available (REAL MLS only)
+pub usingnamespace wasm_mls;
 
 // External functions provided by JavaScript
 extern fn getRandomValues(buf: [*]u8, len: usize) void;
 extern fn getCurrentTimestamp() u64;
 extern fn wasm_log_error(str: [*]const u8, len: usize) void;
 
-// Memory management - single fixed buffer allocator for WASM
-var buffer: [2048 * 1024]u8 = undefined; // 2MB buffer
+// Memory management - back to FixedBufferAllocator to eliminate arena-related corruption
+var buffer: [64 * 1024 * 1024]u8 = undefined; // 64MB buffer (finding minimum viable size)
 var fba: ?std.heap.FixedBufferAllocator = null;
 
 pub fn getAllocator() std.mem.Allocator {
     if (fba == null) {
         fba = std.heap.FixedBufferAllocator.init(&buffer);
+        logError("WASM allocator initialized with {} MB buffer (FixedBufferAllocator)", .{buffer.len / (1024 * 1024)});
     }
     return fba.?.allocator();
+}
+
+/// Get current memory usage statistics
+pub fn getMemoryStats() struct { used: usize, total: usize, free: usize } {
+    if (fba) |*f| {
+        const used = f.end_index;
+        const total = buffer.len;
+        const free = total - used;
+        return .{ .used = used, .total = total, .free = free };
+    }
+    return .{ .used = 0, .total = buffer.len, .free = buffer.len };
+}
+
+/// Export memory stats for debugging
+export fn wasm_get_memory_stats(out_used: *u32, out_total: *u32, out_free: *u32) void {
+    const stats = getMemoryStats();
+    out_used.* = @intCast(stats.used);
+    out_total.* = @intCast(stats.total);
+    out_free.* = @intCast(stats.free);
 }
 
 // Debug helper
@@ -42,6 +65,177 @@ export fn wasm_init() void {
 
 export fn wasm_get_version() i32 {
     return 3; // Version 3: cleaned up, thin wrappers only
+}
+
+/// Minimal reproduction test for VarBytes memory corruption
+export fn wasm_test_varbytes_minimal() bool {
+    const allocator = getAllocator();
+    const mls_zig = @import("mls_zig");
+    
+    logError("=== VarBytes Minimal Reproduction Test ===", .{});
+    
+    // Test 1: Basic VarBytes creation
+    logError("Test 1: Creating basic VarBytes with known data", .{});
+    const test_data = "hello world"; // 11 bytes
+    var basic_varbytes = mls_zig.tls_codec.VarBytes.init(allocator, test_data) catch {
+        logError("FAIL: Could not create basic VarBytes", .{});
+        return false;
+    };
+    defer basic_varbytes.deinit();
+    
+    const basic_slice = basic_varbytes.asSlice();
+    logError("Basic VarBytes length: {} (expected: 11)", .{basic_slice.len});
+    if (basic_slice.len != 11) {
+        logError("FAIL: Basic VarBytes has wrong length", .{});
+        return false;
+    }
+    
+    // Test 2: Create a BasicCredential (this is where the issue starts)
+    logError("Test 2: Creating BasicCredential", .{});
+    const test_identity = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    var basic_credential = mls_zig.BasicCredential.init(allocator, test_identity) catch {
+        logError("FAIL: Could not create BasicCredential", .{});
+        return false;
+    };
+    defer basic_credential.deinit();
+    logError("✅ BasicCredential created successfully", .{});
+    
+    // Test 3: Create Credential from BasicCredential
+    logError("Test 3: Creating Credential from BasicCredential", .{});
+    var credential = mls_zig.Credential.fromBasic(allocator, &basic_credential) catch {
+        logError("FAIL: Could not create Credential from BasicCredential", .{});
+        return false;
+    };
+    defer credential.deinit();
+    logError("✅ Credential created successfully", .{});
+    
+    // Test 4: Create KeyPackageBundle (this is where VarBytes corruption happens)
+    logError("Test 4: Creating KeyPackageBundle - this should expose the VarBytes corruption", .{});
+    const cipher_suite = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    const wasm_random = @import("wasm_random.zig");
+    
+    logError("Test 4a: About to call KeyPackageBundle.init", .{});
+    
+    // Check memory usage before KeyPackageBundle creation
+    const stats_before = getMemoryStats();
+    logError("Memory before KeyPackageBundle: used={} KB, free={} KB", .{stats_before.used / 1024, stats_before.free / 1024});
+    
+    // First test the key generation functions directly
+    logError("Test 4a.1: Testing HPKE key generation directly", .{});
+    var test_hpke_keypair = mls_zig.key_package.generateHpkeKeyPair(
+        allocator,
+        cipher_suite,
+        wasm_random.secure_random.bytes,
+    ) catch |err| {
+        logError("FAIL: HPKE key generation failed: {any}", .{err});
+        return false;
+    };
+    defer test_hpke_keypair.deinit();
+    logError("HPKE keys: public={} bytes, private={} bytes", .{test_hpke_keypair.public_key.len, test_hpke_keypair.private_key.len});
+    logError("HPKE public key data (first 8 bytes): {any}", .{test_hpke_keypair.public_key[0..@min(8, test_hpke_keypair.public_key.len)]});
+    
+    // Test creating an HpkePublicKey wrapper from the raw key
+    logError("Test 4a.1b: Testing HpkePublicKey wrapper creation", .{});
+    var test_hpke_wrapper = mls_zig.key_package.HpkePublicKey.initOwned(allocator, test_hpke_keypair.public_key) catch |err| {
+        logError("FAIL: HpkePublicKey wrapper creation failed: {any}", .{err});
+        return false;
+    };
+    defer test_hpke_wrapper.deinit(allocator);
+    logError("HpkePublicKey wrapper: {} bytes", .{test_hpke_wrapper.len()});
+    logError("HpkePublicKey wrapper data (first 8 bytes): {any}", .{test_hpke_wrapper.asSlice()[0..@min(8, test_hpke_wrapper.len())]});
+    
+    logError("Test 4a.2: Testing signature key generation directly", .{});
+    var test_sig_keypair = mls_zig.key_package.generateSignatureKeyPair(
+        allocator,
+        cipher_suite,
+    ) catch |err| {
+        logError("FAIL: Signature key generation failed: {any}", .{err});
+        return false;
+    };
+    defer test_sig_keypair.deinit();
+    logError("Signature keys: public={} bytes, private={} bytes", .{test_sig_keypair.public_key.len, test_sig_keypair.private_key.len});
+    
+    var key_package_bundle = mls_zig.KeyPackageBundle.init(
+        allocator,
+        cipher_suite,
+        credential,
+        wasm_random.secure_random.bytes,
+    ) catch |err| {
+        logError("FAIL: Could not create KeyPackageBundle: {any}", .{err});
+        return false; 
+    };
+    defer key_package_bundle.deinit(allocator);
+    logError("Test 4b: KeyPackageBundle.init completed successfully", .{});
+    
+    // Detailed corruption analysis immediately after KeyPackageBundle creation
+    logError("Test 4c: Detailed corruption analysis immediately after KeyPackageBundle creation", .{});
+    const kp_immediate = key_package_bundle.key_package;
+    
+    // Step by step analysis to find exact corruption point
+    logError("4c.1: Getting initKey pointer", .{});
+    const init_key_ptr = kp_immediate.initKey();
+    logError("4c.2: initKey pointer = {*}", .{init_key_ptr});
+    
+    logError("4c.3: Getting data slice from initKey", .{});
+    const init_key_slice = init_key_ptr.asSlice();
+    logError("4c.4: initKey slice ptr={*}, len={}", .{init_key_slice.ptr, init_key_slice.len});
+    
+    // Check if it's specifically the .len access that's corrupted
+    const init_len_immediate = init_key_slice.len;
+    logError("4c.5: initKey length extracted = {}", .{init_len_immediate});
+    
+    // Also check the other keys for comparison
+    const enc_key_ptr = kp_immediate.leafNode().encryption_key;
+    const enc_len_immediate = enc_key_ptr.asSlice().len;
+    const sig_key_ptr = kp_immediate.leafNode().signature_key;
+    const sig_len_immediate = sig_key_ptr.asSlice().len;
+    
+    logError("Immediate key lengths: init={}, enc={}, sig={}", .{init_len_immediate, enc_len_immediate, sig_len_immediate});
+    
+    // Check memory usage after KeyPackageBundle creation
+    const stats_after = getMemoryStats();
+    logError("Memory after KeyPackageBundle: used={} KB, free={} KB", .{stats_after.used / 1024, stats_after.free / 1024});
+    
+    // Test 5: Check VarBytes lengths in the KeyPackage
+    logError("Test 5: Checking VarBytes lengths in KeyPackage", .{});
+    const kp = key_package_bundle.key_package;
+    const init_key = kp.initKey();
+    const init_key_data = init_key.asSlice();
+    const init_key_len = init_key_data.len;
+    const enc_key_len = kp.leafNode().encryption_key.asSlice().len;
+    const sig_key_len = kp.leafNode().signature_key.asSlice().len;
+    
+    logError("Key lengths: init={}, enc={}, sig={}", .{init_key_len, enc_key_len, sig_key_len});
+    
+    // Debug the actual init key data if it's 33 bytes
+    if (init_key_len == 33) {
+        logError("DEBUG: Init key is 33 bytes! First byte: 0x{x:0>2}, last 32 bytes likely the actual key", .{init_key_data[0]});
+        // Check if it's a TLS length prefix or type byte
+        if (init_key_data[0] == 0x20) { // 0x20 = 32 in decimal
+            logError("DEBUG: First byte is 0x20 (32) - looks like a length prefix!", .{});
+        }
+    }
+    
+    // Check if any keys have suspicious lengths
+    if (init_key_len > 1000 or enc_key_len > 1000 or sig_key_len > 1000) {
+        logError("FAIL: VarBytes corruption detected! Keys have suspiciously large sizes", .{});
+        return false;
+    }
+    
+    if (init_key_len != 32 or enc_key_len != 32 or sig_key_len != 32) {
+        logError("FAIL: Keys have unexpected lengths (should be 32 bytes each)", .{});
+        logError("init_key_len = {}, enc_key_len = {}, sig_key_len = {}", .{init_key_len, enc_key_len, sig_key_len});
+        
+        // This might be the corruption we're looking for
+        if (init_key_len == 33 and enc_key_len == 0 and sig_key_len == 0) {
+            logError("INFO: Found the 1-byte difference! init_key is 33 bytes instead of 32", .{});
+            logError("INFO: This matches the WASM corruption pattern described in NIP_EE_PLAN.md", .{});
+            // Don't return false here, let's see more details
+        }
+    } else {
+        logError("✅ All tests passed! VarBytes are working correctly", .{});
+    }
+    return false; // Always return false for now to see all debug output
 }
 
 export fn wasm_alloc(size: usize) ?[*]u8 {
@@ -296,13 +490,25 @@ export fn wasm_nip_ee_decrypt_group_message(
     const encrypted_slice = encrypted_content[0..encrypted_content_len];
     const exporter_secret_array = exporter_secret[0..32].*;
     
+    // Log input parameters
+    logError("wasm_nip_ee_decrypt_group_message: encrypted_len={}, exporter_secret[0..4]={x:0>2} {x:0>2} {x:0>2} {x:0>2}", .{
+        encrypted_content_len,
+        exporter_secret_array[0],
+        exporter_secret_array[1],
+        exporter_secret_array[2],
+        exporter_secret_array[3],
+    });
+    
     // Call the pure Zig function
     const decrypted_content = nip_ee.decryptGroupMessage(
         allocator,
         allocator, // Use same allocator for both
         encrypted_slice,
         exporter_secret_array,
-    ) catch return false;
+    ) catch |err| {
+        logError("decryptGroupMessage failed: {}", .{err});
+        return false;
+    };
     defer allocator.free(decrypted_content);
     
     // Buffer size check and copy result
@@ -490,5 +696,4 @@ export fn base64_decode(base64: [*]const u8, base64_len: usize, out_bytes: [*]u8
     return true;
 }
 
-// Re-export ONLY the working state machine functions - remove duplicates
-pub usingnamespace @import("wasm_state_machine.zig");
+// Note: Functions are already re-exported above via usingnamespace

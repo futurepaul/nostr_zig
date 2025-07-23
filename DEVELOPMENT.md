@@ -2,10 +2,17 @@
 
 ## High-Level Development Strategy
 
-### 1. **Use and Improve mls_zig**
-- Leverage the `mls_zig` library (located at `../mls_zig`) for all MLS protocol operations
-- When functionality is missing, contribute improvements to `mls_zig` rather than duplicating logic
-- Keep `mls_zig` as a clean, reusable MLS implementation that other projects can use
+### 1. **Use and Improve mls_zig** 
+### 🚨 **IMPORTANT: mls_zig IS OUR LIBRARY - WE WROTE IT, WE CAN MAKE IT BETTER!** 🚨
+- The `mls_zig` library (located at `deps/mls_zig`) is **our code** - we have full control
+- **When functionality is missing, ADD IT to mls_zig** - don't work around it
+- **When APIs don't fit our needs, CHANGE THEM** - it's our library
+- **When WASM compatibility is needed, BUILD IT IN** - don't create workarounds
+- Examples of improvements we should make directly to mls_zig:
+  - Missing serialization? Add `serialize()`/`deserialize()` methods
+  - API doesn't work in WASM? Fix the API design
+  - Need new functionality? Implement it properly in mls_zig
+- Keep `mls_zig` as a clean, reusable MLS implementation that benefits everyone
 
 ### 2. **Pure Zig First, Test Early**
 - Write core logic in pure Zig modules under `src/`

@@ -3,7 +3,7 @@ const testing = std.testing;
 const crypto = @import("nostr").crypto;
 
 test "Schnorr sign and verify" {
-    const allocator = testing.allocator;
+    _ = testing.allocator;
     
     // Test 1: Basic sign and verify
     {

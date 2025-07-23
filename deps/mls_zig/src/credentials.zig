@@ -34,13 +34,20 @@ pub const CredentialType = enum(u16) {
     
     /// Serialize to TLS format
     pub fn tlsSerialize(self: *const CredentialType, writer: anytype) !void {
-        try writer.writeU16(self.toU16());
+        var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
+        try tls_writer.writeU16(self.toU16());
+    }
+
+    /// Serialize to ArrayList (manual TLS format)
+    pub fn tlsSerializeToList(self: *const CredentialType, list: *std.ArrayList(u8)) !void {
+        try tls_codec.writeU16ToList(list, self.toU16());
     }
     
     /// Deserialize from TLS format
     pub fn tlsDeserialize(reader: anytype, allocator: std.mem.Allocator) !CredentialType {
         _ = allocator;
-        const value = try reader.readU16();
+        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
+        const value = try tls_reader.readU16();
         return try CredentialType.fromU16(value);
     }
 };
@@ -69,12 +76,12 @@ pub const BasicCredential = struct {
     /// Get the serialized length (for TLS encoding)
     pub fn tlsSerializedLen(self: *const BasicCredential) usize {
         // Length prefix (1 byte for u8) + identity data
-        return 1 + self.identity.data.len;
+        return 1 + self.identity.asSlice().len;
     }
     
     /// Serialize to TLS format (just the identity as variable-length bytes)
     pub fn tlsSerialize(self: *const BasicCredential, writer: anytype) !void {
-        try writer.writeVarBytes(u8, self.identity.data);
+        try writer.writeVarBytes(u8, self.identity.asSlice());
     }
     
     /// Deserialize from TLS format
@@ -113,12 +120,15 @@ pub const Credential = struct {
     
     /// Create a new credential from a basic credential
     pub fn fromBasic(allocator: std.mem.Allocator, basic: *const BasicCredential) !Credential {
-        // Serialize the basic credential content
+        // Serialize manually to avoid TlsWriter/ArrayList incompatibility
         var content_buf = std.ArrayList(u8).init(allocator);
         defer content_buf.deinit();
         
-        var writer = TlsWriter(@TypeOf(content_buf.writer())).init(content_buf.writer());
-        try basic.tlsSerialize(&writer);
+        // Serialize BasicCredential manually (writeVarBytes with u8 length prefix)
+        const identity_data = basic.identity.asSlice();
+        if (identity_data.len > 255) return error.ValueTooLarge;
+        try content_buf.append(@intCast(identity_data.len));
+        try content_buf.appendSlice(identity_data);
         
         const serialized = try content_buf.toOwnedSlice();
         defer allocator.free(serialized);
@@ -158,7 +168,7 @@ pub const Credential = struct {
             return error.WrongCredentialType;
         }
         
-        var stream = std.io.fixedBufferStream(self.serialized_content.data);
+        var stream = std.io.fixedBufferStream(self.serialized_content.asSlice());
         var reader = TlsReader(@TypeOf(stream.reader())).init(stream.reader());
         
         return try BasicCredential.tlsDeserialize(&reader, allocator);
@@ -167,13 +177,19 @@ pub const Credential = struct {
     /// Get the serialized length
     pub fn tlsSerializedLen(self: *const Credential) usize {
         // credential_type (2 bytes) + serialized_content length prefix (1 byte) + content
-        return 2 + 1 + self.serialized_content.data.len;
+        return 2 + 1 + self.serialized_content.asSlice().len;
     }
     
     /// Serialize to TLS format
     pub fn tlsSerialize(self: *const Credential, writer: anytype) !void {
         try self.credential_type.tlsSerialize(writer);
-        try writer.writeVarBytes(u8, self.serialized_content.data);
+        try writer.writeVarBytes(u8, self.serialized_content.asSlice());
+    }
+
+    /// Serialize to ArrayList (manual TLS format)
+    pub fn tlsSerializeToList(self: *const Credential, list: *std.ArrayList(u8)) !void {
+        try self.credential_type.tlsSerializeToList(list);
+        try tls_codec.writeVarBytesToList(list, u8, self.serialized_content.asSlice());
     }
     
     /// Deserialize from TLS format
@@ -188,6 +204,19 @@ pub const Credential = struct {
         return Credential{
             .credential_type = credential_type,
             .serialized_content = content,
+        };
+    }
+    
+    /// Create a deep copy of this credential
+    pub fn clone(self: Credential, allocator: std.mem.Allocator) !Credential {
+        return Credential.init(allocator, self.credential_type, self.serialized_content.asSlice());
+    }
+    
+    /// Create a copy of this credential using arena pattern
+    pub fn shareAsCow(self: Credential, allocator: std.mem.Allocator) !Credential {
+        return Credential{
+            .credential_type = self.credential_type,
+            .serialized_content = try self.serialized_content.clone(allocator),
         };
     }
 };

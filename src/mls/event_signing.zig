@@ -51,10 +51,14 @@ pub const NipEEEventHelper = struct {
             try tag_builder.add(ext_values);
         }
         
+        // Build tags and ensure proper cleanup after Event makes its own copies
+        const tags = try tag_builder.build();
+        defer nostr.freeBuiltTags(self.builder.allocator, tags);
+        
         return try self.builder.build(.{
             .kind = 443, // NIP-EE KeyPackage event
             .content = key_package_data,
-            .tags = try tag_builder.build(),
+            .tags = tags,
         });
     }
     
@@ -76,10 +80,13 @@ pub const NipEEEventHelper = struct {
         // Content is the description
         const content = description orelse "";
         
+        const tags = try tag_builder.build();
+        defer nostr.freeBuiltTags(self.builder.allocator, tags);
+        
         return try self.builder.build(.{
             .kind = 10051, // NIP-EE KeyPackage relay list
             .content = content,
-            .tags = try tag_builder.build(),
+            .tags = tags,
         });
     }
     
@@ -95,31 +102,30 @@ pub const NipEEEventHelper = struct {
         // Create builder with ephemeral key
         const ephemeral_builder = nostr.EventBuilder.initWithKey(self.builder.allocator, ephemeral_private_key);
         
-        // Create group ID tag
-        var tags_list = std.ArrayList([]const []const u8).init(self.builder.allocator);
-        defer tags_list.deinit();
+        // Use TagBuilder for proper memory management
+        var tag_builder = nostr.TagBuilder.init(self.builder.allocator);
+        defer tag_builder.deinit();
         
-        const h_tag = try self.builder.allocator.alloc([]const u8, 2);
-        h_tag[0] = try self.builder.allocator.dupe(u8, "h");
-        h_tag[1] = try std.fmt.allocPrint(self.builder.allocator, "{s}", .{std.fmt.fmtSliceHexLower(group_id)});
-        try tags_list.append(h_tag);
+        // Add group ID tag (h)
+        const group_id_hex = try std.fmt.allocPrint(self.builder.allocator, "{s}", .{std.fmt.fmtSliceHexLower(group_id)});
+        defer self.builder.allocator.free(group_id_hex);
+        try tag_builder.addPair("h", group_id_hex);
         
         // Add epoch tag
-        const epoch_tag = try self.builder.allocator.alloc([]const u8, 2);
-        epoch_tag[0] = try self.builder.allocator.dupe(u8, "epoch");
-        epoch_tag[1] = try std.fmt.allocPrint(self.builder.allocator, "{d}", .{epoch});
-        try tags_list.append(epoch_tag);
+        const epoch_str = try std.fmt.allocPrint(self.builder.allocator, "{d}", .{epoch});
+        defer self.builder.allocator.free(epoch_str);
+        try tag_builder.addPair("epoch", epoch_str);
         
         // Add message type tag
-        const type_tag = try self.builder.allocator.alloc([]const u8, 2);
-        type_tag[0] = try self.builder.allocator.dupe(u8, "type");
-        type_tag[1] = try self.builder.allocator.dupe(u8, message_type);
-        try tags_list.append(type_tag);
+        try tag_builder.addPair("type", message_type);
+        
+        const tags = try tag_builder.build();
+        defer nostr.freeBuiltTags(self.builder.allocator, tags);
         
         return try ephemeral_builder.build(.{
             .kind = 445, // NIP-EE Group Message event
             .content = encrypted_content,
-            .tags = try tags_list.toOwnedSlice(),
+            .tags = tags,
         });
     }
     

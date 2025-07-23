@@ -241,16 +241,62 @@ pub const MLSPlaintext = struct {
         var content_buffer = std.ArrayList(u8).init(allocator);
         defer content_buffer.deinit();
         
-        const writer = content_buffer.writer();
-        var tls_writer = mls_zig.tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
+        // Serialize manually to avoid TlsWriter/ArrayList incompatibility
+        // Wire format (u16)
+        var wire_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &wire_bytes, @intFromEnum(self.wire_format), .big);
+        try content_buffer.appendSlice(&wire_bytes);
         
-        // Serialize everything except the signature
-        try self.wire_format.tlsSerialize(&tls_writer);
-        try tls_writer.writeVarBytes(u8, &self.group_id);
-        try tls_writer.writeU64(self.epoch);
-        try self.sender.tlsSerialize(&tls_writer);
-        try tls_writer.writeVarBytes(u32, self.authenticated_data);
-        try self.content.tlsSerialize(&tls_writer);
+        // Group ID with length prefix (u8)
+        if (self.group_id.len > 255) return error.ValueTooLarge;
+        try content_buffer.append(@intCast(self.group_id.len));
+        try content_buffer.appendSlice(&self.group_id);
+        
+        // Epoch (u64)
+        var epoch_bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &epoch_bytes, self.epoch, .big);
+        try content_buffer.appendSlice(&epoch_bytes);
+        
+        // Sender - manual serialization
+        var sender_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &sender_bytes, @intFromEnum(self.sender), .big);
+        try content_buffer.appendSlice(&sender_bytes);
+        
+        // Authenticated data with length prefix (u32)
+        if (self.authenticated_data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
+        var auth_len: [4]u8 = undefined;
+        std.mem.writeInt(u32, &auth_len, @intCast(self.authenticated_data.len), .big);
+        try content_buffer.appendSlice(&auth_len);
+        try content_buffer.appendSlice(self.authenticated_data);
+        
+        // Content - manual serialization
+        // Content type (u8)
+        const content_type = switch (self.content) {
+            .application => ContentType.application,
+            .proposal => ContentType.proposal,
+            .commit => ContentType.commit,
+        };
+        try content_buffer.append(@intFromEnum(content_type));
+        
+        // Content data based on type
+        switch (self.content) {
+            .application => |app_data| {
+                // Application data with length prefix (u32)
+                if (app_data.data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
+                var app_len: [4]u8 = undefined;
+                std.mem.writeInt(u32, &app_len, @intCast(app_data.data.len), .big);
+                try content_buffer.appendSlice(&app_len);
+                try content_buffer.appendSlice(app_data.data);
+            },
+            .proposal => |_| {
+                // TODO: Implement proposal serialization when needed
+                return error.NotImplemented;
+            },
+            .commit => |_| {
+                // TODO: Implement commit serialization when needed
+                return error.NotImplemented;
+            },
+        }
         
         return try content_buffer.toOwnedSlice();
     }
@@ -332,10 +378,70 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    const writer = buffer.writer();
-    var tls_writer = mls_zig.tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
+    // Serialize manually to avoid TlsWriter/ArrayList incompatibility
+    const plaintext = message.plaintext;
     
-    try message.tlsSerialize(&tls_writer);
+    // Wire format (u16)
+    var wire_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &wire_bytes, @intFromEnum(plaintext.wire_format), .big);
+    try buffer.appendSlice(&wire_bytes);
+    
+    // Group ID with length prefix (u8)
+    if (plaintext.group_id.len > 255) return error.ValueTooLarge;
+    try buffer.append(@intCast(plaintext.group_id.len));
+    try buffer.appendSlice(&plaintext.group_id);
+    
+    // Epoch (u64)
+    var epoch_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &epoch_bytes, plaintext.epoch, .big);
+    try buffer.appendSlice(&epoch_bytes);
+    
+    // Sender (u16)
+    var sender_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &sender_bytes, @intFromEnum(plaintext.sender), .big);
+    try buffer.appendSlice(&sender_bytes);
+    
+    // Authenticated data with length prefix (u32)
+    if (plaintext.authenticated_data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
+    var auth_len: [4]u8 = undefined;
+    std.mem.writeInt(u32, &auth_len, @intCast(plaintext.authenticated_data.len), .big);
+    try buffer.appendSlice(&auth_len);
+    try buffer.appendSlice(plaintext.authenticated_data);
+    
+    // Content type (u8)
+    const content_type = switch (plaintext.content) {
+        .application => ContentType.application,
+        .proposal => ContentType.proposal,
+        .commit => ContentType.commit,
+    };
+    try buffer.append(@intFromEnum(content_type));
+    
+    // Content data
+    switch (plaintext.content) {
+        .application => |app_data| {
+            // Application data with length prefix (u32)
+            if (app_data.data.len > std.math.maxInt(u32)) return error.ValueTooLarge;
+            var app_len: [4]u8 = undefined;
+            std.mem.writeInt(u32, &app_len, @intCast(app_data.data.len), .big);
+            try buffer.appendSlice(&app_len);
+            try buffer.appendSlice(app_data.data);
+        },
+        .proposal => |_| {
+            // TODO: Implement proposal serialization when needed
+            return error.NotImplemented;
+        },
+        .commit => |_| {
+            // TODO: Implement commit serialization when needed
+            return error.NotImplemented;
+        },
+    }
+    
+    // Signature with length prefix (u16)
+    if (plaintext.signature.len > std.math.maxInt(u16)) return error.ValueTooLarge;
+    var sig_len: [2]u8 = undefined;
+    std.mem.writeInt(u16, &sig_len, @intCast(plaintext.signature.len), .big);
+    try buffer.appendSlice(&sig_len);
+    try buffer.appendSlice(plaintext.signature);
     
     return try buffer.toOwnedSlice();
 }

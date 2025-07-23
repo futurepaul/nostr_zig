@@ -28,7 +28,18 @@ export function ParticipantPanel({
   setCurrentStep,
   isCreator,
 }: ParticipantPanelProps) {
-  const { isReady, createIdentity, createKeyPackage, createGroup, generateExporterSecret } = useWasm();
+  const { 
+    isReady, 
+    createIdentity, 
+    generateMLSSigningKeys,
+    createKeyPackage,
+    // Real MLS State Machine Functions
+    initGroup,
+    proposeAddMember,
+    commitProposals,
+    getGroupInfo,
+    generateExporterSecretForEpoch
+  } = useWasm();
   
   // Watch for encrypted messages from the other participant
   React.useEffect(() => {
@@ -116,7 +127,10 @@ export function ParticipantPanel({
       pubkey,
       created_at,
       kind: 443,
-      tags: [],
+      tags: [
+        ['cs', '1'],  // cipher suite: MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+        ['pv', '1'],  // protocol version: MLS 1.0
+      ],
       content,
     };
 
@@ -150,59 +164,144 @@ export function ParticipantPanel({
     const groupIdBytes = new Uint8Array(32);
     crypto.getRandomValues(groupIdBytes);
     const groupId = bytesToHex(groupIdBytes);
-    
-    console.log('Creating group with identity:', {
-      privateKeyLength: state.identity.privateKey.length,
-      publicKeyLength: state.identity.publicKey.length,
-      groupId: groupId
-    });
-    
-    const groupStateData = createGroup(state.identity.privateKey, state.identity.publicKey);
-    console.log('Group created with state length:', groupStateData?.length || 0);
-    
-    if (!groupStateData || groupStateData.length === 0) {
-      console.error('Failed to create group state');
-      return;
-    }
-    
-    // Generate exporter secret when creating the group
-    let exporterSecret: Uint8Array;
+
     try {
-      exporterSecret = generateExporterSecret(groupStateData);
-      console.log('Alice generated exporter secret on group creation:', bytesToHex(exporterSecret));
-    } catch (error) {
-      console.error('Failed to generate exporter secret:', error);
-      // Fallback to a random secret for demo
-      exporterSecret = new Uint8Array(32);
-      crypto.getRandomValues(exporterSecret);
-      console.log('Alice using fallback random exporter secret:', bytesToHex(exporterSecret));
-    }
-    
-    const groupState = {
-      id: groupId,
-      state: groupStateData,
-      members: [name],
-      exporterSecret,
-    };
+      
+      // Generate MLS signing keys (separate from Nostr identity)
+      const mlsSigningKeys = generateMLSSigningKeys();
+      
+      console.log('Creating group with real MLS state machine:', {
+        groupId,
+        identityPubkey: bytesToHex(state.identity.publicKey),
+        mlsSigningKeyPublic: bytesToHex(mlsSigningKeys.publicKey),
+        mlsSigningKeyPrivate: bytesToHex(mlsSigningKeys.privateKey),
+        privateKeyLength: mlsSigningKeys.privateKey.length,
+        groupIdLength: groupIdBytes.length
+      });
+      
+      // Use real MLS state machine to initialize group
+      const { state: groupStateData, epoch, memberCount } = initGroup(
+        groupIdBytes,
+        state.identity.publicKey,
+        mlsSigningKeys.privateKey
+      );
+      
+      console.log('Real MLS group created:', {
+        stateLength: groupStateData.length,
+        epoch: epoch.toString(),
+        memberCount
+      });
+      
+      // Generate exporter secret for the current epoch
+      const exporterSecret = generateExporterSecretForEpoch(groupStateData);
+      console.log(`${name} generated exporter secret for epoch ${epoch}:`, bytesToHex(exporterSecret));
+      
+      const groupState: GroupState = {
+        id: groupId,
+        state: groupStateData,
+        members: [name],
+        // Real MLS state tracking
+        epoch,
+        memberCount,
+        currentExporterSecret: exporterSecret,
+        previousEpochSecrets: new Map(),
+        pendingProposals: 0,
+        lastCommitTimestamp: Date.now(),
+      };
 
-    setState(prev => ({
-      ...prev,
-      groups: new Map(prev.groups).set(groupId, groupState),
-    }));
-
-    // Automatically add Bob's key package if available
-    if (otherState.keyPackage) {
-      // Store the group ID for Bob to join later
       setState(prev => ({
         ...prev,
-        pendingInvite: {
+        mlsSigningKeys,  // Store the MLS signing keys
+        groups: new Map(prev.groups).set(groupId, groupState),
+        currentEpoch: epoch,  // Update global epoch
+        epochHistory: [...prev.epochHistory, {
+          epoch,
+          timestamp: new Date(),
+          eventType: 'group_init',
           groupId,
-          keyPackage: otherState.keyPackage,
-        }
+          memberCount,
+          secretsRotated: false,
+          description: `${name} created group with epoch ${epoch}`
+        }]
       }));
-    }
 
-    setCurrentStep('welcome');
+      // Automatically add Bob's key package if available
+      if (otherState.keyPackage) {
+        // Store the group ID for Bob to join later
+        setState(prev => ({
+          ...prev,
+          pendingInvite: {
+            groupId,
+            keyPackage: otherState.keyPackage,
+          }
+        }));
+      }
+
+      setCurrentStep('welcome');
+
+    } catch (error) {
+      console.error('Failed to create group with real MLS state machine:', error);
+      return;
+    }
+  };
+
+  const handleCommitProposals = async (groupId: string) => {
+    if (!isReady || !state.identity) return;
+
+    const group = state.groups.get(groupId);
+    if (!group) return;
+
+    try {
+      console.log(`${name} committing proposals for group ${groupId}...`);
+      
+      // Use real MLS state machine to commit proposals
+      const { newState, epoch, memberCount, secretsRotated } = commitProposals(group.state);
+      
+      console.log(`${name} committed proposals:`, {
+        newEpoch: epoch.toString(),
+        memberCount,
+        secretsRotated,
+        stateLength: newState.length
+      });
+
+      // Generate new exporter secret for the new epoch
+      const newExporterSecret = generateExporterSecretForEpoch(newState);
+      
+      // Store the previous epoch's secret for forward secrecy demonstration
+      const updatedPreviousSecrets = new Map(group.previousEpochSecrets);
+      if (group.currentExporterSecret) {
+        updatedPreviousSecrets.set(group.epoch, group.currentExporterSecret);
+      }
+
+      const updatedGroup: GroupState = {
+        ...group,
+        state: newState,
+        epoch,
+        memberCount,
+        currentExporterSecret: newExporterSecret,
+        previousEpochSecrets: updatedPreviousSecrets,
+        pendingProposals: 0,
+        lastCommitTimestamp: Date.now(),
+      };
+
+      setState(prev => ({
+        ...prev,
+        groups: new Map(prev.groups).set(groupId, updatedGroup),
+        currentEpoch: epoch,
+        epochHistory: [...prev.epochHistory, {
+          epoch,
+          timestamp: new Date(),
+          eventType: 'commit',
+          groupId,
+          memberCount,
+          secretsRotated,
+          description: `${name} committed proposals and advanced to epoch ${epoch}${secretsRotated ? ' (keys rotated)' : ''}`
+        }]
+      }));
+
+    } catch (error) {
+      console.error('Failed to commit proposals:', error);
+    }
   };
 
   const handleSendWelcome = () => {
@@ -264,14 +363,11 @@ export function ParticipantPanel({
     // Generate exporter secret for Bob when joining the group
     let exporterSecret: Uint8Array;
     try {
-      exporterSecret = generateExporterSecret(aliceGroup.state);
+      exporterSecret = generateExporterSecretForEpoch(aliceGroup.state);
       console.log('Bob generated exporter secret on join:', bytesToHex(exporterSecret));
     } catch (error) {
       console.error('Failed to generate exporter secret:', error);
-      // Fallback to a random secret for demo
-      exporterSecret = new Uint8Array(32);
-      crypto.getRandomValues(exporterSecret);
-      console.log('Bob using fallback random exporter secret:', bytesToHex(exporterSecret));
+      throw error; // No fallback - must use proper MLS exporter secret
     }
 
     setState(prev => ({
@@ -279,7 +375,7 @@ export function ParticipantPanel({
       groups: new Map(prev.groups).set(aliceGroup.id, {
         ...aliceGroup,
         members: [...aliceGroup.members, name],
-        exporterSecret,
+        currentExporterSecret: exporterSecret,
       }),
     }));
 
@@ -411,18 +507,18 @@ function GroupDisplay({ group }: GroupDisplayProps) {
       <div>Members: {group.members.join(', ')}</div>
       
       <div className="space-y-2 border-t pt-2">
-        {group.exporterSecret && (
+        {group.currentExporterSecret && (
           <div>
             <InfoWrapper tooltip="The exporter secret is derived from MLS group state with 'nostr' label. It's used as the private key for NIP-44 v2 encryption (outer layer). This secret rotates on each new epoch to provide forward secrecy.">
               <div className="text-xs font-semibold text-blue-600">NIP-44 Exporter Secret:</div>
             </InfoWrapper>
             <div className="font-mono text-xs break-all bg-white p-1 rounded">
-              {bytesToHex(group.exporterSecret)}
+              {bytesToHex(group.currentExporterSecret)}
             </div>
             <Button
               size="sm"
               variant="outline"
-              onClick={() => copyToClipboard(bytesToHex(group.exporterSecret!), 'Exporter Secret')}
+              onClick={() => copyToClipboard(bytesToHex(group.currentExporterSecret!), 'Exporter Secret')}
               className="text-xs mt-1"
             >
               📋 Copy
@@ -449,7 +545,7 @@ function GroupDisplay({ group }: GroupDisplayProps) {
             </div>
           )}
           
-        {!group.exporterSecret && !group.groupSecret && (
+        {!group.currentExporterSecret && !group.groupSecret && (
           <div className="text-xs text-gray-500 italic">
             Decryption keys will appear after sending messages
           </div>
@@ -519,15 +615,26 @@ function MessageDisplay({ message, state, setState, otherState }: MessageDisplay
       }
       
       const group = state.groups.get(groupId);
-      if (!group || !group.exporterSecret) {
+      if (!group || !group.currentExporterSecret) {
         throw new Error('No group or exporter secret found');
       }
       
+      console.log('Attempting to decrypt with:', {
+        groupId,
+        exporterSecret: bytesToHex(group.currentExporterSecret),
+        epoch: group.epoch?.toString(),
+        encryptedContentLength: encryptedContent.length
+      });
+      
       // Decode the base64 encrypted content to bytes
       const ciphertextBytes = Uint8Array.from(atob(encryptedContent), c => c.charCodeAt(0));
+      console.log('Ciphertext bytes:', {
+        length: ciphertextBytes.length,
+        preview: Array.from(ciphertextBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+      });
       
       // Perform two-stage decryption using WASM
-      const decryptedBytes = decryptGroupMessage(group.exporterSecret, ciphertextBytes);
+      const decryptedBytes = decryptGroupMessage(group.currentExporterSecret, ciphertextBytes);
       const decryptedJson = new TextDecoder().decode(decryptedBytes);
       
       console.log('Decrypted JSON:', decryptedJson);

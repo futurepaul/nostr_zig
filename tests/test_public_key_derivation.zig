@@ -2,8 +2,8 @@ const std = @import("std");
 const testing = std.testing;
 const crypto = @import("nostr").crypto;
 
-/// Test public key derivation against known secp256k1 test vectors
-/// These vectors come from the secp256k1 library test suite and BIP340
+// Test public key derivation against known secp256k1 test vectors
+// These vectors come from the secp256k1 library test suite and BIP340
 test "Public key derivation with known test vectors" {
     
     // Test vector 1: Private key 0x0000...0001
@@ -73,7 +73,6 @@ test "Public key derivation with known test vectors" {
     }
 }
 
-/// Test that sign and verify work with our public keys
 test "Sign and verify consistency" {
     // Test with private key 0x03
     var private_key: [32]u8 = undefined;
@@ -111,7 +110,6 @@ test "Sign and verify consistency" {
     try testing.expect(!is_invalid);
 }
 
-/// Test event signing and verification
 test "Event signing with test vectors" {
     // Use private key 0x03
     var private_key: [32]u8 = undefined;

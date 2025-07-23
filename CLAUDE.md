@@ -1,1 +1,2 @@
 - Don't use "placeholder" functionality instead of "real" cryptography. If you can't make it work, stop working at let me know instead of doing something fake.
+- Never run `bun run dev` unless specifically asked. It's fine to run bun tests though.

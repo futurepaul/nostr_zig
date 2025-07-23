@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
-// Load WASM module
+// Load WASM module - use the same file as the visualizer
 const wasmPath = resolve(__dirname, '../visualizer/src/nostr_mls.wasm');
 const wasmBuffer = readFileSync(wasmPath);
 
@@ -32,8 +32,8 @@ if (exports.wasm_init) {
     exports.wasm_init();
 }
 
-// Check if state machine functions are available
-console.log('Available exports:', Object.keys(exports).filter(name => name.includes('state_machine')));
+// Check if MLS functions are available
+console.log('Available MLS exports:', Object.keys(exports).filter(name => name.includes('mls')));
 
 // Helper functions
 function bytesToHex(bytes: Uint8Array): string {
@@ -112,8 +112,8 @@ async function testStateInitialization() {
     const outStateLenAlloc = allocateAlignedU32();
     outStateLenAlloc.view[0] = maxStateSize;
     
-    // Initialize group
-    const success = exports.wasm_state_machine_init_group(
+    // Initialize group using REAL MLS
+    const success = exports.wasm_mls_init_group(
         groupIdPtr,
         identityPubkeyPtr,
         signingKeyPtr,
@@ -164,7 +164,7 @@ async function testGetStateInfo(stateData: Uint8Array) {
     const exporterSecretPtr = exports.wasm_alloc(32);
     const treeHashPtr = exports.wasm_alloc(32);
     
-    const success = exports.wasm_state_machine_get_info(
+    const success = exports.wasm_mls_get_info(
         statePtr,
         stateData.length,
         epochAlloc.alignedPtr,

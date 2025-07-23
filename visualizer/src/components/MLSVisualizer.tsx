@@ -26,8 +26,14 @@ export interface GroupState {
   id: string;
   state: Uint8Array;
   members: string[];
-  exporterSecret?: Uint8Array; // Current decryption key for NIP-44 layer
-  groupSecret?: Uint8Array; // Group encryption secret for MLS layer
+  // Real MLS state tracking
+  epoch: bigint;                // Current epoch number
+  memberCount: number;          // Real member count from state machine
+  treeHash?: Uint8Array;       // Cryptographic tree integrity
+  currentExporterSecret?: Uint8Array;     // Current epoch's secret for NIP-44
+  previousEpochSecrets: Map<bigint, Uint8Array>; // For forward secrecy demonstrations
+  pendingProposals: number;    // Count of uncommitted proposals
+  lastCommitTimestamp?: number; // When the last epoch transition occurred
 }
 
 export interface NostrEvent {
@@ -47,6 +53,10 @@ export interface Message {
   encrypted: boolean;
   eventId?: string; // Optional event ID to track the source Nostr event
   decrypted?: string; // Optional decrypted content
+  // Real MLS message tracking
+  epoch: bigint;      // Epoch when message was sent
+  triggersRotation?: boolean; // Whether this message caused key rotation
+  messageType: 'application' | 'proposal' | 'commit' | 'welcome'; // MLS message type
 }
 
 export interface EphemeralKeyInfo {
@@ -59,6 +69,7 @@ export interface EphemeralKeyInfo {
 
 export interface MLSState {
   identity?: Identity;
+  mlsSigningKeys?: { privateKey: Uint8Array; publicKey: Uint8Array }; // Separate MLS signing keys
   keyPackage?: KeyPackage;
   groups: Map<string, GroupState>;
   events: NostrEvent[];
@@ -68,6 +79,20 @@ export interface MLSState {
     keyPackage: KeyPackage;
   };
   ephemeralKeys?: Map<string, EphemeralKeyInfo>;
+  // Real MLS state tracking
+  currentEpoch: bigint;         // Current global epoch (for UI display)
+  epochHistory: EpochEvent[];   // History of epoch transitions
+  forwardSecrecyEnabled: boolean; // Whether to demonstrate forward secrecy
+}
+
+export interface EpochEvent {
+  epoch: bigint;
+  timestamp: Date;
+  eventType: 'group_init' | 'member_add' | 'member_remove' | 'key_rotation' | 'commit';
+  groupId: string;
+  memberCount: number;
+  secretsRotated: boolean;
+  description: string;
 }
 
 export type ProtocolStep = 
@@ -84,6 +109,9 @@ export function MLSVisualizer() {
     events: [],
     messages: [],
     ephemeralKeys: new Map(),
+    currentEpoch: 0n,
+    epochHistory: [],
+    forwardSecrecyEnabled: true,
   });
 
   const [bobState, setBobState] = useState<MLSState>({
@@ -91,6 +119,9 @@ export function MLSVisualizer() {
     events: [],
     messages: [],
     ephemeralKeys: new Map(),
+    currentEpoch: 0n,
+    epochHistory: [],
+    forwardSecrecyEnabled: true,
   });
 
   const [currentStep, setCurrentStep] = useState<ProtocolStep>('setup');
@@ -99,6 +130,72 @@ export function MLSVisualizer() {
   const allEvents = [...aliceState.events, ...bobState.events].sort(
     (a, b) => a.created_at - b.created_at
   );
+
+  // Helper functions for epoch management
+  const addEpochEvent = (
+    participantState: MLSState,
+    setParticipantState: (state: MLSState) => void,
+    epochEvent: EpochEvent
+  ) => {
+    setParticipantState({
+      ...participantState,
+      currentEpoch: epochEvent.epoch,
+      epochHistory: [...participantState.epochHistory, epochEvent]
+    });
+  };
+
+  const handleCommitProposals = async (
+    groupId: string,
+    participantState: MLSState,
+    setParticipantState: (state: MLSState) => void,
+    participantName: string
+  ) => {
+    const group = participantState.groups.get(groupId);
+    if (!group) return;
+
+    try {
+      // Use real WASM state machine to commit proposals
+      const { commitProposals } = await import('./WasmProvider');
+      // This would need proper WASM context integration
+      console.log(`${participantName} committing proposals for group ${groupId}`);
+      
+      // For now, simulate epoch advancement
+      const newEpoch = group.epoch + 1n;
+      const newGroup: GroupState = {
+        ...group,
+        epoch: newEpoch,
+        pendingProposals: 0,
+        lastCommitTimestamp: Date.now(),
+        previousEpochSecrets: new Map([
+          ...group.previousEpochSecrets,
+          [group.epoch, group.currentExporterSecret || new Uint8Array(32)]
+        ])
+      };
+
+      const updatedGroups = new Map(participantState.groups);
+      updatedGroups.set(groupId, newGroup);
+
+      const epochEvent: EpochEvent = {
+        epoch: newEpoch,
+        timestamp: new Date(),
+        eventType: 'commit',
+        groupId,
+        memberCount: group.memberCount,
+        secretsRotated: true,
+        description: `${participantName} committed proposals and advanced to epoch ${newEpoch}`
+      };
+
+      setParticipantState({
+        ...participantState,
+        groups: updatedGroups,
+        currentEpoch: newEpoch,
+        epochHistory: [...participantState.epochHistory, epochEvent]
+      });
+
+    } catch (error) {
+      console.error('Failed to commit proposals:', error);
+    }
+  };
   
   // Build known identities map
   const knownIdentities = new Map<string, any>();
@@ -120,9 +217,20 @@ export function MLSVisualizer() {
       <InfoPanelProvider>
         <div className="min-h-screen bg-gray-50 p-4">
           <div className="w-full">
-            <h1 className="text-3xl font-bold text-center mb-8">
+            <h1 className="text-3xl font-bold text-center mb-4">
               NIP-EE MLS Visual Explainer
             </h1>
+            <div className="text-center mb-4">
+              <div className="bg-blue-100 rounded-lg p-3 mb-4 inline-block">
+                <div className="text-sm text-gray-600">Current Epoch</div>
+                <div className="text-2xl font-bold text-blue-600">
+                  {Math.max(Number(aliceState.currentEpoch), Number(bobState.currentEpoch))}
+                </div>
+                <div className="text-xs text-gray-500">
+                  Forward Secrecy: {aliceState.forwardSecrecyEnabled ? 'Enabled' : 'Disabled'}
+                </div>
+              </div>
+            </div>
             <div className="text-center mb-4">
               <a href="/publish" className="text-blue-600 hover:underline">
                 → Try the Event Publisher

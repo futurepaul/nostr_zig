@@ -63,14 +63,14 @@ pub const ParentNode = struct {
     }
 
     pub fn deinit(self: *ParentNode, allocator: Allocator) void {
-        self.encryption_key.deinit();
+        self.encryption_key.deinit(allocator);
         self.parent_hash.deinit();
         allocator.free(self.unmerged_leaves);
     }
 
     pub fn clone(self: ParentNode, allocator: Allocator) !ParentNode {
-        const cloned_key = try HpkePublicKey.init(allocator, self.encryption_key.asSlice());
-        errdefer cloned_key.deinit();
+        const cloned_key = try HpkePublicKey.initOwned(allocator, self.encryption_key.asSlice());
+        errdefer cloned_key.deinit(allocator);
 
         const cloned_hash = try VarBytes.init(allocator, self.parent_hash.asSlice());
         errdefer cloned_hash.deinit();
@@ -140,8 +140,8 @@ pub const ParentNode = struct {
         // Read encryption key
         const key_data = try reader.readVarBytes(u16, allocator);
         defer allocator.free(key_data);
-        var encryption_key = try HpkePublicKey.init(allocator, key_data);
-        errdefer encryption_key.deinit();
+        var encryption_key = try HpkePublicKey.initOwned(allocator, key_data);
+        errdefer encryption_key.deinit(allocator);
 
         // Read parent hash
         const hash_data = try reader.readVarBytes(u16, allocator);
@@ -194,8 +194,8 @@ pub const PathSecret = struct {
         defer key_pair.deinit();
         
         // Create HpkePublicKey and HpkePrivateKey from raw bytes
-        var public_key = try HpkePublicKey.init(allocator, key_pair.public_key);
-        errdefer public_key.deinit();
+        var public_key = try HpkePublicKey.initOwned(allocator, key_pair.public_key);
+        errdefer public_key.deinit(allocator);
         
         const private_key = try HpkePrivateKey.init(allocator, key_pair.private_key);
         
@@ -250,7 +250,7 @@ pub const UpdatePathNode = struct {
     }
 
     pub fn deinit(self: *UpdatePathNode, allocator: Allocator) void {
-        self.public_key.deinit();
+        self.public_key.deinit(allocator);
         for (self.encrypted_path_secrets) |*ciphertext| {
             ciphertext.deinit();
         }
@@ -273,8 +273,8 @@ pub const UpdatePathNode = struct {
         // Read public key
         const key_data = try reader.readVarBytes(u16, allocator);
         defer allocator.free(key_data);
-        var public_key = try HpkePublicKey.init(allocator, key_data);
-        errdefer public_key.deinit();
+        var public_key = try HpkePublicKey.initOwned(allocator, key_data);
+        errdefer public_key.deinit(allocator);
 
         // Read encrypted path secrets
         const num_secrets = try reader.readU32();
@@ -343,18 +343,18 @@ pub const HpkeCiphertext = struct {
     }
 };
 
-/// Convert MLS cipher suite to HPKE suite
-fn cipherSuiteToHpkeSuite(cs: CipherSuite) !hpke.Suite {
+/// Convert MLS cipher suite to HPKE suite type
+fn cipherSuiteToHpkeSuite(cs: CipherSuite) !type {
     return switch (cs) {
-        .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 => hpke.Suite.init(
-            hpke.primitives.Kem.X25519HkdfSha256.id,
-            hpke.primitives.Kdf.HkdfSha256.id,
-            hpke.primitives.Aead.Aes128Gcm.id,
+        .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 => hpke.createSuite(
+            0x0020, // X25519HkdfSha256
+            0x0001, // HkdfSha256  
+            0x0001, // Aes128Gcm
         ),
-        .MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519 => hpke.Suite.init(
-            hpke.primitives.Kem.X25519HkdfSha256.id,
-            hpke.primitives.Kdf.HkdfSha256.id,
-            hpke.primitives.Aead.ChaCha20Poly1305.id,
+        .MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519 => hpke.createSuite(
+            0x0020, // X25519HkdfSha256
+            0x0001, // HkdfSha256
+            0x0003, // ChaCha20Poly1305
         ),
         // P256 variants not yet supported in zig-hpke
         else => return TreeKemError.InvalidNodeType, // TODO: Better error for unsupported suite
@@ -364,14 +364,14 @@ fn cipherSuiteToHpkeSuite(cs: CipherSuite) !hpke.Suite {
 /// Encrypt data using HPKE
 fn hpkeEncrypt(
     allocator: Allocator,
-    suite: hpke.Suite,
+    SuiteType: anytype,
     recipient_public_key: []const u8,
     plaintext: []const u8,
     info: []const u8,
     aad: []const u8,
     random_fn: ?wasm_random.RandomFunction,
 ) !HpkeCiphertext {
-    const client_result = try suite.createClientContext(
+    const client_result = try SuiteType.createClientContext(
         recipient_public_key,
         info,
         null, // no PSK
@@ -401,7 +401,7 @@ fn hpkeEncrypt(
 /// Decrypt data using HPKE
 fn hpkeDecrypt(
     allocator: Allocator,
-    suite: hpke.Suite,
+    SuiteType: anytype,
     recipient_private_key: []const u8,
     ciphertext: HpkeCiphertext,
     info: []const u8,
@@ -414,7 +414,7 @@ fn hpkeDecrypt(
         .secret_key = try hpke.BoundedArray(u8, hpke.max_secret_key_length).fromSlice(recipient_private_key),
     };
     
-    var server_ctx = try suite.createServerContext(
+    var server_ctx = try SuiteType.createServerContext(
         ciphertext.kem_output.asSlice(),
         server_kp,
         info,
@@ -422,7 +422,7 @@ fn hpkeDecrypt(
     );
 
     // Allocate space for plaintext
-    const aead = suite.aead.?;
+    const aead = SuiteType.aead;
     const plaintext_len = ciphertext.ciphertext.len() - aead.tag_length;
     const plaintext = try allocator.alloc(u8, plaintext_len);
     errdefer allocator.free(plaintext);
@@ -521,7 +521,7 @@ pub const TreeSync = struct {
                 node.* = Node{ .leaf = LeafNode.init(allocator) };
             } else {
                 // Parent node - blank initially
-                const empty_key = try HpkePublicKey.init(allocator, &[_]u8{});
+                const empty_key = try HpkePublicKey.initOwned(allocator, &[_]u8{});
                 node.* = Node{ .parent = try ParentNode.init(allocator, empty_key, &[_]u8{}) };
             }
         }
@@ -571,7 +571,7 @@ pub const TreeSync = struct {
             if (current.asU32() == root_index) {
                 break;
             }
-            current = TreeNodeIndex.parent(tree_math.parent(current));
+            current = TreeNodeIndex{ .parent = tree_math.parent(current) };
         }
 
         return result.toOwnedSlice();
@@ -674,7 +674,7 @@ pub fn createUpdatePath(
         }
 
         // Get copath for encryption targets
-        const parent_node = TreeNodeIndex.parent(parent_index);
+        const parent_node = TreeNodeIndex{ .parent = tree_math.parent(TreeNodeIndex{ .parent = parent_index }) };
         const copath_nodes = try tree.copath(parent_node);
         defer allocator.free(copath_nodes);
 
@@ -702,19 +702,28 @@ pub fn createUpdatePath(
                 // Skip if no encryption key
                 if (recipient_key.len == 0) continue;
                 
-                // Get HPKE suite for this cipher suite
-                const hpke_suite = try cipherSuiteToHpkeSuite(cs);
-                
-                // Encrypt the path secret using HPKE
-                const encrypted = try hpkeEncrypt(
-                    allocator,
-                    hpke_suite,
-                    recipient_key,
-                    current_secret.asSlice(),
-                    "MLS 1.0 TreeKEM",
-                    group_context,
-                    random_fn,
-                );
+                // Encrypt the path secret using HPKE (comptime dispatch based on cipher suite)
+                const encrypted = switch (cs) {
+                    .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 => try hpkeEncrypt(
+                        allocator,
+                        try hpke.createSuite(0x0020, 0x0001, 0x0001), // X25519HkdfSha256, HkdfSha256, Aes128Gcm
+                        recipient_key,
+                        current_secret.asSlice(),
+                        "MLS 1.0 TreeKEM",
+                        group_context,
+                        random_fn,
+                    ),
+                    .MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519 => try hpkeEncrypt(
+                        allocator,
+                        try hpke.createSuite(0x0020, 0x0001, 0x0003), // X25519HkdfSha256, HkdfSha256, ChaCha20Poly1305
+                        recipient_key,
+                        current_secret.asSlice(),
+                        "MLS 1.0 TreeKEM",
+                        group_context,
+                        random_fn,
+                    ),
+                    else => return TreeKemError.InvalidNodeType, // TODO: Better error for unsupported suite
+                };
                 try encrypted_secrets.append(encrypted);
             }
         }
@@ -812,12 +821,9 @@ pub fn decryptPath(
     // Get my position in the tree
     const my_node = TreeNodeIndex.leaf(my_index);
     
-    // Get HPKE suite
-    const hpke_suite = try cipherSuiteToHpkeSuite(cs);
-    
     // Try to decrypt at each level of the path
     for (sender_path, update_path) |parent_index, update_node| {
-        const parent_node = TreeNodeIndex.parent(parent_index);
+        const parent_node = TreeNodeIndex{ .parent = tree_math.parent(TreeNodeIndex{ .parent = parent_index }) };
         
         // Get copath for this level
         const copath_nodes = try tree.copath(parent_node);
@@ -846,14 +852,26 @@ pub fn decryptPath(
                 // Find our private key for this position
                 // For now, assume first private key (TODO: proper key selection)
                 if (my_private_keys.len > 0) {
-                    const plaintext = try hpkeDecrypt(
-                        allocator,
-                        hpke_suite,
-                        my_private_keys[0].asSlice(),
-                        ciphertext.*,
-                        "MLS 1.0 TreeKEM",
-                        group_context,
-                    );
+                    // Decrypt using HPKE (comptime dispatch based on cipher suite)
+                    const plaintext = switch (cs) {
+                        .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 => try hpkeDecrypt(
+                            allocator,
+                            try hpke.createSuite(0x0020, 0x0001, 0x0001), // X25519HkdfSha256, HkdfSha256, Aes128Gcm
+                            my_private_keys[0].asSlice(),
+                            ciphertext.*,
+                            "MLS 1.0 TreeKEM",
+                            group_context,
+                        ),
+                        .MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519 => try hpkeDecrypt(
+                            allocator,
+                            try hpke.createSuite(0x0020, 0x0001, 0x0003), // X25519HkdfSha256, HkdfSha256, ChaCha20Poly1305
+                            my_private_keys[0].asSlice(),
+                            ciphertext.*,
+                            "MLS 1.0 TreeKEM",
+                            group_context,
+                        ),
+                        else => return TreeKemError.InvalidNodeType, // TODO: Better error for unsupported suite
+                    };
                     defer allocator.free(plaintext);
                     
                     // Return the decrypted path secret
@@ -871,11 +889,11 @@ test "ParentNode creation and serialization" {
 
     // Create a test HPKE key
     const key_data = [_]u8{0x01} ** 32;
-    var encryption_key = try HpkePublicKey.init(allocator, &key_data);
-    defer encryption_key.deinit();
+    var encryption_key = try HpkePublicKey.initOwned(allocator, &key_data);
+    defer encryption_key.deinit(allocator);
 
     // Clone the key for the parent node (since it will take ownership)
-    const node_key = try HpkePublicKey.init(allocator, encryption_key.asSlice());
+    const node_key = try HpkePublicKey.initOwned(allocator, encryption_key.asSlice());
     
     // Create parent hash
     const hash_data = [_]u8{0x02} ** 32;
@@ -965,8 +983,8 @@ test "HPKE encryption and decryption" {
     const allocator = testing.allocator;
     const cs = CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
     
-    // Get HPKE suite
-    const suite = try cipherSuiteToHpkeSuite(cs);
+    // Use default cipher suite for testing
+    const SuiteType = try hpke.createSuite(0x0020, 0x0001, 0x0001); // X25519HkdfSha256, HkdfSha256, Aes128Gcm
     
     // Generate a key pair for testing
     var key_pair = try generateHpkeKeyPair(allocator, cs, null);
@@ -980,7 +998,7 @@ test "HPKE encryption and decryption" {
     // Encrypt
     const ciphertext = try hpkeEncrypt(
         allocator,
-        suite,
+        SuiteType,
         key_pair.public_key,
         plaintext,
         info,
@@ -996,7 +1014,7 @@ test "HPKE encryption and decryption" {
     // Decrypt
     const decrypted = try hpkeDecrypt(
         allocator,
-        suite,
+        SuiteType,
         private_key.asSlice(),
         ciphertext,
         info,
@@ -1022,8 +1040,8 @@ test "UpdatePath serialization" {
 
     // Create update path nodes
     const key_data = [_]u8{0x04} ** 32;
-    var public_key = try HpkePublicKey.init(allocator, &key_data);
-    defer public_key.deinit();
+    var public_key = try HpkePublicKey.initOwned(allocator, &key_data);
+    defer public_key.deinit(allocator);
 
     var ciphertext1 = try HpkeCiphertext.init(
         allocator,

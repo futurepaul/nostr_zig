@@ -406,6 +406,11 @@ pub fn bytesToHex(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return hex;
 }
 
+/// Sign a message with a private key (alias for sign function for test compatibility)
+pub fn signMessage(message: []const u8, private_key: [32]u8) ![64]u8 {
+    return try sign(message, private_key);
+}
+
 test "key generation and public key derivation" {
     // Generate a private key
     const private_key = try generatePrivateKey();

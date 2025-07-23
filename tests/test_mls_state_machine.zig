@@ -27,7 +27,6 @@ test "MLS state machine - full group lifecycle" {
         alice_identity,
         .{},
     );
-    errdefer mls.key_packages.freeKeyPackage(allocator, alice_kp);
     defer mls.key_packages.freeKeyPackage(allocator, alice_kp);
     
     const bob_kp = try mls.key_packages.generateKeyPackage(
@@ -36,7 +35,6 @@ test "MLS state machine - full group lifecycle" {
         bob_identity,
         .{},
     );
-    errdefer mls.key_packages.freeKeyPackage(allocator, bob_kp);
     defer mls.key_packages.freeKeyPackage(allocator, bob_kp);
     
     const charlie_kp = try mls.key_packages.generateKeyPackage(
@@ -45,7 +43,6 @@ test "MLS state machine - full group lifecycle" {
         charlie_identity,
         .{},
     );
-    errdefer mls.key_packages.freeKeyPackage(allocator, charlie_kp);
     defer mls.key_packages.freeKeyPackage(allocator, charlie_kp);
     
     // Step 1: Alice creates the group
@@ -281,7 +278,6 @@ test "MLS state machine - epoch secret derivation" {
         new_identity,
         .{},
     );
-    errdefer mls.key_packages.freeKeyPackage(allocator, new_kp);
     defer mls.key_packages.freeKeyPackage(allocator, new_kp);
     
     try state_machine.proposeAdd(0, new_kp);
@@ -316,4 +312,116 @@ test "MLS state machine - epoch secret derivation" {
     std.debug.print("  - Joiner secret: {s}\n", .{std.fmt.fmtSliceHexLower(state_machine.epoch_secrets.joiner_secret.data[0..16])});
     std.debug.print("  - Epoch authenticator: {s}\n", .{std.fmt.fmtSliceHexLower(state_machine.epoch_secrets.epoch_authenticator.data[0..16])});
     std.debug.print("  - Encryption secret: {s}\n", .{std.fmt.fmtSliceHexLower(state_machine.epoch_secrets.encryption_secret.data[0..16])});
+}
+
+test "FixedBufferAllocator native reproduction - memory corruption investigation" {
+    std.debug.print("\n=== Native FixedBufferAllocator Memory Corruption Reproduction ===\n", .{});
+    
+    // Use the same buffer size as WASM initially, then we'll scale it down
+    var buffer: [128 * 1024 * 1024]u8 = undefined; // 128MB buffer (same as WASM)
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const allocator = fba.allocator();
+    
+    std.debug.print("Using FixedBufferAllocator with {} MB buffer (same as WASM)\n", .{buffer.len / (1024 * 1024)});
+    
+    // Create a basic key package using the MLS infrastructure we already have in this file
+    const identity_key = try crypto.generatePrivateKey();
+    var mls_provider = mls.provider.MlsProvider.init(allocator);
+    
+    // This should trigger the same memory allocation patterns as WASM
+    const kp = mls.key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        identity_key,
+        .{},
+    ) catch |err| {
+        std.debug.print("FAIL: Could not create KeyPackage: {any}\n", .{err});
+        return;
+    };
+    defer mls.key_packages.freeKeyPackage(allocator, kp);
+    
+    std.debug.print("✅ KeyPackage created successfully with FixedBufferAllocator\n", .{});
+    
+    // Check memory usage
+    const used = fba.end_index;
+    const free = buffer.len - used;
+    std.debug.print("Memory usage: used={} KB, free={} KB\n", .{used / 1024, free / 1024});
+    
+    // Now create a group to see if we get different behavior
+    const group_id = crypto.sha256Hash("fixed-buffer-test-group");
+    var state_machine = mls.state_machine.MLSStateMachine.initializeGroup(
+        allocator,
+        group_id,
+        kp,
+        identity_key,
+        &mls_provider,
+        mls.state_machine.KeyRotationPolicy{},
+    ) catch |err| {
+        std.debug.print("FAIL: Could not create MLSStateMachine: {any}\n", .{err});
+        return;
+    };
+    defer state_machine.deinit();
+    
+    std.debug.print("✅ MLSStateMachine created successfully with FixedBufferAllocator\n", .{});
+    
+    // Check memory usage after state machine creation
+    const used_after = fba.end_index;
+    const additional_used = used_after - used;
+    std.debug.print("Additional memory for state machine: {} KB\n", .{additional_used / 1024});
+    
+    std.debug.print("✅ Native FixedBufferAllocator test completed - no corruption detected\n", .{});
+    std.debug.print("This suggests the corruption is WASM-specific, not allocator-specific\n", .{});
+}
+
+test "FixedBufferAllocator smaller buffer test - memory pressure investigation" {
+    std.debug.print("\n=== Native FixedBufferAllocator Small Buffer Test ===\n", .{});
+    
+    // Try with progressively smaller buffers to see if we can trigger memory pressure issues
+    const buffer_sizes = [_]usize{ 1024 * 1024, 512 * 1024, 256 * 1024, 128 * 1024 }; // 1MB, 512KB, 256KB, 128KB
+    
+    for (buffer_sizes) |buffer_size| {
+        std.debug.print("\nTesting with {} KB buffer:\n", .{buffer_size / 1024});
+        
+        const buffer = try testing.allocator.alloc(u8, buffer_size);
+        defer testing.allocator.free(buffer);
+        
+        var fba = std.heap.FixedBufferAllocator.init(buffer);
+        const allocator = fba.allocator();
+        
+        // Try to create a key package
+        const identity_key = try crypto.generatePrivateKey();
+        var mls_provider = mls.provider.MlsProvider.init(allocator);
+        
+        const kp = mls.key_packages.generateKeyPackage(
+            allocator,
+            &mls_provider,
+            identity_key,
+            .{},
+        ) catch |err| {
+            std.debug.print("  FAIL: KeyPackage creation failed with {} KB buffer: {any}\n", .{buffer_size / 1024, err});
+            continue;
+        };
+        defer mls.key_packages.freeKeyPackage(allocator, kp);
+        
+        const used = fba.end_index;
+        std.debug.print("  ✅ Success with {} KB buffer, used {} KB\n", .{buffer_size / 1024, used / 1024});
+        
+        // Try to create a state machine too
+        const group_id = crypto.sha256Hash("small-buffer-test");
+        var state_machine = mls.state_machine.MLSStateMachine.initializeGroup(
+            allocator,
+            group_id,
+            kp,
+            identity_key,
+            &mls_provider,
+            mls.state_machine.KeyRotationPolicy{},
+        ) catch |err| {
+            std.debug.print("  FAIL: StateMachine creation failed with {} KB buffer: {any}\n", .{buffer_size / 1024, err});
+            continue;
+        };
+        defer state_machine.deinit();
+        
+        const final_used = fba.end_index;
+        std.debug.print("  ✅ Full success with {} KB buffer, total used {} KB\n", .{buffer_size / 1024, final_used / 1024});
+    }
 }
