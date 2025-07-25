@@ -28,14 +28,9 @@ pub const KeyPackageEvent = struct {
         private_key: [32]u8,
         key_package: types.KeyPackage,
     ) !KeyPackageEvent {
-        // Serialize the key package
-        const serialized = try serializeKeyPackage(allocator, key_package);
-        defer allocator.free(serialized);
-        
-        // Base64 encode
-        const encoded = try std.base64.standard.Encoder.calcSize(serialized.len);
-        const content = try allocator.alloc(u8, encoded);
-        _ = std.base64.standard.Encoder.encode(content, serialized);
+        // Serialize the key package to hex (per NIP-EE spec)
+        const content = try key_packages.serializeForNostrEvent(allocator, key_package);
+        defer allocator.free(content);
         
         // Use proper event signing infrastructure (no more undefined fields!)
         const event_signing = @import("event_signing.zig");
@@ -45,15 +40,25 @@ pub const KeyPackageEvent = struct {
         const cipher_suite = @intFromEnum(key_package.cipher_suite);
         const protocol_version = @intFromEnum(key_package.version);
         
-        // Extract extension IDs (simplified - in real implementation, parse extensions)
-        const extensions = [_]u32{}; // Empty for now, would need proper extension parsing
+        // Extract extension IDs from key package
+        var extensions = std.ArrayList(u32).init(allocator);
+        defer extensions.deinit();
+        
+        // Add extensions based on what's in the key package
+        for (key_package.leaf_node.extensions) |ext| {
+            try extensions.append(@intFromEnum(ext.extension_type));
+        }
+        
+        // TODO: Get relays from configuration or pass as parameter
+        const relays = [_][]const u8{"ws://localhost:10547"};
         
         // Create properly signed KeyPackage event
         const event = try helper.createKeyPackageEvent(
             content,
             cipher_suite,
             protocol_version,
-            &extensions,
+            extensions.items,
+            &relays,
         );
         
         return KeyPackageEvent{
@@ -68,14 +73,8 @@ pub const KeyPackageEvent = struct {
             return error.InvalidEventKind;
         }
         
-        // Base64 decode the content
-        const decoded_size = try std.base64.standard.Decoder.calcSizeForSlice(event.content);
-        const decoded = try allocator.alloc(u8, decoded_size);
-        defer allocator.free(decoded);
-        try std.base64.standard.Decoder.decode(decoded, event.content);
-        
-        // Parse the key package
-        const key_package = try deserializeKeyPackage(allocator, decoded);
+        // Parse from hex-encoded content (per NIP-EE spec)
+        const key_package = try key_packages.parseFromNostrEvent(allocator, event.content);
         
         return KeyPackageEvent{
             .event = event,

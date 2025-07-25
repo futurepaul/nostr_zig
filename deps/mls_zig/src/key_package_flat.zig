@@ -80,20 +80,35 @@ pub const KeyPackage = struct {
         // Cipher suite (u16, big-endian)
         try tls_codec.writeU16ToList(&buffer, @intFromEnum(self.cipher_suite));
         
-        // Init key with TLS variable-length encoding
-        try tls_codec.writeVarBytesToList(&buffer, u16, &self.init_key);
+        // Init key - HPKE public keys use opaque<1..2^8-1> encoding (single byte length)
+        try tls_codec.writeTlsOpaqueToList(&buffer, &self.init_key, 255);
         
-        // Simplified leaf node (just the keys for NIP-EE)
-        try tls_codec.writeVarBytesToList(&buffer, u16, &self.encryption_key);
-        try tls_codec.writeVarBytesToList(&buffer, u16, &self.signature_key);
+        // LeafNode fields directly (not wrapped in opaque)
+        // encryption_key: HPKEPublicKey opaque<1..2^8-1>
+        try tls_codec.writeTlsOpaqueToList(&buffer, &self.encryption_key, 255);
         
-        // Credential length only (actual data stored separately)
-        try tls_codec.writeU16ToList(&buffer, self.credential_len);
+        // signature_key: SignaturePublicKey opaque<1..2^8-1> (Ed25519 keys are 32 bytes)
+        try tls_codec.writeTlsOpaqueToList(&buffer, &self.signature_key, 255);
         
-        // Empty extensions for NIP-EE simplicity
+        // credential: Credential opaque<1..2^16-1> (just create empty credential data)
+        const credential_data = try allocator.alloc(u8, self.credential_len);
+        defer allocator.free(credential_data);
+        @memset(credential_data, 0); // Fill with zeros for now
+        try tls_codec.writeTlsOpaqueToList(&buffer, credential_data, 65535);
+        
+        // capabilities: Capabilities (empty for NIP-EE)
+        try tls_codec.writeU16ToList(&buffer, 0); // empty capabilities
+        
+        // leaf_node_source: LeafNodeSource (by_value = 1)
+        try tls_codec.writeU8ToList(&buffer, 1);
+        
+        // extensions: Extension<0..2^16-1> (empty)
         try tls_codec.writeU16ToList(&buffer, 0);
         
-        // Signature over the KeyPackageTBS
+        // extensions: Extension<0..2^16-1> (empty for KeyPackage)
+        try tls_codec.writeU16ToList(&buffer, 0);
+        
+        // signature: opaque<0..2^16-1> (uses u16 length prefix)
         try tls_codec.writeVarBytesToList(&buffer, u16, &self.signature);
         
         return buffer.toOwnedSlice();
@@ -102,6 +117,104 @@ pub const KeyPackage = struct {
     /// No cleanup needed - everything is stack allocated!
     pub fn deinit(self: *KeyPackage) void {
         _ = self; // No-op - no heap allocation to free
+    }
+    
+    /// TLS deserialize a KeyPackage (RFC 9420 format)
+    pub fn tlsDeserialize(allocator: Allocator, data: []const u8) !KeyPackage {
+        var stream = std.io.fixedBufferStream(data);
+        var reader = tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+        
+        // Protocol version
+        const protocol_version = try reader.readU16();
+        if (protocol_version != MLS_PROTOCOL_VERSION) {
+            return error.UnsupportedVersion;
+        }
+        
+        // Cipher suite
+        const cipher_suite_value = try reader.readU16();
+        const cs = std.meta.intToEnum(cipher_suite.CipherSuite, cipher_suite_value) catch {
+            return error.UnsupportedCipherSuite;
+        };
+        
+        // Init key - HPKE public keys use opaque<1..2^8-1> encoding
+        const init_key_data = try reader.readTlsOpaque(allocator, 255);
+        defer allocator.free(init_key_data);
+        if (init_key_data.len != 32) {
+            return error.InvalidKeyLength;
+        }
+        var init_key: [32]u8 = undefined;
+        @memcpy(&init_key, init_key_data);
+        
+        // LeafNode is NOT wrapped in opaque - direct struct fields
+        
+        // encryption_key: HPKEPublicKey opaque<1..2^8-1>
+        const enc_key_data = try reader.readTlsOpaque(allocator, 255);
+        defer allocator.free(enc_key_data);
+        if (enc_key_data.len != 32) {
+            return error.InvalidKeyLength;
+        }
+        var encryption_key: [32]u8 = undefined;
+        @memcpy(&encryption_key, enc_key_data);
+        
+        // signature_key: SignaturePublicKey opaque<1..2^8-1> (Ed25519 keys are 32 bytes)
+        const sig_key_data = try reader.readTlsOpaque(allocator, 255);
+        defer allocator.free(sig_key_data);
+        if (sig_key_data.len != 32) {
+            return error.InvalidKeyLength;
+        }
+        var signature_key: [32]u8 = undefined;
+        @memcpy(&signature_key, sig_key_data);
+        
+        // credential: Credential opaque<1..2^16-1>
+        const credential_data = try reader.readTlsOpaque(allocator, 65535);
+        defer allocator.free(credential_data);
+        const credential_len = @as(u16, @intCast(credential_data.len));
+        
+        // Parse remaining data more flexibly by reading until we find the signature
+        // The signature should be at the end, preceded by a u16 length of 64
+        const remaining_start = try stream.getPos();
+        const remaining_data = data[remaining_start..];
+        
+        // Find the signature by looking for the last occurrence of [0x00, 0x40] followed by 64 bytes
+        var sig_offset: ?usize = null;
+        if (remaining_data.len >= 66) {
+            var i = remaining_data.len - 66;
+            while (i >= 2) {
+                const potential_len = std.mem.readInt(u16, remaining_data[i-2..][0..2], .big);
+                if (potential_len == 64 and i + 64 <= remaining_data.len) {
+                    sig_offset = remaining_start + i - 2;
+                    break;
+                }
+                if (i == 0) break;
+                i -= 1;
+            }
+        }
+        
+        if (sig_offset == null) {
+            return error.SignatureNotFound;
+        }
+        
+        // Skip to the signature position
+        try stream.seekTo(sig_offset.?);
+        var new_reader = tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+        
+        // signature: opaque<0..2^16-1> (uses u16 length prefix)
+        const sig_data = try new_reader.readVarBytes(u16, allocator);
+        defer allocator.free(sig_data);
+        if (sig_data.len != 64) {
+            return error.InvalidSignatureLength;
+        }
+        var signature: [64]u8 = undefined;
+        @memcpy(&signature, sig_data);
+        
+        return KeyPackage.init(
+            cs,
+            init_key,
+            encryption_key,
+            signature_key,
+            credential_len,
+            signature,
+        );
     }
 };
 
@@ -191,58 +304,58 @@ fn createMlsSignature(
     sig_key: [32]u8,
     credential_identity: []const u8,
 ) ![64]u8 {
-    // Build the to-be-signed content
-    var tbs_buffer: [512]u8 = undefined; // Stack buffer for most cases
-    var pos: usize = 0;
+    // Build the to-be-signed content (KeyPackageTBS)
+    var stack_fallback = std.heap.stackFallback(1024, std.heap.page_allocator);
+    const allocator = stack_fallback.get();
+    var tbs_buffer = std.ArrayList(u8).init(allocator);
+    defer tbs_buffer.deinit();
     
     // Protocol version (u16, big-endian)
-    std.mem.writeInt(u16, tbs_buffer[pos..pos+2][0..2], MLS_PROTOCOL_VERSION, .big);
-    pos += 2;
+    try tls_codec.writeU16ToList(&tbs_buffer, MLS_PROTOCOL_VERSION);
     
     // Cipher suite (u16, big-endian)
-    std.mem.writeInt(u16, tbs_buffer[pos..pos+2][0..2], @intFromEnum(cs), .big);
-    pos += 2;
+    try tls_codec.writeU16ToList(&tbs_buffer, @intFromEnum(cs));
     
-    // Init key with length prefix
-    std.mem.writeInt(u16, tbs_buffer[pos..pos+2][0..2], 32, .big);
-    pos += 2;
-    @memcpy(tbs_buffer[pos..pos+32], &init_key);
-    pos += 32;
+    // Init key - HPKE public keys use opaque<1..2^8-1> encoding
+    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, &init_key, 255);
     
-    // Encryption key with length prefix
-    std.mem.writeInt(u16, tbs_buffer[pos..pos+2][0..2], 32, .big);
-    pos += 2;
-    @memcpy(tbs_buffer[pos..pos+32], &enc_key);
-    pos += 32;
+    // LeafNodeTBS fields directly (not wrapped in opaque)
+    // encryption_key: HPKEPublicKey opaque<1..2^8-1>
+    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, &enc_key, 255);
     
-    // Signature key with length prefix
-    std.mem.writeInt(u16, tbs_buffer[pos..pos+2][0..2], 32, .big);
-    pos += 2;
-    @memcpy(tbs_buffer[pos..pos+32], &sig_key);
-    pos += 32;
+    // signature_key: SignaturePublicKey opaque<1..2^8-1>
+    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, &sig_key, 255);
     
-    // Credential length
-    std.mem.writeInt(u16, tbs_buffer[pos..pos+2][0..2], @intCast(credential_identity.len), .big);
-    pos += 2;
+    // credential: Credential opaque<1..2^16-1>
+    const credential_data = try allocator.alloc(u8, credential_identity.len);
+    defer allocator.free(credential_data);
+    @memset(credential_data, 0); // Fill with zeros for TBS
+    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, credential_data, 65535);
     
-    // Empty extensions
-    std.mem.writeInt(u16, tbs_buffer[pos..pos+2][0..2], 0, .big);
-    pos += 2;
+    // capabilities: Capabilities (empty)
+    try tls_codec.writeU16ToList(&tbs_buffer, 0);
     
-    const tbs_content = tbs_buffer[0..pos];
+    // leaf_node_source: LeafNodeSource (by_value = 1)
+    try tls_codec.writeU8ToList(&tbs_buffer, 1);
+    
+    // extensions: Extension<0..2^16-1> (empty)
+    try tls_codec.writeU16ToList(&tbs_buffer, 0);
+    
+    // extensions: Extension<0..2^16-1> (empty for KeyPackage)
+    try tls_codec.writeU16ToList(&tbs_buffer, 0);
     
     // Create MLS signature with label
     const mls_prefix = "MLS 1.0 KeyPackageTBS";
-    var full_content: [1024]u8 = undefined;
-    @memcpy(full_content[0..mls_prefix.len], mls_prefix);
-    @memcpy(full_content[mls_prefix.len..mls_prefix.len + tbs_content.len], tbs_content);
+    var full_content = std.ArrayList(u8).init(allocator);
+    defer full_content.deinit();
     
-    const to_sign = full_content[0..mls_prefix.len + tbs_content.len];
+    try full_content.appendSlice(mls_prefix);
+    try full_content.appendSlice(tbs_buffer.items);
     
-    // Sign with Ed25519 - need to convert array to SecretKey struct
+    // Sign with Ed25519
     const secret_key = std.crypto.sign.Ed25519.SecretKey{ .bytes = private_key };
     const keypair = try std.crypto.sign.Ed25519.KeyPair.fromSecretKey(secret_key);
-    const signature = try keypair.sign(to_sign, null);
+    const signature = try keypair.sign(full_content.items, null);
     
     return signature.toBytes();
 }

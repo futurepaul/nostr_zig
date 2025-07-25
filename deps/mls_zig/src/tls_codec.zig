@@ -67,6 +67,31 @@ pub fn writeVarBytesToList(list: *std.ArrayList(u8), comptime LenType: type, byt
     try writeBytesToList(list, bytes);
 }
 
+/// Write TLS opaque<V> with proper variable-length encoding per RFC 8446
+/// Uses single byte for lengths < 256, two bytes for larger values
+pub fn writeTlsOpaqueToList(list: *std.ArrayList(u8), bytes: []const u8, max_len: u32) !void {
+    if (bytes.len > max_len) {
+        return TlsCodecError.ValueTooLarge;
+    }
+    
+    // Determine encoding based on max_len
+    if (max_len < 256) {
+        // Use single byte length prefix
+        try writeU8ToList(list, @intCast(bytes.len));
+    } else if (max_len < 65536) {
+        // Use two byte length prefix
+        try writeU16ToList(list, @intCast(bytes.len));
+    } else {
+        // Use three byte length prefix (u24)
+        const len: u32 = @intCast(bytes.len);
+        try writeU8ToList(list, @intCast((len >> 16) & 0xFF));
+        try writeU8ToList(list, @intCast((len >> 8) & 0xFF));
+        try writeU8ToList(list, @intCast(len & 0xFF));
+    }
+    
+    try writeBytesToList(list, bytes);
+}
+
 /// Reader interface for TLS deserialization
 pub fn TlsReader(comptime ReaderType: type) type {
     return struct {
@@ -127,6 +152,34 @@ pub fn TlsReader(comptime ReaderType: type) type {
                 u32 => try self.readU32(),
                 else => @compileError("Unsupported length type"),
             };
+            
+            const bytes = try allocator.alloc(u8, len);
+            errdefer allocator.free(bytes);
+            
+            try self.readBytes(bytes);
+            return bytes;
+        }
+        
+        /// Read TLS opaque<V> with proper variable-length encoding per RFC 8446
+        /// Determines encoding based on max_len parameter
+        pub fn readTlsOpaque(self: *Self, allocator: std.mem.Allocator, max_len: u32) ![]u8 {
+            const len = if (max_len < 256) blk: {
+                // Single byte length
+                break :blk @as(u32, try self.readU8());
+            } else if (max_len < 65536) blk: {
+                // Two byte length
+                break :blk @as(u32, try self.readU16());
+            } else blk: {
+                // Three byte length (u24)
+                const b1 = @as(u32, try self.readU8());
+                const b2 = @as(u32, try self.readU8());
+                const b3 = @as(u32, try self.readU8());
+                break :blk (b1 << 16) | (b2 << 8) | b3;
+            };
+            
+            if (len > max_len) {
+                return TlsCodecError.ValueTooLarge;
+            }
             
             const bytes = try allocator.alloc(u8, len);
             errdefer allocator.free(bytes);

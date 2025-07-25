@@ -20,35 +20,60 @@ pub const NipEEEventHelper = struct {
         cipher_suite: u32,
         protocol_version: u32,
         extensions: []const u32,
+        relays: []const []const u8,
     ) !nostr.Event {
         // Use TagBuilder for safe tag allocation
         var tag_builder = nostr.TagBuilder.init(self.builder.allocator);
         defer tag_builder.deinit();
         
+        _ = protocol_version; // Protocol version is always "1.0" per NIP-EE spec
+        
+        // Add MLS protocol version tag (per NIP-EE spec)
+        try tag_builder.addPair("mls_protocol_version", "1.0");
+        
         // Add cipher suite tag
         var cs_value_buf: [32]u8 = undefined;
         const cs_value = try std.fmt.bufPrint(&cs_value_buf, "{d}", .{cipher_suite});
-        try tag_builder.addPair("cs", cs_value);
+        try tag_builder.addPair("mls_ciphersuite", cs_value);
         
-        // Add protocol version tag
-        var pv_value_buf: [32]u8 = undefined;
-        const pv_value = try std.fmt.bufPrint(&pv_value_buf, "{d}", .{protocol_version});
-        try tag_builder.addPair("pv", pv_value);
-        
-        // Add extensions tag if provided
+        // Add extensions tag (per NIP-EE spec)
         if (extensions.len > 0) {
-            // Build extension values
-            var ext_values = try self.builder.allocator.alloc([]const u8, extensions.len + 1);
-            defer self.builder.allocator.free(ext_values);
-            
-            ext_values[0] = "ext";
-            var ext_bufs = try self.builder.allocator.alloc([32]u8, extensions.len);
-            defer self.builder.allocator.free(ext_bufs);
+            // Build comma-separated extension list
+            var ext_list = std.ArrayList(u8).init(self.builder.allocator);
+            defer ext_list.deinit();
             
             for (extensions, 0..) |ext, i| {
-                ext_values[i + 1] = try std.fmt.bufPrint(&ext_bufs[i], "{d}", .{ext});
+                if (i > 0) try ext_list.appendSlice(",");
+                
+                // Map extension IDs to names
+                const ext_name = switch (ext) {
+                    1 => "RequiredCapabilities",
+                    2 => "LastResort", 
+                    5 => "RatchetTree",
+                    else => blk: {
+                        var unknown_buf: [32]u8 = undefined;
+                        const unknown = try std.fmt.bufPrint(&unknown_buf, "Unknown({d})", .{ext});
+                        break :blk unknown;
+                    }
+                };
+                try ext_list.appendSlice(ext_name);
             }
-            try tag_builder.add(ext_values);
+            
+            try tag_builder.addPair("mls_extensions", ext_list.items);
+        }
+        
+        // Add relays tag (required by NIP-EE spec)
+        if (relays.len > 0) {
+            // Build comma-separated relay list
+            var relay_list = std.ArrayList(u8).init(self.builder.allocator);
+            defer relay_list.deinit();
+            
+            for (relays, 0..) |relay, i| {
+                if (i > 0) try relay_list.appendSlice(",");
+                try relay_list.appendSlice(relay);
+            }
+            
+            try tag_builder.addPair("relays", relay_list.items);
         }
         
         // Build tags and ensure proper cleanup after Event makes its own copies
@@ -247,18 +272,21 @@ test "NIP-EE KeyPackage event with metadata" {
     const protocol_version = 1;
     const extensions = [_]u32{ 1, 2, 5 }; // Extension IDs
     
+    const relays = [_][]const u8{"ws://localhost:10547"};
+    
     const event = try helper.createKeyPackageEvent(
         key_package_data,
         cipher_suite,
         protocol_version,
         &extensions,
+        &relays,
     );
     defer event.deinit(allocator);
     
     // Verify event structure
     try std.testing.expectEqual(@as(u32, 443), event.kind);
     try std.testing.expectEqualStrings(key_package_data, event.content);
-    try std.testing.expectEqual(@as(usize, 3), event.tags.len); // cs, pv, ext tags
+    try std.testing.expectEqual(@as(usize, 4), event.tags.len); // mls_protocol_version, mls_ciphersuite, mls_extensions, relays
     
     // Verify the signature using core method
     const is_valid = try event.verify();

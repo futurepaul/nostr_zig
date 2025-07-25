@@ -111,9 +111,17 @@ export function ParticipantPanel({
   const handleCreateKeyPackage = () => {
     if (!isReady || !state.identity) return;
 
-    const keyPackageData = createKeyPackage(state.identity.privateKey);
+    // Create real MLS KeyPackage with TLS serialization
+    const hexKeyPackage = createKeyPackage(state.identity.privateKey, state.identity.publicKey);
+    
+    // Convert hex back to bytes for storage (for compatibility)
+    const keyPackageBytes = new Uint8Array(hexKeyPackage.length / 2);
+    for (let i = 0; i < hexKeyPackage.length; i += 2) {
+      keyPackageBytes[i / 2] = parseInt(hexKeyPackage.substr(i, 2), 16);
+    }
+    
     const keyPackage = {
-      data: keyPackageData,
+      data: keyPackageBytes,
       timestamp: Date.now(),
     };
 
@@ -122,9 +130,9 @@ export function ParticipantPanel({
       keyPackage,
     }));
 
-    // Create a real Nostr event
+    // Create a real Nostr event with NIP-EE compliant tags
     const pubkey = Array.from(state.identity.publicKey).map(b => b.toString(16).padStart(2, '0')).join('');
-    const content = btoa(String.fromCharCode(...keyPackageData));
+    const content = hexKeyPackage; // Already hex-encoded from wasm_create_keypackage_hex
     const created_at = Math.floor(Date.now() / 1000);
     
     const eventData = {
@@ -132,8 +140,10 @@ export function ParticipantPanel({
       created_at,
       kind: 443,
       tags: [
-        ['cs', '1'],  // cipher suite: MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
-        ['pv', '1'],  // protocol version: MLS 1.0
+        ['mls_protocol_version', '1.0'],  // Always 1.0 for MLS
+        ['mls_ciphersuite', '1'],         // MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+        ['mls_extensions', 'LastResort,RequiredCapabilities'], // Common extensions
+        ['relays', 'ws://localhost:10547'], // Required relay tag
       ],
       content,
     };

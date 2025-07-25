@@ -8,7 +8,7 @@ interface WasmContextType {
   generateEphemeralKeys: () => { privateKey: Uint8Array; publicKey: Uint8Array };
   generateMLSSigningKeys: () => { privateKey: Uint8Array; publicKey: Uint8Array };
   signSchnorr: (messageHash: Uint8Array, privateKey: Uint8Array) => Uint8Array;
-  createKeyPackage: (privateKey: Uint8Array) => Uint8Array;
+  createKeyPackage: (privateKey: Uint8Array, identityPubkey: Uint8Array) => string;
   // REMOVED: createGroup - use initGroup instead
   // REMOVED: generateExporterSecret - use generateExporterSecretForEpoch instead
   // REMOVED: nip44Encrypt/Decrypt - use createEncryptedGroupMessage/decryptGroupMessage instead
@@ -89,7 +89,7 @@ export function WasmProvider({ children }: { children: React.ReactNode }) {
     generateEphemeralKeys: () => wasm.generateEphemeralKeys(),
     generateMLSSigningKeys: () => wasm.generateMLSSigningKeys(),
     signSchnorr: (messageHash, privateKey) => wasm.signSchnorr(messageHash, privateKey),
-    createKeyPackage: (privateKey) => wasm.createKeyPackage(privateKey),
+    createKeyPackage: (privateKey, identityPubkey) => wasm.createKeyPackage(privateKey, identityPubkey),
     // Deprecated functions removed - use MLS state machine and NIP-EE functions instead
     createEncryptedGroupMessage: (groupId, epoch, senderIndex, messageContent, mlsSignature, exporterSecret) => 
       wasm.createEncryptedGroupMessage(groupId, epoch, senderIndex, messageContent, mlsSignature, exporterSecret),

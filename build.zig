@@ -197,6 +197,65 @@ pub fn build(b: *std.Build) void {
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
     b.installArtifact(exe);
+    
+    // Add debug executable
+    const debug_exe = b.addExecutable(.{
+        .name = "debug_keypackage",
+        .root_source_file = b.path("test-utils/debug_keypackage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    debug_exe.root_module.addImport("mls_zig", mls_mod);
+    const run_debug = b.addRunArtifact(debug_exe);
+    const debug_step = b.step("debug-keypackage", "Debug keypackage structure");
+    debug_step.dependOn(&run_debug.step);
+    
+    // Add reverse parse executable  
+    const reverse_exe = b.addExecutable(.{
+        .name = "reverse_parse",
+        .root_source_file = b.path("test-utils/reverse_parse.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_reverse = b.addRunArtifact(reverse_exe);
+    const reverse_step = b.step("reverse-parse", "Reverse parse keypackage to find signature");
+    reverse_step.dependOn(&run_reverse.step);
+    
+    // Add flexible parse executable  
+    const flex_exe = b.addExecutable(.{
+        .name = "flexible_parse",
+        .root_source_file = b.path("test-utils/flexible_parse.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    flex_exe.root_module.addImport("mls_zig", mls_mod);
+    const run_flex = b.addRunArtifact(flex_exe);
+    const flex_step = b.step("flexible-parse", "Try flexible parsing approach");
+    flex_step.dependOn(&run_flex.step);
+    
+    // Add compare serialization executable  
+    const compare_exe = b.addExecutable(.{
+        .name = "compare_serialization",
+        .root_source_file = b.path("test-utils/compare_serialization.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    compare_exe.root_module.addImport("mls_zig", mls_mod);
+    const run_compare = b.addRunArtifact(compare_exe);
+    const compare_step = b.step("compare-serialization", "Compare our serialization with external");
+    compare_step.dependOn(&run_compare.step);
+    
+    // Add test external executable  
+    const external_exe = b.addExecutable(.{
+        .name = "test_external",
+        .root_source_file = b.path("test-utils/test_external.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    external_exe.root_module.addImport("mls_zig", mls_mod);
+    const run_external = b.addRunArtifact(external_exe);
+    const external_step = b.step("test-external", "Test parsing external keypackage");
+    external_step.dependOn(&run_external.step);
 
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
@@ -817,4 +876,37 @@ pub fn build(b: *std.Build) void {
     wasm_step.dependOn(&wasm_lib.step);
     wasm_step.dependOn(&wasm_install_file.step);
     wasm_step.dependOn(&copy_wasm_cmd.step);
+    
+    // Add fetch keypackage script
+    const fetch_keypackage = b.addExecutable(.{
+        .name = "fetch_keypackage",
+        .root_source_file = b.path("fetch_keypackage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fetch_keypackage.root_module.addImport("websocket", websocket_mod);
+    fetch_keypackage.root_module.addImport("nostr", lib_mod);
+    
+    const run_fetch_keypackage = b.addRunArtifact(fetch_keypackage);
+    const fetch_keypackage_step = b.step("fetch-keypackage", "Fetch and parse keypackage from local relay");
+    fetch_keypackage_step.dependOn(&run_fetch_keypackage.step);
+    
+    // Add test keypackage format script
+    const test_keypackage_format = b.addExecutable(.{
+        .name = "test_keypackage_format",
+        .root_source_file = b.path("test_keypackage_format.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_keypackage_format.root_module.addImport("nostr_zig", lib_mod);
+    test_keypackage_format.linkLibrary(secp256k1_lib);
+    test_keypackage_format.linkLibrary(bech32_lib);
+    test_keypackage_format.addIncludePath(b.path("deps/secp256k1/include"));
+    test_keypackage_format.addIncludePath(b.path("src/secp256k1"));
+    test_keypackage_format.addIncludePath(b.path("deps/bech32/ref/c"));
+    test_keypackage_format.linkLibC();
+    
+    const run_test_keypackage_format = b.addRunArtifact(test_keypackage_format);
+    const test_keypackage_format_step = b.step("test-keypackage-format", "Test keypackage format compliance");
+    test_keypackage_format_step.dependOn(&run_test_keypackage_format.step);
 }

@@ -407,7 +407,7 @@ class WasmWrapper {
     return valid;
   }
 
-  createKeyPackage(privateKey: Uint8Array): Uint8Array {
+  createKeyPackage(privateKey: Uint8Array, identityPubkey: Uint8Array): string {
     const exports = this.ensureInitialized();
     
     // Allocate space for private key
@@ -415,59 +415,66 @@ class WasmWrapper {
     if (!privateKeyPtr) throw new Error('Failed to allocate memory');
     new Uint8Array(exports.memory.buffer, privateKeyPtr, 32).set(privateKey);
 
-    // Allocate space for output
-    const maxSize = 1024; // Assume max key package size
+    // Convert public key to hex string for identity
+    const identityHex = Array.from(identityPubkey).map(b => b.toString(16).padStart(2, '0')).join('');
+    const identityBytes = new TextEncoder().encode(identityHex);
+    
+    // Allocate space for identity
+    const identityPtr = exports.wasm_alloc(identityBytes.length);
+    if (!identityPtr) {
+      exports.wasm_free(privateKeyPtr, 32);
+      throw new Error('Failed to allocate memory for identity');
+    }
+    new Uint8Array(exports.memory.buffer, identityPtr, identityBytes.length).set(identityBytes);
+
+    // Allocate space for output hex
+    const maxSize = 2048; // Max hex size (1024 bytes * 2)
     const outPtr = exports.wasm_alloc(maxSize);
     
     // Use aligned allocation for the length pointer
     const outLenPtr = exports.wasm_alloc_u32 ? 
       exports.wasm_alloc_u32(1) : 
-      exports.wasm_alloc(8); // Allocate extra and align manually
+      exports.wasm_alloc(8);
     
     if (!outPtr || !outLenPtr) {
       exports.wasm_free(privateKeyPtr, 32);
+      exports.wasm_free(identityPtr, identityBytes.length);
       throw new Error('Failed to allocate memory');
     }
 
-    // Set initial length using aligned pointer
+    // Set initial length
     const alignedLenPtr = exports.wasm_align_ptr ? 
       exports.wasm_align_ptr(outLenPtr, 4) : 
       outLenPtr;
     new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0] = maxSize;
 
-    // Key packages are now created internally by the state machine
-    // For compatibility, we'll create a simplified structure that includes
-    // the public key derived from the private key
-    const publicKeyPtr = exports.wasm_alloc(32);
-    if (!publicKeyPtr) {
+    // Create real TLS-compliant KeyPackage using the new export
+    const success = exports.wasm_create_keypackage_hex(
+      privateKeyPtr,
+      identityPtr,
+      identityBytes.length,
+      outPtr,
+      alignedLenPtr
+    );
+
+    if (!success) {
+      const neededLen = new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0];
       exports.wasm_free(privateKeyPtr, 32);
+      exports.wasm_free(identityPtr, identityBytes.length);
       exports.wasm_free(outPtr, maxSize);
       exports.wasm_free(outLenPtr, exports.wasm_alloc_u32 ? 4 : 8);
-      throw new Error('Failed to allocate memory for public key');
+      throw new Error(`Failed to create KeyPackage. Needed ${neededLen} bytes`);
     }
 
-    // Get public key from private key
-    const pubKeySuccess = exports.wasm_get_public_key_from_private(privateKeyPtr, publicKeyPtr);
-    if (!pubKeySuccess) {
-      exports.wasm_free(privateKeyPtr, 32);
-      exports.wasm_free(publicKeyPtr, 32);
-      exports.wasm_free(outPtr, maxSize);
-      exports.wasm_free(outLenPtr, exports.wasm_alloc_u32 ? 4 : 8);
-      throw new Error('Failed to derive public key');
-    }
-
-    // Create a simplified key package structure for visualization
-    // Real key packages are created internally by the state machine
-    const keyPackage = new Uint8Array(64);
-    keyPackage.set(this.readBytes(publicKeyPtr, 32), 0); // Public key
-    keyPackage.set(privateKey, 32); // Private key for later use
+    const actualLen = new Uint32Array(exports.memory.buffer, alignedLenPtr, 1)[0];
+    const hexKeyPackage = this.readString(outPtr, actualLen);
 
     exports.wasm_free(privateKeyPtr, 32);
-    exports.wasm_free(publicKeyPtr, 32);
+    exports.wasm_free(identityPtr, identityBytes.length);
     exports.wasm_free(outPtr, maxSize);
     exports.wasm_free(outLenPtr, exports.wasm_alloc_u32 ? 4 : 8);
 
-    return keyPackage;
+    return hexKeyPackage;
   }
 
   createGroup(creatorPrivateKey: Uint8Array, creatorPublicKey: Uint8Array): Uint8Array {

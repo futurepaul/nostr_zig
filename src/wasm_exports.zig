@@ -502,6 +502,137 @@ export fn hex_to_bytes(hex: [*]const u8, hex_len: usize, out_bytes: [*]u8, out_b
     return true;
 }
 
+// =============================================================================
+// REAL MLS KEYPACKAGE CREATION
+// =============================================================================
+
+export fn wasm_create_keypackage(
+    private_key: [*]const u8,      // 32 bytes - Nostr identity private key
+    identity: [*]const u8,         // Variable length identity (hex-encoded pubkey)
+    identity_len: u32,
+    out_keypackage: [*]u8,         // Output buffer for TLS-serialized KeyPackage
+    out_len: *u32,                 // Input/output: buffer size / actual size
+) bool {
+    const allocator = getAllocator();
+    const mls_zig = @import("mls_zig");
+    const wasm_random = @import("wasm_random.zig");
+    
+    // Convert identity to string
+    const identity_str = identity[0..identity_len];
+    
+    // Note: private_key is the user's Nostr identity private key
+    // MLS KeyPackages use separate signing keys generated during bundle creation
+    _ = private_key; // For future use if we need to tie MLS keys to Nostr identity
+    
+    // Define a local random function that calls wasm_random
+    const random_fn = struct {
+        fn randomBytes(buf: []u8) void {
+            wasm_random.secure_random.bytes(buf);
+        }
+    }.randomBytes;
+    
+    // Create KeyPackageBundle using real MLS implementation
+    const cipher_suite = mls_zig.cipher_suite.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    
+    var key_package_bundle = mls_zig.KeyPackageBundle.init(
+        allocator,
+        cipher_suite,
+        identity_str,
+        random_fn,
+    ) catch |err| {
+        logError("Failed to create KeyPackageBundle: {any}", .{err});
+        return false;
+    };
+    defer key_package_bundle.deinit();
+    
+    // Serialize the KeyPackage to TLS wire format
+    const serialized = key_package_bundle.key_package.tlsSerialize(allocator) catch |err| {
+        logError("Failed to serialize KeyPackage: {any}", .{err});
+        return false;
+    };
+    defer allocator.free(serialized);
+    
+    // Check output buffer size
+    if (out_len.* < serialized.len) {
+        out_len.* = @intCast(serialized.len);
+        logError("Output buffer too small: need {} bytes", .{serialized.len});
+        return false;
+    }
+    
+    // Copy serialized KeyPackage to output
+    @memcpy(out_keypackage[0..serialized.len], serialized);
+    out_len.* = @intCast(serialized.len);
+    
+    logError("Created real TLS-compliant KeyPackage: {} bytes", .{serialized.len});
+    return true;
+}
+
+export fn wasm_create_keypackage_hex(
+    private_key: [*]const u8,      // 32 bytes - Nostr identity private key  
+    identity: [*]const u8,         // Variable length identity (hex-encoded pubkey)
+    identity_len: u32,
+    out_hex: [*]u8,                // Output buffer for hex-encoded KeyPackage
+    out_len: *u32,                 // Input/output: buffer size / actual size
+) bool {
+    const allocator = getAllocator();
+    const mls_zig = @import("mls_zig");
+    const wasm_random = @import("wasm_random.zig");
+    
+    // Convert identity to string
+    const identity_str = identity[0..identity_len];
+    
+    // Note: private_key is the user's Nostr identity private key
+    // MLS KeyPackages use separate signing keys generated during bundle creation
+    _ = private_key; // For future use if we need to tie MLS keys to Nostr identity
+    
+    // Define a local random function that calls wasm_random
+    const random_fn = struct {
+        fn randomBytes(buf: []u8) void {
+            wasm_random.secure_random.bytes(buf);
+        }
+    }.randomBytes;
+    
+    // Create KeyPackageBundle using real MLS implementation
+    const cipher_suite = mls_zig.cipher_suite.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    
+    var key_package_bundle = mls_zig.KeyPackageBundle.init(
+        allocator,
+        cipher_suite,
+        identity_str,
+        random_fn,
+    ) catch |err| {
+        logError("Failed to create KeyPackageBundle: {any}", .{err});
+        return false;
+    };
+    defer key_package_bundle.deinit();
+    
+    // Serialize the KeyPackage to TLS wire format
+    const serialized = key_package_bundle.key_package.tlsSerialize(allocator) catch |err| {
+        logError("Failed to serialize KeyPackage: {any}", .{err});
+        return false;
+    };
+    defer allocator.free(serialized);
+    
+    // Convert to hex
+    const hex_len = serialized.len * 2;
+    if (out_len.* < hex_len) {
+        out_len.* = @intCast(hex_len);
+        logError("Output buffer too small: need {} bytes", .{hex_len});
+        return false;
+    }
+    
+    // Convert bytes to hex using existing bytes_to_hex function
+    const success = bytes_to_hex(serialized.ptr, serialized.len, out_hex, out_len.*);
+    if (!success) {
+        return false;
+    }
+    
+    out_len.* = @intCast(hex_len);
+    
+    logError("Created hex-encoded KeyPackage for Nostr event: {} bytes (from {} bytes TLS)", .{ hex_len, serialized.len });
+    return true;
+}
+
 export fn base64_encode(bytes: [*]const u8, bytes_len: usize, out_base64: [*]u8, out_base64_len: usize) bool {
     const encoder = std.base64.standard.Encoder;
     const encoded_len = encoder.calcSize(bytes_len);
