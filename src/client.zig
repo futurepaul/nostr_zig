@@ -244,15 +244,23 @@ pub const Client = struct {
             if (array.items.len < 3) return;
             
             const sub_id = array.items[1].string;
-            // Parse event from array.items[2]
-            // TODO: Implement event parsing
+            const event_obj = array.items[2].object;
             
+            // Check if we have a subscription and callback first
             if (self.subscriptions.get(sub_id)) |sub| {
-                if (sub.callback) |_| {
-                    // TODO: Parse event and call callback
-                    // cb(RelayMessage{ .event = ... });
+                if (sub.callback) |cb| {
+                    // Only parse the event if we have a callback to handle it
+                    const event_parsed = try nostr.Event.fromJsonObject(self.allocator, event_obj);
+                    cb(RelayMessage{ 
+                        .event = .{
+                            .subscription_id = sub_id,
+                            .event = event_parsed,
+                        }
+                    });
+                    // Note: The callback is now responsible for cleaning up the event
                 }
             }
+            // If no subscription or callback, we don't parse the event at all
         } else if (std.mem.eql(u8, msg_type, "OK")) {
             if (array.items.len < 4) return;
             

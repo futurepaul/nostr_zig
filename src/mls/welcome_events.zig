@@ -71,11 +71,13 @@ pub const WelcomeEvent = struct {
         const content_hex = try std.fmt.allocPrint(allocator, "{}", .{std.fmt.fmtSliceHexLower(welcome_bytes)});
         errdefer allocator.free(content_hex);
         
-        const event_id = try generateEventId(allocator);
-        errdefer allocator.free(event_id);
+        // For NIP-59 rumor events, the ID should be empty initially
+        // The gift-wrapping process will compute it properly
+        const empty_id = try allocator.dupe(u8, "");
+        errdefer allocator.free(empty_id);
         
         const welcome_rumor = event.Event{
-            .id = event_id, 
+            .id = empty_id, 
             .pubkey = sender_pubkey_hex,
             .created_at = wasm_time.timestamp(),
             .kind = 444,
@@ -96,8 +98,11 @@ pub const WelcomeEvent = struct {
         // Clean up all intermediate allocations
         allocator.free(sender_pubkey_hex);
         allocator.free(content_hex);
-        allocator.free(event_id);
+        allocator.free(empty_id);
         for (tags) |tag| {
+            for (tag) |tag_str| {
+                allocator.free(tag_str);
+            }
             allocator.free(tag);
         }
         allocator.free(tags);
@@ -294,18 +299,8 @@ pub fn processWelcomeEvent(
     );
 }
 
-// Helper functions
-
-fn generateEventId(allocator: std.mem.Allocator) ![]const u8 {
-    // Generate a temporary event ID
-    var random_bytes: [32]u8 = undefined;
-    wasm_random.secure_random.bytes(&random_bytes);
-    
-    const hex_id = try allocator.alloc(u8, 64);
-    _ = std.fmt.bufPrint(hex_id, "{}", .{std.fmt.fmtSliceHexLower(&random_bytes)}) catch unreachable;
-    
-    return hex_id;
-}
+// Helper functions removed - no more generateEventId!
+// Always use empty string for rumor IDs as per NIP-59
 
 // Tests
 

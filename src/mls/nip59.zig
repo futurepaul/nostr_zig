@@ -73,15 +73,21 @@ pub const SealedEvent = struct {
         
         const sender_pubkey_hex = try crypto.pubkeyToHex(allocator, try crypto.getPublicKey(sender_privkey));
         
-        const seal_event = event.Event{
-            .id = try generateEventId(allocator),
+        var seal_event = event.Event{
+            .id = try allocator.dupe(u8, ""), // Will be calculated
             .pubkey = sender_pubkey_hex,
             .created_at = tweaked_timestamp,
             .kind = 13,
             .tags = tags,
             .content = encrypted,
-            .sig = try generateDummySig(allocator), // Would be properly signed
+            .sig = try allocator.dupe(u8, ""), // Will be signed
         };
+        
+        // Calculate the event ID
+        try seal_event.calculateId(allocator);
+        
+        // Sign the event
+        try seal_event.sign(allocator, sender_privkey);
         
         return seal_event;
     }
@@ -131,15 +137,21 @@ pub const GiftWrap = struct {
         
         const ephemeral_pubkey_hex = try crypto.pubkeyToHex(allocator, ephemeral_pubkey);
         
-        const wrap_event = event.Event{
-            .id = try generateEventId(allocator),
+        var wrap_event = event.Event{
+            .id = try allocator.dupe(u8, ""), // Will be calculated
             .pubkey = ephemeral_pubkey_hex,
             .created_at = random_timestamp,
             .kind = 1059,
             .tags = tags,
             .content = encrypted,
-            .sig = try generateDummySig(allocator), // Would be properly signed with ephemeral key
+            .sig = try allocator.dupe(u8, ""), // Will be signed
         };
+        
+        // Calculate the event ID
+        try wrap_event.calculateId(allocator);
+        
+        // Sign with ephemeral key
+        try wrap_event.sign(allocator, ephemeral_privkey);
         
         return wrap_event;
     }
@@ -231,29 +243,8 @@ pub fn createGiftWrappedEvent(
     return try GiftWrap.wrap(allocator, recipient_pubkey, sealed);
 }
 
-// Helper functions
-
-fn generateEventId(allocator: std.mem.Allocator) ![]const u8 {
-    // Generate a temporary event ID
-    var random_bytes: [32]u8 = undefined;
-    wasm_random.secure_random.bytes(&random_bytes);
-    
-    const hex_id = try allocator.alloc(u8, 64);
-    _ = std.fmt.bufPrint(hex_id, "{}", .{std.fmt.fmtSliceHexLower(&random_bytes)}) catch unreachable;
-    
-    return hex_id;
-}
-
-fn generateDummySig(allocator: std.mem.Allocator) ![]const u8 {
-    // Generate a dummy signature for testing
-    var random_bytes: [64]u8 = undefined;
-    wasm_random.secure_random.bytes(&random_bytes);
-    
-    const hex_sig = try allocator.alloc(u8, 128);
-    _ = std.fmt.bufPrint(hex_sig, "{}", .{std.fmt.fmtSliceHexLower(&random_bytes)}) catch unreachable;
-    
-    return hex_sig;
-}
+// Helper functions removed - no more generateEventId or generateDummySig!
+// Always compute proper event IDs and signatures
 
 test "gift wrap and unwrap" {
     const allocator = std.testing.allocator;

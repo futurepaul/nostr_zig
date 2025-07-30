@@ -15,6 +15,7 @@ pub const key_package = @import("key_package.zig");
 pub const credentials = @import("credentials.zig");
 pub const nostr_extensions = @import("nostr_extensions.zig");
 pub const key_package_flat = @import("key_package_flat.zig");
+pub const key_schedule = @import("key_schedule.zig");
 
 // Lower-level modules - you probably don't need these directly
 pub const tree_math = @import("tree_math.zig");
@@ -36,6 +37,8 @@ pub const KeyPackageBundle = key_package_flat.KeyPackageBundle;
 pub const KeyPackage = key_package_flat.KeyPackage;
 pub const BasicCredential = credentials.BasicCredential;
 pub const Credential = credentials.Credential;
+pub const KeySchedule = key_schedule.KeySchedule;
+pub const EpochSecrets = key_schedule.EpochSecrets;
 
 test "library loads and basic functionality works" {
     // Test that we can create a cipher suite (basic vibes check)

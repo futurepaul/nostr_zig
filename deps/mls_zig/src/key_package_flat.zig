@@ -170,36 +170,44 @@ pub const KeyPackage = struct {
         defer allocator.free(credential_data);
         const credential_len = @as(u16, @intCast(credential_data.len));
         
-        // Parse remaining data more flexibly by reading until we find the signature
-        // The signature should be at the end, preceded by a u16 length of 64
-        const remaining_start = try stream.getPos();
-        const remaining_data = data[remaining_start..];
+        // The signature is always at the end of the KeyPackage
+        // Try to find it by checking both u8 and u16 length prefixes
+        var sig_offset: usize = 0;
+        var sig_uses_u16: bool = false;
         
-        // Find the signature by looking for the last occurrence of [0x00, 0x40] followed by 64 bytes
-        var sig_offset: ?usize = null;
-        if (remaining_data.len >= 66) {
-            var i = remaining_data.len - 66;
-            while (i >= 2) {
-                const potential_len = std.mem.readInt(u16, remaining_data[i-2..][0..2], .big);
-                if (potential_len == 64 and i + 64 <= remaining_data.len) {
-                    sig_offset = remaining_start + i - 2;
-                    break;
-                }
-                if (i == 0) break;
-                i -= 1;
+        // First try u16 length prefix (2 byte length + 64 byte signature = 66 bytes)
+        if (data.len >= 66) {
+            const u16_offset = data.len - 66;
+            const u16_len = std.mem.readInt(u16, data[u16_offset..][0..2], .big);
+            if (u16_len == 64) {
+                sig_offset = u16_offset;
+                sig_uses_u16 = true;
             }
         }
         
-        if (sig_offset == null) {
+        // If not found, try u8 length prefix (1 byte length + 64 byte signature = 65 bytes)
+        if (sig_offset == 0 and data.len >= 65) {
+            const u8_offset = data.len - 65;
+            if (data[u8_offset] == 64) {
+                sig_offset = u8_offset;
+                sig_uses_u16 = false;
+            }
+        }
+        
+        if (sig_offset == 0) {
             return error.SignatureNotFound;
         }
         
         // Skip to the signature position
-        try stream.seekTo(sig_offset.?);
+        try stream.seekTo(sig_offset);
         var new_reader = tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
         
-        // signature: opaque<0..2^16-1> (uses u16 length prefix)
-        const sig_data = try new_reader.readVarBytes(u16, allocator);
+        // Read signature based on detected prefix type
+        const sig_data = if (sig_uses_u16)
+            try new_reader.readVarBytes(u16, allocator)
+        else
+            try new_reader.readVarBytes(u8, allocator);
+            
         defer allocator.free(sig_data);
         if (sig_data.len != 64) {
             return error.InvalidSignatureLength;

@@ -65,8 +65,11 @@ pub const Event = struct {
             return EventError.InvalidFieldType;
         }
 
-        const obj = parsed.value.object;
-        
+        return try fromJsonObject(allocator, parsed.value.object);
+    }
+    
+    /// Parse a Nostr event from a JSON object map
+    pub fn fromJsonObject(allocator: Allocator, obj: json.ObjectMap) !Self {
         // Extract required fields with proper error handling
         const id_value = obj.get("id") orelse return EventError.MissingField;
         if (id_value != .string) return EventError.InvalidFieldType;
@@ -162,6 +165,47 @@ pub const Event = struct {
             allocator.free(tag);
         }
         allocator.free(self.tags);
+    }
+    
+    /// Create a deep copy of this event
+    pub fn deepCopy(self: Self, allocator: Allocator) !Self {
+        // Allocate copies of all strings
+        const id = try allocator.dupe(u8, self.id);
+        errdefer allocator.free(id);
+        
+        const pubkey = try allocator.dupe(u8, self.pubkey);
+        errdefer allocator.free(pubkey);
+        
+        const content = try allocator.dupe(u8, self.content);
+        errdefer allocator.free(content);
+        
+        const sig = try allocator.dupe(u8, self.sig);
+        errdefer allocator.free(sig);
+        
+        // Deep copy tags
+        const tags = try allocator.alloc([]const []const u8, self.tags.len);
+        errdefer allocator.free(tags);
+        
+        for (self.tags, 0..) |tag, i| {
+            const tag_copy = try allocator.alloc([]const u8, tag.len);
+            errdefer allocator.free(tag_copy);
+            
+            for (tag, 0..) |tag_str, j| {
+                tag_copy[j] = try allocator.dupe(u8, tag_str);
+            }
+            
+            tags[i] = tag_copy;
+        }
+        
+        return Self{
+            .id = id,
+            .pubkey = pubkey,
+            .created_at = self.created_at,
+            .kind = self.kind,
+            .tags = tags,
+            .content = content,
+            .sig = sig,
+        };
     }
 
     /// Calculate the event ID according to NIP-01

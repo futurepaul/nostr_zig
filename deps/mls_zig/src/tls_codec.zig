@@ -194,20 +194,23 @@ pub fn TlsReader(comptime ReaderType: type) type {
 /// Arena-based VarBytes - simple and WASM-friendly memory management
 pub const VarBytes = struct {
     data: []const u8,
+    allocator: std.mem.Allocator,
     
     /// Create VarBytes from data - data is owned by the caller's arena
     pub fn init(allocator: std.mem.Allocator, data: []const u8) !VarBytes {
         const owned_data = try allocator.dupe(u8, data);
         return VarBytes{
             .data = owned_data,
+            .allocator = allocator,
         };
     }
     
     /// Create VarBytes that directly references external data (no copy)
     /// Use this when data is already managed by an arena
-    pub fn fromSlice(data: []const u8) VarBytes {
+    pub fn fromSlice(allocator: std.mem.Allocator, data: []const u8) VarBytes {
         return VarBytes{
             .data = data,
+            .allocator = allocator,
         };
     }
 
@@ -235,6 +238,7 @@ pub const VarBytes = struct {
     pub fn share(self: *const VarBytes) VarBytes {
         return VarBytes{
             .data = self.data,
+            .allocator = self.allocator,
         };
     }
     

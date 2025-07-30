@@ -24,9 +24,9 @@ fn serializeList(comptime T: type, items: []const T, writer: anytype) !void {
 
 /// Helper function to serialize enum lists 
 fn serializeEnumList(comptime T: type, items: []const T, writer: anytype) !void {
-    try writer.writeU16(@intCast(items.len));
+    try writer.writeInt(u16, @intCast(items.len), .big);
     for (items) |item| {
-        try writer.writeU16(@intFromEnum(item));
+        try writer.writeInt(u16, @intFromEnum(item), .big);
     }
 }
 
@@ -40,8 +40,7 @@ fn serializeEnumListToList(comptime T: type, items: []const T, list: *std.ArrayL
 
 /// Helper function to serialize a list with items that need allocator in serialize
 fn serializeListWithAllocator(comptime T: type, items: []const T, writer: anytype) !void {
-    var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intCast(items.len));
+    try writer.writeInt(u16, @intCast(items.len), .big);
     for (items) |item| {
         try item.serialize(writer);
     }
@@ -112,20 +111,20 @@ pub const LeafNodeSource = union(enum) {
     pub fn serialize(self: LeafNodeSource, writer: anytype) !void {
         switch (self) {
             .KeyPackage => |lifetime| {
-                try writer.writeU8(0); // Tag for KeyPackage
+                try writer.writeInt(u8, 0, .big); // Tag for KeyPackage
                 if (lifetime) |lt| {
-                    try writer.writeU8(1); // Has lifetime
-                    try writer.writeU64(lt);
+                    try writer.writeInt(u8, 1, .big); // Has lifetime
+                    try writer.writeInt(u64, lt, .big);
                 } else {
-                    try writer.writeU8(0); // No lifetime
+                    try writer.writeInt(u8, 0, .big); // No lifetime
                 }
             },
             .Update => {
-                try writer.writeU8(1); // Tag for Update
+                try writer.writeInt(u8, 1, .big); // Tag for Update
             },
             .Commit => |parent_hash| {
-                try writer.writeU8(2); // Tag for Commit
-                try writer.writeBytes(&parent_hash);
+                try writer.writeInt(u8, 2, .big); // Tag for Commit
+                try writer.writeAll(&parent_hash);
             },
         }
     }
@@ -256,8 +255,7 @@ pub const ExtensionType = enum(u16) {
     last_resort = 0xFF01, // Custom for preventing key package reuse
 
     pub fn serialize(self: ExtensionType, writer: anytype) !void {
-        var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
-        try tls_writer.writeU16(@intFromEnum(self));
+        try writer.writeInt(u16, @intFromEnum(self), .big);
     }
 
     pub fn serializeToList(self: ExtensionType, list: *std.ArrayList(u8)) !void {
@@ -299,7 +297,10 @@ pub const Extension = struct {
 
     pub fn serialize(self: Extension, writer: anytype) !void {
         try self.extension_type.serialize(writer);
-        try writer.writeVarBytes(u16, self.extension_data.asSlice());
+        // Write extension_data with u16 length prefix
+        const data = self.extension_data.asSlice();
+        try writer.writeInt(u16, @intCast(data.len), .big);
+        try writer.writeAll(data);
     }
 
     pub fn serializeToList(self: Extension, list: *std.ArrayList(u8)) !void {
@@ -489,8 +490,17 @@ pub const LeafNodePayload = struct {
     }
 
     pub fn serialize(self: LeafNodePayload, writer: anytype) !void {
-        try writer.writeVarBytes(u16, self.encryption_key.asSlice());
-        try writer.writeVarBytes(u16, self.signature_key.asSlice());
+        // Write encryption key with u16 length prefix
+        const enc_key = self.encryption_key.asSlice();
+        try writer.writeInt(u16, @intCast(enc_key.len), .big);
+        try writer.writeAll(enc_key);
+        
+        // Write signature key with u16 length prefix
+        const sig_key = self.signature_key.asSlice();
+        try writer.writeInt(u16, @intCast(sig_key.len), .big);
+        try writer.writeAll(sig_key);
+        
+        // Serialize other fields - need to check if they have standard serialize methods
         try self.credential.tlsSerialize(writer);
         try self.capabilities.serialize(writer);
         try self.leaf_node_source.serialize(writer);
@@ -560,11 +570,14 @@ pub const TreeInfoTbs = struct {
 
     pub fn serialize(self: TreeInfoTbs, writer: anytype) !void {
         if (self.group_id) |group_id| {
-            try writer.writeU8(1); // Has group info
-            try writer.writeVarBytes(u32, group_id.asSlice());
-            try writer.writeU32(self.leaf_index.?);
+            try writer.writeInt(u8, 1, .big); // Has group info
+            // Write group_id with u32 length prefix
+            const gid = group_id.asSlice();
+            try writer.writeInt(u32, @intCast(gid.len), .big);
+            try writer.writeAll(gid);
+            try writer.writeInt(u32, self.leaf_index.?, .big);
         } else {
-            try writer.writeU8(0); // No group info
+            try writer.writeInt(u8, 0, .big); // No group info
         }
     }
 
@@ -723,7 +736,10 @@ pub const LeafNode = struct {
 
     pub fn serialize(self: LeafNode, writer: anytype) !void {
         try self.payload.serialize(writer);
-        try writer.writeVarBytes(u16, self.signature.asSlice());
+        // Write signature with u16 length prefix
+        const sig = self.signature.asSlice();
+        try writer.writeInt(u16, @intCast(sig.len), .big);
+        try writer.writeAll(sig);
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !LeafNode {

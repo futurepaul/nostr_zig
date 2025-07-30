@@ -64,27 +64,37 @@ pub const SecretKey = struct {
 pub const PublicKey = struct {
     inner: secp256k1_pubkey,
     
-    pub fn fromSecretKey(secp: Secp256k1, sk: SecretKey) PublicKey {
-        const ctx = secp.ctx orelse {
-            // Return a dummy public key if context is invalid
-            return PublicKey{ .inner = std.mem.zeroes(secp256k1_pubkey) };
-        };
+    pub fn fromSecretKey(secp: Secp256k1, sk: SecretKey) !PublicKey {
+        const ctx = secp.ctx orelse return error.InvalidContext;
         
         var pubkey: secp256k1_pubkey = undefined;
         if (c.secp256k1_ec_pubkey_create(ctx, &pubkey, &sk.data) != 1) {
-            // Return a dummy public key if creation fails
-            return PublicKey{ .inner = std.mem.zeroes(secp256k1_pubkey) };
+            return error.PublicKeyCreationFailed;
         }
         
         return PublicKey{ .inner = pubkey };
     }
     
-    pub fn serialize(self: PublicKey) [33]u8 {
-        // This is a simplified version - we'd need the context to serialize properly
-        // For now, return a placeholder
+    pub fn serialize(self: PublicKey, secp: Secp256k1) ![33]u8 {
+        const ctx = secp.ctx orelse return error.InvalidContext;
+        
         var result: [33]u8 = undefined;
-        result[0] = 0x02; // Compressed format
-        @memcpy(result[1..], self.inner.data[0..32]);
+        var result_len: usize = 33;
+        
+        if (c.secp256k1_ec_pubkey_serialize(
+            ctx,
+            &result,
+            &result_len,
+            &self.inner,
+            c.SECP256K1_EC_COMPRESSED
+        ) != 1) {
+            return error.SerializationFailed;
+        }
+        
+        if (result_len != 33) {
+            return error.UnexpectedSerializedLength;
+        }
+        
         return result;
     }
 };

@@ -301,38 +301,57 @@ pub const MLSStateMachine = struct {
     /// Propose adding a new member to the group
     pub fn proposeAdd(self: *MLSStateMachine, sender_index: u32, key_package: anytype) !void {
         _ = sender_index; // TODO: Use for validation
-        _ = key_package; // TODO: Convert our KeyPackage type to mls_zig.KeyPackage type
         
         if (self.mls_group) |*group| {
-            // TODO: This is a major integration issue - we need to convert between KeyPackage types
-            // For now, create a placeholder KeyPackageBundle and extract its KeyPackage
-            const cipher_suite = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+            // Check if we have a types.KeyPackage with serialized MLS data
+            const has_mls_data = @hasField(@TypeOf(key_package), "mls_data");
             
-            // Create a basic credential for the new member
-            var basic_credential = try mls_zig.BasicCredential.init(self.allocator, "temp_identity");
-            defer basic_credential.deinit();
+            const mls_key_package = if (has_mls_data and key_package.mls_data != null) blk: {
+                // We have serialized MLS data, deserialize it
+                const data = key_package.mls_data.?;
+                break :blk try mls_zig.KeyPackage.tlsDeserialize(self.allocator, data);
+            } else if (@hasField(@TypeOf(key_package), "init_key")) blk: {
+                // We have a simple types.KeyPackage, need to create full MLS KeyPackage
+                const cipher_suite = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+                
+                // Extract identity from the key package if available
+                const identity = if (@hasField(@TypeOf(key_package), "leaf_node") and 
+                                    @hasField(@TypeOf(key_package.leaf_node), "credential") and
+                                    @hasField(@TypeOf(key_package.leaf_node.credential), "identity"))
+                    key_package.leaf_node.credential.identity
+                else
+                    "unknown";
+                
+                // Create a basic credential
+                var basic_credential = try mls_zig.BasicCredential.init(self.allocator, identity);
+                defer basic_credential.deinit();
+                
+                var credential = try mls_zig.Credential.fromBasic(self.allocator, &basic_credential);
+                defer credential.deinit();
+                
+                // Create temporary KeyPackageBundle to get a proper KeyPackage
+                var key_package_bundle = try mls_zig.KeyPackageBundle.init(
+                    self.allocator,
+                    cipher_suite,
+                    credential,
+                    null, // random function - use default
+                );
+                
+                // Extract the KeyPackage (ownership transfers to group)
+                const kp = key_package_bundle.key_package;
+                
+                // Clean up private keys
+                key_package_bundle.private_init_key.deinit();
+                key_package_bundle.private_encryption_key.deinit();
+                key_package_bundle.private_signature_key.deinit();
+                
+                break :blk kp;
+            } else {
+                return error.UnsupportedKeyPackageType;
+            };
             
-            var credential = try mls_zig.Credential.fromBasic(self.allocator, &basic_credential);
-            defer credential.deinit();
-            
-            // Create temporary KeyPackageBundle
-            var key_package_bundle = try mls_zig.KeyPackageBundle.init(
-                self.allocator,
-                cipher_suite,
-                credential,
-                null, // random function - use default
-            );
-            
-            // Transfer ownership of KeyPackage to the group (mls_zig handles this properly)
-            try group.proposeAdd(key_package_bundle.key_package);
-            
-            // Note: KeyPackage is now owned by the group, bundle contains private keys only
-            // Cleanup the private keys manually since bundle structure is partially consumed
-            key_package_bundle.private_init_key.deinit();
-            key_package_bundle.private_encryption_key.deinit();
-            key_package_bundle.private_signature_key.deinit();
-            // Note: key_package_bundle.key_package is now owned by the group - don't clean it up
-            // Arena will clean up any other temporary allocations
+            // Transfer ownership of KeyPackage to the group
+            try group.proposeAdd(mls_key_package);
             
             // Update cached epoch (proposals don't advance epoch until committed)
             self.epoch = group.epoch();

@@ -5,6 +5,7 @@ test {
     // MLS/NIP-EE protocol tests  
     _ = @import("tests/test_nip_ee_real.zig");
     _ = @import("tests/test_welcome_events.zig");
+    _ = @import("tests/test_key_schedule.zig");
     
     // KeyPackage compatibility tests
     _ = @import("tests/test_keypackage_vectors.zig");

@@ -152,9 +152,49 @@ This document outlines our integration testing strategy for the nostr_zig NIP-EE
 
 ### 2. Implement Missing Functionality
 - [x] ~~Complete fetch-keypackage command with actual parsing~~
+- [ ] Fix KeyPackage parsing format mismatch (u8 vs u16 length prefixes)
 - [ ] Add create-welcome command (create group + send invite)
 - [ ] Add join-group command (process welcome messages)
 - [ ] Add group messaging commands
+
+#### KeyPackage Implementation Investigation
+
+**Discovery**: We have two competing KeyPackage implementations:
+1. **`types.KeyPackage`** (old) - Complex nested structure with u16 length prefixes
+2. **`mls_zig.key_package_flat`** (new) - Flat structure created to solve WASM issues
+
+**Background**: The flat KeyPackage was created because the original types.KeyPackage had:
+- Memory corruption issues in WASM (the "33 vs 32 byte" problem)
+- Complex nested structures that didn't work well with WASM memory model
+- Pointer sharing and heap allocation issues
+
+**Current State**:
+- `publish-keypackage` uses the flat version (working well)
+- `fetch-keypackage` uses the flat version (working well)
+- `create-welcome` tries to use old `types.KeyPackage` with `createGroup()` (broken)
+- `mls.key_packages.parseKeyPackage()` expects the old format (incompatible)
+
+**Investigation Plan**:
+1. **Audit Usage**: Find all places using `types.KeyPackage` vs flat KeyPackage
+2. **Understand Dependencies**: Why does `createGroup()` need the old format?
+   - DEVELOPMENT.md notes the complex version is kept "for MlsGroup only"
+   - Need to understand if this is still necessary
+3. **Migration Path**: Can we update `createGroup()` to use flat KeyPackages?
+   - This would allow us to remove the legacy implementation entirely
+4. **Cleanup**: Remove the old implementation once everything uses flat
+
+**DEVELOPMENT.md Guidance**:
+```
+├── src/key_package_flat.zig  # PRODUCTION: Flat KeyPackage (default)
+└── src/key_package.zig       # LEGACY: Complex version (for MlsGroup only)
+```
+The flat version should be the default, and the complex version is explicitly marked as legacy.
+
+**Action Items**:
+1. Check if `mls.groups.createGroup()` can be updated to use flat KeyPackages
+2. Update `parseKeyPackage()` to parse the flat format (or remove it entirely)
+3. Ensure all code paths use the flat version consistently
+4. Remove types.KeyPackage and related parsing code
 
 ### 3. create-welcome Implementation Plan
 
@@ -331,6 +371,13 @@ echo <hex> | xxd -r -p | od -t x1
 
 ### Issue: KeyPackage size mismatch
 **Solution**: Verify TLS length prefixes are correct (u8 vs u16)
+
+### Issue: KeyPackage parsing incompatibility
+**Problem**: `mls_zig.key_package_flat` uses u8 length prefixes but `mls.key_packages.parseKeyPackage()` expects u16
+**Solution**: Either:
+1. Update `parseKeyPackage` to handle u8 length prefixes (matching mls_zig format)
+2. Use `mls_zig.key_package_flat.KeyPackage.tlsDeserialize()` and convert to `types.KeyPackage`
+3. Update mls_zig to provide a conversion function from flat to full KeyPackage
 
 ### Issue: Signature verification fails
 **Solution**: Check MLS signature label ("MLS 1.0 KeyPackageTBS")

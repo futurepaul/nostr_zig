@@ -9,9 +9,11 @@ pub const crypto = @import("crypto.zig");
 pub const bech32 = @import("bech32.zig");
 pub const nip44 = @import("nip44/mod.zig");
 pub const mls = @import("mls/mls.zig");
+pub const mls_zig = @import("mls_zig");
 pub const nip_ee = @import("nip_ee.zig");
 pub const nip_ee_types = @import("nip_ee_types.zig");
 pub const event = @import("nostr/event.zig");
+pub const relay_utils = @import("relay_utils.zig");
 
 // Export main types for convenience
 pub const Event = nostr.Event;

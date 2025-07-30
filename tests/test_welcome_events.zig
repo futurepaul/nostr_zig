@@ -35,7 +35,15 @@ test "welcome events core functionality" {
     try tag_builder.add(&.{ "relays", "wss://relay1.example.com", "wss://relay2.example.com" });
     
     const tags = try tag_builder.build();
-    defer allocator.free(tags);
+    defer {
+        for (tags) |tag| {
+            for (tag) |tag_str| {
+                allocator.free(tag_str);
+            }
+            allocator.free(tag);
+        }
+        allocator.free(tags);
+    }
     defer tag_builder.deinit();
     
     // Create test Welcome Event rumor structure
@@ -53,11 +61,7 @@ test "welcome events core functionality" {
         allocator.free(welcome_rumor.pubkey);
         allocator.free(welcome_rumor.content);
         allocator.free(welcome_rumor.sig);
-        // Free tag arrays allocated by TagBuilder.build()
-        for (welcome_rumor.tags) |tag| {
-            allocator.free(tag);
-        }
-        // Don't free tag string contents - handled by tag_builder.deinit()
+        // Tags are already freed in the earlier defer block
     }
     
     // Verify rumor properties
@@ -120,11 +124,7 @@ test "nip59 gift wrap concepts" {
         allocator.free(gift_wrap_event.pubkey);
         allocator.free(gift_wrap_event.content);
         allocator.free(gift_wrap_event.sig);
-        // Free tag arrays allocated by TagBuilder.build()
-        for (gift_wrap_event.tags) |tag| {
-            allocator.free(tag);
-        }
-        // Don't free tag string contents - handled by gift_wrap_builder.deinit()
+        // Tags are already freed in the earlier defer block
     }
     
     try testing.expectEqual(@as(u32, 1059), gift_wrap_event.kind);
@@ -161,7 +161,15 @@ test "json serialization round-trip" {
     // Test event JSON serialization/deserialization
     var tag_builder = nostr.TagBuilder.init(allocator);
     const tags = try tag_builder.build();
-    defer allocator.free(tags);
+    defer {
+        for (tags) |tag| {
+            for (tag) |tag_str| {
+                allocator.free(tag_str);
+            }
+            allocator.free(tag);
+        }
+        allocator.free(tags);
+    }
     defer tag_builder.deinit();
     
     const test_event = event.Event{
@@ -178,11 +186,7 @@ test "json serialization round-trip" {
         allocator.free(test_event.pubkey);
         allocator.free(test_event.content);
         allocator.free(test_event.sig);
-        // Free tag arrays allocated by TagBuilder.build()
-        for (test_event.tags) |tag| {
-            allocator.free(tag);
-        }
-        // Don't free tag string contents - handled by tag_builder.deinit()
+        // Tags are already freed in the earlier defer block
     }
     
     // Serialize to JSON
@@ -319,7 +323,15 @@ test "welcome event parsing - missing tags" {
     // Only relays tag, no e tag
     try tag_builder.addPair("relays", "wss://relay.example.com");
     const tags = try tag_builder.build();
-    defer allocator.free(tags);
+    defer {
+        for (tags) |tag| {
+            for (tag) |tag_str| {
+                allocator.free(tag_str);
+            }
+            allocator.free(tag);
+        }
+        allocator.free(tags);
+    }
     defer tag_builder.deinit();
     
     const alice_pubkey_hex = try crypto.pubkeyToHex(allocator, alice_pubkey);
@@ -339,11 +351,7 @@ test "welcome event parsing - missing tags" {
         allocator.free(malformed_rumor.pubkey);
         allocator.free(malformed_rumor.content);
         allocator.free(malformed_rumor.sig);
-        // Free tag arrays allocated by TagBuilder.build()
-        for (malformed_rumor.tags) |tag| {
-            allocator.free(tag);
-        }
-        // Don't free tag string contents - handled by tag_builder.deinit()
+        // Tags are already freed in the earlier defer block
     }
     
     // Manually gift-wrap it
@@ -376,7 +384,15 @@ test "welcome event hex content validation" {
     var tag_builder = nostr.TagBuilder.init(allocator);
     try tag_builder.addEventTag("test_keypackage_id");
     const tags = try tag_builder.build();
-    defer allocator.free(tags);
+    defer {
+        for (tags) |tag| {
+            for (tag) |tag_str| {
+                allocator.free(tag_str);
+            }
+            allocator.free(tag);
+        }
+        allocator.free(tags);
+    }
     defer tag_builder.deinit();
     
     const alice_pubkey_hex = try crypto.pubkeyToHex(allocator, alice_pubkey);
@@ -396,11 +412,7 @@ test "welcome event hex content validation" {
         allocator.free(malformed_rumor.pubkey);
         allocator.free(malformed_rumor.content);
         allocator.free(malformed_rumor.sig);
-        // Free tag arrays allocated by TagBuilder.build()
-        for (malformed_rumor.tags) |tag| {
-            allocator.free(tag);
-        }
-        // Don't free tag string contents - handled by tag_builder.deinit()
+        // Tags are already freed in the earlier defer block
     }
     
     // Manually gift-wrap it
@@ -463,7 +475,7 @@ test "welcome event memory management" {
             wrapped,
             bob_privkey,
         );
-        parsed.deinit(allocator);
+        defer parsed.deinit(allocator);
     }
     
     // If we get here without memory errors, the test passes

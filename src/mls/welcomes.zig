@@ -359,15 +359,40 @@ fn decryptSecrets(
     encrypted_secrets: types.EncryptedGroupSecrets,
     private_key: [32]u8,
 ) ![]u8 {
-    _ = mls_provider;
-    _ = encrypted_secrets;
-    _ = private_key;
+    // The encrypted_group_secrets field contains KEM output + ciphertext concatenated
+    // We need to parse it to extract both parts
+    const encrypted_data = encrypted_secrets.encrypted_group_secrets;
     
-    // TODO: Implement HPKE decryption
-    // For now, return dummy data
-    const dummy = try allocator.alloc(u8, 256);
-    @memset(dummy, 0);
-    return dummy;
+    // For X25519, KEM output is 32 bytes
+    const kem_output_size = 32;
+    if (encrypted_data.len <= kem_output_size) {
+        return error.InvalidEncryptedData;
+    }
+    
+    // Split the data into KEM output and ciphertext
+    const kem_output = encrypted_data[0..kem_output_size];
+    const ciphertext = encrypted_data[kem_output_size..];
+    
+    // Create HpkeCiphertext structure
+    const hpke_ciphertext = provider.HpkeCiphertext{
+        .kem_output = kem_output,
+        .ciphertext = ciphertext,
+    };
+    
+    // Prepare the info field for HPKE - MLS uses "mls 1.0 group_secrets" as the info
+    const info = "mls 1.0 group_secrets";
+    
+    // AAD (additional authenticated data) is typically empty for group secrets
+    const aad = "";
+    
+    // Use the MLS provider's HPKE open function to decrypt
+    return mls_provider.crypto.hpkeOpenFn(
+        allocator,
+        &private_key,
+        info,
+        aad,
+        hpke_ciphertext,
+    );
 }
 
 fn decryptGroupInfo(
@@ -375,11 +400,29 @@ fn decryptGroupInfo(
     encrypted_data: []const u8,
     secrets: types.EncryptedGroupSecrets,
 ) !types.GroupInfo {
-    _ = encrypted_data;
-    _ = secrets;
+    _ = secrets; // The decrypted secrets from the previous step would be used here
     
-    // TODO: Implement decryption and parsing
-    // For now, return dummy data
+    // In MLS, the GroupInfo is encrypted using a key derived from the joiner_secret
+    // For now, we need to parse the encrypted data which should have been decrypted
+    // using the group_info_key derived from the joiner_secret
+    
+    // The encrypted_data should contain:
+    // - KEM output (for HPKE encryption)
+    // - Ciphertext (the actual encrypted GroupInfo)
+    
+    // For X25519, KEM output is 32 bytes
+    const kem_output_size = 32;
+    if (encrypted_data.len <= kem_output_size) {
+        return error.InvalidEncryptedGroupInfo;
+    }
+    
+    // Note: In a full implementation, we would:
+    // 1. Derive group_info_key from joiner_secret using expandWithLabel
+    // 2. Use HPKE to decrypt the ciphertext using the group_info_key
+    // 3. Parse the decrypted data as a GroupInfo structure
+    
+    // For now, return a minimal valid GroupInfo structure
+    // This will be replaced when we have the full MLS key schedule implementation
     return types.GroupInfo{
         .group_context = types.GroupContext{
             .version = .mls10,
@@ -471,11 +514,65 @@ fn reconstructEpochSecrets(allocator: std.mem.Allocator, data: []const u8) !mls.
 }
 
 fn serializeGroupInfo(allocator: std.mem.Allocator, group_info: types.GroupInfo) ![]u8 {
-    _ = group_info;
-    // TODO: Implement MLS wire format serialization
-    const dummy = try allocator.alloc(u8, 100);
-    @memset(dummy, 0);
-    return dummy;
+    // Our types.GroupInfo is a simplified version that only contains:
+    // - group_context
+    // - members 
+    // - ratchet_tree
+    //
+    // For the Welcome message context, we need to serialize this in a format
+    // that can be parsed later. Since we don't have the full MLS GroupInfo
+    // structure with confirmation_tag and signature, we'll serialize what we have.
+    
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    // Serialize GroupContext
+    // Protocol version (u16)
+    try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(group_info.group_context.version));
+    
+    // Cipher suite (u16)
+    try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(group_info.group_context.cipher_suite));
+    
+    // Group ID (variable length with u8 length prefix)
+    try mls_zig.tls_codec.writeU8ToList(&buffer, @intCast(group_info.group_context.group_id.len));
+    try buffer.appendSlice(&group_info.group_context.group_id);
+    
+    // Epoch (u64)
+    try mls_zig.tls_codec.writeU64ToList(&buffer, group_info.group_context.epoch);
+    
+    // Tree hash (variable length with u8 length prefix)
+    try mls_zig.tls_codec.writeU8ToList(&buffer, @intCast(group_info.group_context.tree_hash.len));
+    try buffer.appendSlice(&group_info.group_context.tree_hash);
+    
+    // Confirmed transcript hash (variable length with u8 length prefix)
+    try mls_zig.tls_codec.writeU8ToList(&buffer, @intCast(group_info.group_context.confirmed_transcript_hash.len));
+    try buffer.appendSlice(&group_info.group_context.confirmed_transcript_hash);
+    
+    // Extensions (variable length with u32 length prefix)
+    try mls_zig.tls_codec.writeU32ToList(&buffer, @intCast(group_info.group_context.extensions.len));
+    for (group_info.group_context.extensions) |ext| {
+        // Extension type (u16)
+        try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(ext.extension_type));
+        // Extension data (variable length with u16 length prefix)
+        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(ext.extension_data.len));
+        try buffer.appendSlice(ext.extension_data);
+    }
+    
+    // Members (variable length with u32 length prefix)
+    try mls_zig.tls_codec.writeU32ToList(&buffer, @intCast(group_info.members.len));
+    for (group_info.members) |member| {
+        // For now, serialize member index as u32
+        try mls_zig.tls_codec.writeU32ToList(&buffer, member.index);
+        // Add credential data length and data
+        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(member.credential.identity.len));
+        try buffer.appendSlice(member.credential.identity);
+    }
+    
+    // Ratchet tree (variable length with u32 length prefix)
+    try mls_zig.tls_codec.writeU32ToList(&buffer, @intCast(group_info.ratchet_tree.len));
+    try buffer.appendSlice(group_info.ratchet_tree);
+    
+    return buffer.toOwnedSlice();
 }
 
 fn duplicateStringArray(allocator: std.mem.Allocator, strings: []const []const u8) ![]const []const u8 {

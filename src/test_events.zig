@@ -293,8 +293,7 @@ test "publish and subscribe event roundtrip" {
     std.debug.print("\n=== Testing Publish-Subscribe Roundtrip ===\n", .{});
     
     // 1. Create a test event to publish
-    var rng = std.Random.DefaultPrng.init(@bitCast(std.time.timestamp()));
-    const private_key = try crypto.generatePrivateKey(rng.random());
+    const private_key = try crypto.generatePrivateKey();
     const public_key = try crypto.getPublicKey(private_key);
     
     // Create test event content

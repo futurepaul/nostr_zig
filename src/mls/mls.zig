@@ -24,6 +24,7 @@ pub const application_messages = @import("application_messages.zig");
 pub const forward_secrecy = @import("forward_secrecy.zig");
 pub const event_signing = @import("event_signing.zig");
 pub const commit_ordering = @import("commit_ordering.zig");
+pub const keypackage_converter = @import("keypackage_converter.zig");
 
 // Re-export commonly used types
 pub const Epoch = types.Epoch;

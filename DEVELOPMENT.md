@@ -826,3 +826,93 @@ export fn wasm_process_message(message: [*]const u8, len: u32, out: [*]u8, out_l
 ```
 
 This approach ensures that the core logic is testable, reusable, and maintainable while keeping the WASM interface simple and reliable.
+
+## TLS Codec Pattern (Updated Jan 30, 2025)
+
+### ✅ TlsWriter Removed - Use Convenience Functions Instead
+
+After discovering that TlsWriter was an unnecessary abstraction layer causing serialization issues, we've successfully removed it from the entire codebase. Instead, we now use the convenience functions from `tls_codec.zig` for ArrayList operations.
+
+**Previous pattern (problematic):**
+```zig
+// TlsWriter wrapped standard writers, but added complexity without benefit
+var tls_writer = TlsWriter.init(writer);
+try tls_writer.writeU16(value);
+```
+
+**Current pattern (clean and convenient):**
+```zig
+// Use tls_codec convenience functions for ArrayList operations
+const tls_codec = @import("tls_codec.zig");
+
+var list = std.ArrayList(u8).init(allocator);
+try tls_codec.writeU16ToList(&list, value);
+try tls_codec.writeBytesToList(&list, data);
+```
+
+### Available Convenience Functions:
+
+```zig
+// Basic type writing to ArrayList
+try tls_codec.writeU8ToList(&list, value);
+try tls_codec.writeU16ToList(&list, value);  // Big-endian
+try tls_codec.writeU32ToList(&list, value);  // Big-endian
+try tls_codec.writeU64ToList(&list, value);  // Big-endian
+
+// Raw bytes
+try tls_codec.writeBytesToList(&list, bytes);
+
+// Variable-length with length prefix
+try tls_codec.writeVarBytesToList(&list, u8, bytes);   // 1-byte length prefix
+try tls_codec.writeVarBytesToList(&list, u16, bytes);  // 2-byte length prefix
+try tls_codec.writeVarBytesToList(&list, u32, bytes);  // 4-byte length prefix
+
+// TLS opaque<V> encoding (automatic length prefix size based on max_len)
+try tls_codec.writeTlsOpaqueToList(&list, bytes, max_len);
+```
+
+### For Generic Writers:
+When not using ArrayList (e.g., FixedBufferStream), use standard writer methods:
+```zig
+// Direct writer usage for non-ArrayList cases
+try writer.writeInt(u16, value, .big);
+try writer.writeAll(data);
+```
+
+### What We Fixed:
+1. **Removed TlsWriter entirely** from mls_zig - it was causing serialization bugs
+2. **Preserved convenience functions** that make ArrayList operations cleaner
+3. **Fixed tree hash computation** by removing TlsWriter dependency
+4. **Maintained TLS wire format compliance** with simpler code
+
+### Why This Pattern Is Better:
+1. **Type-safe**: Functions clearly indicate what they write
+2. **Convenient**: No manual byte order conversions needed
+3. **ArrayList-optimized**: Efficient append operations
+4. **No abstraction layers**: Direct operations on the underlying ArrayList
+
+### TlsReader Still Useful:
+We kept TlsReader because it provides genuine value:
+- Tracks bytes read for bounds checking
+- Provides convenient methods for reading TLS-encoded data
+- Clean API for parsing variable-length fields
+- Works with any reader type (generic)
+
+### Example Usage:
+```zig
+// Serialize a KeyPackage
+pub fn serialize(self: *const KeyPackage, allocator: std.mem.Allocator) ![]u8 {
+    var list = std.ArrayList(u8).init(allocator);
+    defer list.deinit();
+    
+    // Use convenience functions
+    try tls_codec.writeU16ToList(&list, self.protocol_version);
+    try tls_codec.writeU16ToList(&list, self.cipher_suite);
+    try tls_codec.writeVarBytesToList(&list, u8, self.init_key);
+    try tls_codec.writeTlsOpaqueToList(&list, self.leaf_node, 65535);
+    
+    return list.toOwnedSlice();
+}
+```
+
+This approach gives us the best of both worlds: clean, convenient code without unnecessary abstraction layers.

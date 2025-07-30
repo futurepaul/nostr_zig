@@ -359,9 +359,9 @@ const crypto = @import("../crypto.zig");
 // Placeholder serialization functions - these would be implemented based on MLS wire format
 
 fn serializeKeyPackage(allocator: std.mem.Allocator, key_package: types.KeyPackage) ![]u8 {
-    _ = key_package;
-    // TODO: Implement MLS wire format serialization
-    return try allocator.dupe(u8, "serialized_key_package");
+    // Use the real serialization implementation from serialization.zig
+    const serialization = @import("serialization.zig");
+    return serialization.Serializer.serializeKeyPackage(allocator, key_package);
 }
 
 fn deserializeKeyPackage(allocator: std.mem.Allocator, data: []const u8) !types.KeyPackage {

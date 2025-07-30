@@ -7,5 +7,5 @@ const std = @import("std");
 
 // EDIT THIS LINE to change which test file to run
 test {
-    _ = @import("test_keypackage_vectors.zig");
+    _ = @import("../tests/test_welcome_events.zig");
 }

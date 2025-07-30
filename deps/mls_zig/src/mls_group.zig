@@ -526,6 +526,36 @@ pub const MlsGroup = struct {
 
         // Advance epoch
         self.group_context.epoch += 1;
+        
+        // Derive epoch secrets from commit secret
+        const key_schedule = @import("key_schedule.zig").KeySchedule.init(self.allocator, self.cipher_suite);
+        
+        // Convert VarBytes epoch secrets to mls_group's Secret-based epoch secrets
+        var derived_secrets = try key_schedule.deriveEpochSecrets(
+            update_result.commit_secret,
+            null, // No PSK for now
+            group_context_bytes,
+        );
+        defer derived_secrets.deinit();
+        
+        // Free old epoch secrets if they exist
+        if (self.epoch_secrets) |*old_secrets| {
+            old_secrets.deinit();
+        }
+        
+        // Convert ArrayList to Secret and store in MlsGroup's epoch_secrets
+        self.epoch_secrets = EpochSecrets{
+            .joiner_secret = try Secret.initFromSlice(self.allocator, derived_secrets.joiner_secret.items),
+            .epoch_secret = try Secret.initFromSlice(self.allocator, derived_secrets.epoch_secret.items),
+            .sender_data_secret = try Secret.initFromSlice(self.allocator, derived_secrets.sender_data_secret.items),
+            .encryption_secret = try Secret.initFromSlice(self.allocator, derived_secrets.encryption_secret.items),
+            .exporter_secret = try Secret.initFromSlice(self.allocator, derived_secrets.exporter_secret.items),
+            .authentication_secret = try Secret.initFromSlice(self.allocator, derived_secrets.epoch_authenticator.items),
+            .external_secret = try Secret.initFromSlice(self.allocator, derived_secrets.external_secret.items),
+            .confirmation_key = try Secret.initFromSlice(self.allocator, derived_secrets.confirmation_key.items),
+            .membership_key = try Secret.initFromSlice(self.allocator, derived_secrets.membership_key.items),
+            .resumption_psk = try Secret.initFromSlice(self.allocator, derived_secrets.resumption_psk.items),
+        };
 
         // Clear pending proposals
         for (self.pending_proposals.items) |*prop| {

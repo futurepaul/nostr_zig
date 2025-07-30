@@ -34,8 +34,7 @@ pub const CredentialType = enum(u16) {
     
     /// Serialize to TLS format
     pub fn tlsSerialize(self: *const CredentialType, writer: anytype) !void {
-        var tls_writer = TlsWriter(@TypeOf(writer)).init(writer);
-        try tls_writer.writeU16(self.toU16());
+        try writer.writeInt(u16, self.toU16(), .big);
     }
 
     /// Serialize to ArrayList (manual TLS format)
@@ -81,7 +80,9 @@ pub const BasicCredential = struct {
     
     /// Serialize to TLS format (just the identity as variable-length bytes)
     pub fn tlsSerialize(self: *const BasicCredential, writer: anytype) !void {
-        try writer.writeVarBytes(u8, self.identity.asSlice());
+        const identity_slice = self.identity.asSlice();
+        try writer.writeInt(u8, @intCast(identity_slice.len), .big);
+        try writer.writeAll(identity_slice);
     }
     
     /// Deserialize from TLS format
@@ -183,7 +184,9 @@ pub const Credential = struct {
     /// Serialize to TLS format
     pub fn tlsSerialize(self: *const Credential, writer: anytype) !void {
         try self.credential_type.tlsSerialize(writer);
-        try writer.writeVarBytes(u8, self.serialized_content.asSlice());
+        const content_slice = self.serialized_content.asSlice();
+        try writer.writeInt(u8, @intCast(content_slice.len), .big);
+        try writer.writeAll(content_slice);
     }
 
     /// Serialize to ArrayList (manual TLS format)
