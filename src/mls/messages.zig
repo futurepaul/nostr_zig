@@ -1,4 +1,5 @@
 const std = @import("std");
+const tls = std.crypto.tls;
 const types = @import("types.zig");
 const provider = @import("provider.zig");
 const mls = @import("mls.zig");
@@ -506,8 +507,7 @@ fn serializeMLSCiphertext(allocator: std.mem.Allocator, ciphertext: types.MLSCip
 
 fn parseMLSCiphertext(allocator: std.mem.Allocator, data: []const u8) !types.MLSCiphertext {
     // Use TLS 1.3 wire format as per RFC 9420
-    var stream = std.io.fixedBufferStream(data);
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(data);
     
     // MLSCiphertext format:
     // struct {
@@ -520,31 +520,26 @@ fn parseMLSCiphertext(allocator: std.mem.Allocator, data: []const u8) !types.MLS
     // } MLSCiphertext;
     
     // Group ID (variable length with u16 length prefix)
-    const group_id_len = try reader.readU16();
-    const group_id_data = try allocator.alloc(u8, group_id_len);
-    try reader.reader.readNoEof(group_id_data);
+    const group_id_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
-    // Epoch (u64)
-    const epoch = try reader.readU64();
+    // Epoch (u64) - manual decoding since std.crypto.tls doesn't support it
+    try decoder.ensure(8);
+    const epoch_bytes = decoder.slice(8);
+    const epoch = std.mem.readInt(u64, epoch_bytes[0..8], .big);
     
     // Content type (u8)
-    const content_type_raw = try reader.readU8();
+    try decoder.ensure(1);
+    const content_type_raw = decoder.decode(u8);
     const content_type: types.ContentType = @enumFromInt(content_type_raw);
     
     // Authenticated data (variable length with u16 length prefix)
-    const auth_data_len = try reader.readU16();
-    const authenticated_data = try allocator.alloc(u8, auth_data_len);
-    try reader.reader.readNoEof(authenticated_data);
+    const authenticated_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     // Encrypted sender data (variable length with u16 length prefix)
-    const sender_data_len = try reader.readU16();
-    const encrypted_sender_data = try allocator.alloc(u8, sender_data_len);
-    try reader.reader.readNoEof(encrypted_sender_data);
+    const encrypted_sender_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     // Ciphertext (variable length with u16 length prefix)
-    const ciphertext_len = try reader.readU16();
-    const ciphertext = try allocator.alloc(u8, ciphertext_len);
-    try reader.reader.readNoEof(ciphertext);
+    const ciphertext = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     return types.MLSCiphertext{
         .group_id = .{ .data = group_id_data },

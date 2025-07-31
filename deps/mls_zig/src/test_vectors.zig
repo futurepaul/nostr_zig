@@ -49,7 +49,8 @@ const TreeSync = tree_kem.TreeSync;
 const UpdatePath = tree_kem.UpdatePath;
 const PathSecret = tree_kem.PathSecret;
 const LeafNode = mls.leaf_node.LeafNode;
-const tls_codec = mls.tls_codec;
+const tls_encode = mls.tls_encode;
+const tls = std.crypto.tls;
 
 // Hex conversion utilities
 fn hexToBytes(allocator: std.mem.Allocator, hex_string: []const u8) ![]u8 {
@@ -474,8 +475,8 @@ pub const TestVectorRunner = struct {
             
             // Try to deserialize the tree data (this will test our TLS codec compatibility)
             var stream = std.io.fixedBufferStream(tree_data);
-            const tls_reader = tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
-            _ = tls_reader; // Placeholder - actual tree deserialization would go here
+            var decoder = tls.Decoder.fromTheirSlice(tree_data);
+            _ = decoder; // Placeholder - actual tree deserialization would go here
             
             std.log.info("      ✅ Ratchet tree structure parsed successfully", .{});
         }
@@ -826,10 +827,9 @@ pub const TestVectorRunner = struct {
         var info_list = std.ArrayList(u8).init(self.allocator);
         defer info_list.deinit();
         
-        var tls_writer = tls_codec.TlsWriter(@TypeOf(info_list.writer())).init(info_list.writer());
-        try tls_writer.writeU16(length);
-        try tls_writer.writeVarBytes(u8, label); // Raw binary label, no prefix
-        try tls_writer.writeVarBytes(u8, context); // Context
+        try tls_encode.writeInt(info_list.writer(), u16, length);
+        try tls_encode.writeVarBytes(info_list.writer(), u8, label); // Raw binary label, no prefix
+        try tls_encode.writeVarBytes(info_list.writer(), u8, context); // Context
         
         // Debug the constructed info
         const info_hex = try bytesToHex(self.allocator, info_list.items);
@@ -1148,8 +1148,8 @@ pub const TestVectorRunner = struct {
         
         // Test UpdatePath deserialization
         var stream = std.io.fixedBufferStream(update_path_data);
-        var tls_reader = tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
-        var parsed_update_path = UpdatePath.deserialize(self.allocator, &tls_reader) catch |err| {
+        var decoder = tls.Decoder.fromTheirSlice(update_path_data);
+        var parsed_update_path = UpdatePath.deserialize(self.allocator, &decoder) catch |err| {
             std.log.info("      ⚠️  UpdatePath deserialization failed: {}", .{err});
             // Continue with other tests even if deserialization fails
             return;

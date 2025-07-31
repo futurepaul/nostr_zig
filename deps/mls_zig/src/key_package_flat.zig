@@ -1,8 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const tls_codec = @import("tls_codec.zig");
+const tls_encode = @import("tls_encode.zig");
 const cipher_suite = @import("cipher_suite.zig");
+const tls = std.crypto.tls;
 
 /// MLS Protocol Version (RFC 9420)
 pub const MLS_PROTOCOL_VERSION: u16 = 0x0001;
@@ -75,41 +76,41 @@ pub const KeyPackage = struct {
         errdefer buffer.deinit();
         
         // Protocol version (u16, big-endian)
-        try tls_codec.writeU16ToList(&buffer, self.protocol_version);
+        try tls_encode.encodeInt(&buffer, u16, self.protocol_version);
         
         // Cipher suite (u16, big-endian)
-        try tls_codec.writeU16ToList(&buffer, @intFromEnum(self.cipher_suite));
+        try tls_encode.encodeInt(&buffer, u16, @intFromEnum(self.cipher_suite));
         
         // Init key - HPKE public keys use opaque<1..2^8-1> encoding (single byte length)
-        try tls_codec.writeTlsOpaqueToList(&buffer, &self.init_key, 255);
+        try tls_encode.encodeTlsOpaque(&buffer, &self.init_key, 255);
         
         // LeafNode fields directly (not wrapped in opaque)
         // encryption_key: HPKEPublicKey opaque<1..2^8-1>
-        try tls_codec.writeTlsOpaqueToList(&buffer, &self.encryption_key, 255);
+        try tls_encode.encodeTlsOpaque(&buffer, &self.encryption_key, 255);
         
         // signature_key: SignaturePublicKey opaque<1..2^8-1> (Ed25519 keys are 32 bytes)
-        try tls_codec.writeTlsOpaqueToList(&buffer, &self.signature_key, 255);
+        try tls_encode.encodeTlsOpaque(&buffer, &self.signature_key, 255);
         
         // credential: Credential opaque<1..2^16-1> (just create empty credential data)
         const credential_data = try allocator.alloc(u8, self.credential_len);
         defer allocator.free(credential_data);
         @memset(credential_data, 0); // Fill with zeros for now
-        try tls_codec.writeTlsOpaqueToList(&buffer, credential_data, 65535);
+        try tls_encode.encodeTlsOpaque(&buffer, credential_data, 65535);
         
         // capabilities: Capabilities (empty for NIP-EE)
-        try tls_codec.writeU16ToList(&buffer, 0); // empty capabilities
+        try tls_encode.encodeInt(&buffer, u16, 0); // empty capabilities
         
         // leaf_node_source: LeafNodeSource (by_value = 1)
-        try tls_codec.writeU8ToList(&buffer, 1);
+        try tls_encode.encodeInt(&buffer, u8, 1);
         
         // extensions: Extension<0..2^16-1> (empty)
-        try tls_codec.writeU16ToList(&buffer, 0);
+        try tls_encode.encodeInt(&buffer, u16, 0);
         
         // extensions: Extension<0..2^16-1> (empty for KeyPackage)
-        try tls_codec.writeU16ToList(&buffer, 0);
+        try tls_encode.encodeInt(&buffer, u16, 0);
         
         // signature: opaque<0..2^16-1> (uses u16 length prefix)
-        try tls_codec.writeVarBytesToList(&buffer, u16, &self.signature);
+        try tls_encode.encodeVarBytes(&buffer, u16, &self.signature);
         
         return buffer.toOwnedSlice();
     }
@@ -122,53 +123,69 @@ pub const KeyPackage = struct {
     /// TLS deserialize a KeyPackage (RFC 9420 format)
     pub fn tlsDeserialize(allocator: Allocator, data: []const u8) !KeyPackage {
         var stream = std.io.fixedBufferStream(data);
-        var reader = tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+        var reader = stream.reader();
         
         // Protocol version
-        const protocol_version = try reader.readU16();
+        var version_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&version_buf);
+        var version_decoder = tls.Decoder.fromTheirSlice(&version_buf);
+        const protocol_version = version_decoder.decode(u16);
         if (protocol_version != MLS_PROTOCOL_VERSION) {
             return error.UnsupportedVersion;
         }
         
         // Cipher suite
-        const cipher_suite_value = try reader.readU16();
+        var suite_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&suite_buf);
+        var suite_decoder = tls.Decoder.fromTheirSlice(&suite_buf);
+        const cipher_suite_value = suite_decoder.decode(u16);
         const cs = std.meta.intToEnum(cipher_suite.CipherSuite, cipher_suite_value) catch {
             return error.UnsupportedCipherSuite;
         };
         
         // Init key - HPKE public keys use opaque<1..2^8-1> encoding
-        const init_key_data = try reader.readTlsOpaque(allocator, 255);
-        defer allocator.free(init_key_data);
-        if (init_key_data.len != 32) {
+        var key_len_buf: [1]u8 = undefined;
+        _ = try reader.readAll(&key_len_buf);
+        const key_len = key_len_buf[0];
+        if (key_len != 32) {
             return error.InvalidKeyLength;
         }
         var init_key: [32]u8 = undefined;
-        @memcpy(&init_key, init_key_data);
+        _ = try reader.readAll(&init_key);
         
         // LeafNode is NOT wrapped in opaque - direct struct fields
         
         // encryption_key: HPKEPublicKey opaque<1..2^8-1>
-        const enc_key_data = try reader.readTlsOpaque(allocator, 255);
-        defer allocator.free(enc_key_data);
-        if (enc_key_data.len != 32) {
+        var enc_len_buf: [1]u8 = undefined;
+        _ = try reader.readAll(&enc_len_buf);
+        const enc_len = enc_len_buf[0];
+        if (enc_len != 32) {
             return error.InvalidKeyLength;
         }
         var encryption_key: [32]u8 = undefined;
-        @memcpy(&encryption_key, enc_key_data);
+        _ = try reader.readAll(&encryption_key);
         
         // signature_key: SignaturePublicKey opaque<1..2^8-1> (Ed25519 keys are 32 bytes)
-        const sig_key_data = try reader.readTlsOpaque(allocator, 255);
-        defer allocator.free(sig_key_data);
-        if (sig_key_data.len != 32) {
+        var sig_len_buf: [1]u8 = undefined;
+        _ = try reader.readAll(&sig_len_buf);
+        const sig_len = sig_len_buf[0];
+        if (sig_len != 32) {
             return error.InvalidKeyLength;
         }
         var signature_key: [32]u8 = undefined;
-        @memcpy(&signature_key, sig_key_data);
+        _ = try reader.readAll(&signature_key);
         
         // credential: Credential opaque<1..2^16-1>
-        const credential_data = try reader.readTlsOpaque(allocator, 65535);
-        defer allocator.free(credential_data);
-        const credential_len = @as(u16, @intCast(credential_data.len));
+        var cred_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&cred_buf);
+        var cred_decoder = tls.Decoder.fromTheirSlice(&cred_buf);
+        const credential_len_raw = cred_decoder.decode(u16);
+        
+        // Skip the credential data
+        const skip_buf = try allocator.alloc(u8, credential_len_raw);
+        defer allocator.free(skip_buf);
+        _ = try reader.readAll(skip_buf);
+        const credential_len = credential_len_raw;
         
         // The signature is always at the end of the KeyPackage
         // Try to find it by checking both u8 and u16 length prefixes
@@ -200,13 +217,25 @@ pub const KeyPackage = struct {
         
         // Skip to the signature position
         try stream.seekTo(sig_offset);
-        var new_reader = tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+        var new_reader = stream.reader();
         
         // Read signature based on detected prefix type
-        const sig_data = if (sig_uses_u16)
-            try new_reader.readVarBytes(u16, allocator)
-        else
-            try new_reader.readVarBytes(u8, allocator);
+        const sig_data = if (sig_uses_u16) blk: {
+            var len_buf: [2]u8 = undefined;
+            _ = try new_reader.readAll(&len_buf);
+            var decoder = tls.Decoder.fromTheirSlice(&len_buf);
+            const len = decoder.decode(u16);
+            const sig_bytes = try allocator.alloc(u8, len);
+            _ = try new_reader.readAll(sig_bytes);
+            break :blk sig_bytes;
+        } else blk: {
+            var len_buf: [1]u8 = undefined;
+            _ = try new_reader.readAll(&len_buf);
+            const len = len_buf[0];
+            const sig_bytes = try allocator.alloc(u8, len);
+            _ = try new_reader.readAll(sig_bytes);
+            break :blk sig_bytes;
+        };
             
         defer allocator.free(sig_data);
         if (sig_data.len != 64) {
@@ -319,38 +348,38 @@ fn createMlsSignature(
     defer tbs_buffer.deinit();
     
     // Protocol version (u16, big-endian)
-    try tls_codec.writeU16ToList(&tbs_buffer, MLS_PROTOCOL_VERSION);
+    try tls_encode.encodeInt(&tbs_buffer, u16, MLS_PROTOCOL_VERSION);
     
     // Cipher suite (u16, big-endian)
-    try tls_codec.writeU16ToList(&tbs_buffer, @intFromEnum(cs));
+    try tls_encode.encodeInt(&tbs_buffer, u16, @intFromEnum(cs));
     
     // Init key - HPKE public keys use opaque<1..2^8-1> encoding
-    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, &init_key, 255);
+    try tls_encode.encodeTlsOpaque(&tbs_buffer, &init_key, 255);
     
     // LeafNodeTBS fields directly (not wrapped in opaque)
     // encryption_key: HPKEPublicKey opaque<1..2^8-1>
-    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, &enc_key, 255);
+    try tls_encode.encodeTlsOpaque(&tbs_buffer, &enc_key, 255);
     
     // signature_key: SignaturePublicKey opaque<1..2^8-1>
-    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, &sig_key, 255);
+    try tls_encode.encodeTlsOpaque(&tbs_buffer, &sig_key, 255);
     
     // credential: Credential opaque<1..2^16-1>
     const credential_data = try allocator.alloc(u8, credential_identity.len);
     defer allocator.free(credential_data);
     @memset(credential_data, 0); // Fill with zeros for TBS
-    try tls_codec.writeTlsOpaqueToList(&tbs_buffer, credential_data, 65535);
+    try tls_encode.encodeTlsOpaque(&tbs_buffer, credential_data, 65535);
     
     // capabilities: Capabilities (empty)
-    try tls_codec.writeU16ToList(&tbs_buffer, 0);
+    try tls_encode.encodeInt(&tbs_buffer, u16, 0);
     
     // leaf_node_source: LeafNodeSource (by_value = 1)
-    try tls_codec.writeU8ToList(&tbs_buffer, 1);
+    try tls_encode.encodeInt(&tbs_buffer, u8, 1);
     
     // extensions: Extension<0..2^16-1> (empty)
-    try tls_codec.writeU16ToList(&tbs_buffer, 0);
+    try tls_encode.encodeInt(&tbs_buffer, u16, 0);
     
     // extensions: Extension<0..2^16-1> (empty for KeyPackage)
-    try tls_codec.writeU16ToList(&tbs_buffer, 0);
+    try tls_encode.encodeInt(&tbs_buffer, u16, 0);
     
     // Create MLS signature with label
     const mls_prefix = "MLS 1.0 KeyPackageTBS";

@@ -4,9 +4,8 @@ const testing = std.testing;
 
 const Extension = @import("key_package.zig").Extension;
 const Extensions = @import("key_package.zig").Extensions;
-const VarBytes = @import("tls_codec.zig").VarBytes;
-const TlsWriter = @import("tls_codec.zig").TlsWriter;
-const TlsReader = @import("tls_codec.zig").TlsReader;
+const tls_encode = @import("tls_encode.zig");
+const tls = std.crypto.tls;
 
 /// NIP-EE specific extension types
 /// These use the 0xFF00+ range for custom Nostr extensions as per MLS conventions
@@ -32,13 +31,13 @@ pub const NostrExtensionType = enum(u16) {
 /// This extension contains Nostr-specific metadata for the group
 pub const NostrGroupData = struct {
     /// Nostr group identifier (typically a hex-encoded public key)
-    nostr_group_id: VarBytes,
+    nostr_group_id: []u8,
     /// Nostr relay URLs for group coordination
-    relay_urls: []VarBytes,
+    relay_urls: [][]u8,
     /// Group creator's Nostr public key
-    creator_pubkey: VarBytes,
+    creator_pubkey: []u8,
     /// Group metadata (name, description, etc.) as JSON
-    metadata: VarBytes,
+    metadata: []u8,
     
     allocator: Allocator,
     
@@ -49,26 +48,26 @@ pub const NostrGroupData = struct {
         creator_pubkey: []const u8,
         metadata: []const u8,
     ) !NostrGroupData {
-        var group_id = try VarBytes.init(allocator, nostr_group_id);
-        errdefer group_id.deinit();
+        const group_id = try allocator.dupe(u8, nostr_group_id);
+        errdefer allocator.free(group_id);
         
-        var creator_pk = try VarBytes.init(allocator, creator_pubkey);
-        errdefer creator_pk.deinit();
+        const creator_pk = try allocator.dupe(u8, creator_pubkey);
+        errdefer allocator.free(creator_pk);
         
-        var meta = try VarBytes.init(allocator, metadata);
-        errdefer meta.deinit();
+        const meta = try allocator.dupe(u8, metadata);
+        errdefer allocator.free(meta);
         
         // Create relay URL array
-        const relays = try allocator.alloc(VarBytes, relay_urls.len);
+        const relays = try allocator.alloc([]u8, relay_urls.len);
         errdefer {
-            for (relays[0..relay_urls.len]) |*relay| {
-                relay.deinit();
+            for (relays[0..relay_urls.len]) |relay| {
+                allocator.free(relay);
             }
             allocator.free(relays);
         }
         
         for (relay_urls, 0..) |url, i| {
-            relays[i] = try VarBytes.init(allocator, url);
+            relays[i] = try allocator.dupe(u8, url);
         }
         
         return NostrGroupData{
@@ -81,61 +80,54 @@ pub const NostrGroupData = struct {
     }
     
     pub fn deinit(self: *NostrGroupData) void {
-        self.nostr_group_id.deinit();
-        for (self.relay_urls) |*relay| {
-            relay.deinit();
+        self.allocator.free(self.nostr_group_id);
+        for (self.relay_urls) |relay| {
+            self.allocator.free(relay);
         }
         self.allocator.free(self.relay_urls);
-        self.creator_pubkey.deinit();
-        self.metadata.deinit();
+        self.allocator.free(self.creator_pubkey);
+        self.allocator.free(self.metadata);
     }
     
-    pub fn serialize(self: NostrGroupData, writer: anytype) !void {
-        try writer.writeVarBytes(u16, self.nostr_group_id.asSlice());
+    pub fn serialize(self: NostrGroupData, list: *std.ArrayList(u8)) !void {
+        try tls_encode.encodeVarBytes(list, u16, self.nostr_group_id);
         
         // Serialize relay URLs
-        try writer.writeU16(@intCast(self.relay_urls.len));
+        try tls_encode.encodeInt(list, u16, @intCast(self.relay_urls.len));
         for (self.relay_urls) |relay| {
-            try writer.writeVarBytes(u16, relay.asSlice());
+            try tls_encode.encodeVarBytes(list, u16, relay);
         }
         
-        try writer.writeVarBytes(u16, self.creator_pubkey.asSlice());
-        try writer.writeVarBytes(u32, self.metadata.asSlice());
+        try tls_encode.encodeVarBytes(list, u16, self.creator_pubkey);
+        try tls_encode.encodeVarBytes(list, u32, self.metadata);
     }
     
-    pub fn deserialize(allocator: Allocator, reader: anytype) !NostrGroupData {
+    pub fn deserialize(allocator: Allocator, decoder: *tls.Decoder) !NostrGroupData {
         // Read group ID
-        const group_id_data = try reader.readVarBytes(u16, allocator);
-        defer allocator.free(group_id_data);
-        var group_id = try VarBytes.init(allocator, group_id_data);
-        errdefer group_id.deinit();
+        const group_id = try tls_encode.readVarBytes(decoder, u16, allocator);
+        errdefer allocator.free(group_id);
         
         // Read relay URLs
-        const relay_count = try reader.readU16();
-        const relays = try allocator.alloc(VarBytes, relay_count);
+        const relay_count = decoder.decode(u16);
+        const relays = try allocator.alloc([]u8, relay_count);
         errdefer {
-            for (relays[0..relay_count]) |*relay| {
-                relay.deinit();
+            for (relays[0..relay_count]) |relay| {
+                allocator.free(relay);
             }
             allocator.free(relays);
         }
         
         for (relays) |*relay| {
-            const relay_data = try reader.readVarBytes(u16, allocator);
-            defer allocator.free(relay_data);
-            relay.* = try VarBytes.init(allocator, relay_data);
+            relay.* = try tls_encode.readVarBytes(decoder, u16, allocator);
         }
         
         // Read creator pubkey
-        const creator_data = try reader.readVarBytes(u16, allocator);
-        defer allocator.free(creator_data);
-        var creator_pk = try VarBytes.init(allocator, creator_data);
-        errdefer creator_pk.deinit();
+        const creator_pk = try tls_encode.readVarBytes(decoder, u16, allocator);
+        errdefer allocator.free(creator_pk);
         
         // Read metadata
-        const metadata_data = try reader.readVarBytes(u32, allocator);
-        defer allocator.free(metadata_data);
-        const metadata = try VarBytes.init(allocator, metadata_data);
+        const metadata = try tls_encode.readVarBytes(decoder, u32, allocator);
+        errdefer allocator.free(metadata);
         
         return NostrGroupData{
             .nostr_group_id = group_id,
@@ -152,8 +144,7 @@ pub const NostrGroupData = struct {
         var data = std.ArrayList(u8).init(self.allocator);
         defer data.deinit();
         
-        var writer = TlsWriter(@TypeOf(data.writer())).init(data.writer());
-        try self.serialize(&writer);
+        try self.serialize(&data);
         
         return Extension.init(
             self.allocator,
@@ -168,10 +159,9 @@ pub const NostrGroupData = struct {
             return error.InvalidExtensionType;
         }
         
-        var stream = std.io.fixedBufferStream(extension.extension_data);
-        var reader = TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+        var decoder = tls.Decoder.fromTheirSlice(extension.extension_data);
         
-        return NostrGroupData.deserialize(allocator, &reader);
+        return NostrGroupData.deserialize(allocator, &decoder);
     }
 };
 
@@ -287,23 +277,21 @@ test "NostrGroupData serialization" {
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    var writer = TlsWriter(@TypeOf(buffer.writer())).init(buffer.writer());
-    try group_data.serialize(&writer);
+    try group_data.serialize(&buffer);
     
     // Test deserialization
-    var stream = std.io.fixedBufferStream(buffer.items);
-    var reader = TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(buffer.items);
     
-    var decoded = try NostrGroupData.deserialize(allocator, &reader);
+    var decoded = try NostrGroupData.deserialize(allocator, &decoder);
     defer decoded.deinit();
     
     // Verify data
-    try testing.expectEqualSlices(u8, group_id, decoded.nostr_group_id.asSlice());
-    try testing.expectEqualSlices(u8, creator_pubkey, decoded.creator_pubkey.asSlice());
-    try testing.expectEqualSlices(u8, metadata, decoded.metadata.asSlice());
+    try testing.expectEqualSlices(u8, group_id, decoded.nostr_group_id);
+    try testing.expectEqualSlices(u8, creator_pubkey, decoded.creator_pubkey);
+    try testing.expectEqualSlices(u8, metadata, decoded.metadata);
     try testing.expectEqual(@as(usize, 2), decoded.relay_urls.len);
-    try testing.expectEqualSlices(u8, relay_urls[0], decoded.relay_urls[0].asSlice());
-    try testing.expectEqualSlices(u8, relay_urls[1], decoded.relay_urls[1].asSlice());
+    try testing.expectEqualSlices(u8, relay_urls[0], decoded.relay_urls[0]);
+    try testing.expectEqualSlices(u8, relay_urls[1], decoded.relay_urls[1]);
 }
 
 test "LastResort extension" {
@@ -360,8 +348,8 @@ test "Extensions integration with Nostr data" {
     defer if (found_data) |*data| data.deinit();
     
     if (found_data) |data| {
-        try testing.expectEqualSlices(u8, group_id, data.nostr_group_id.asSlice());
-        try testing.expectEqualSlices(u8, creator_pubkey, data.creator_pubkey.asSlice());
+        try testing.expectEqualSlices(u8, group_id, data.nostr_group_id);
+        try testing.expectEqualSlices(u8, creator_pubkey, data.creator_pubkey);
     }
 }
 

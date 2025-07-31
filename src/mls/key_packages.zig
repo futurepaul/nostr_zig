@@ -1,4 +1,5 @@
 const std = @import("std");
+const tls = std.crypto.tls;
 const types = @import("types.zig");
 const provider = @import("provider.zig");
 const mls_zig = @import("mls_zig");
@@ -169,8 +170,7 @@ pub fn parseKeyPackage(
     data: []const u8,
 ) types.KeyPackageError!types.KeyPackage {
     // Use TLS 1.3 wire format as per RFC 9420
-    var stream = std.io.fixedBufferStream(data);
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(data);
     
     // Parse according to MLS KeyPackage format:
     // struct {
@@ -183,39 +183,39 @@ pub fn parseKeyPackage(
     // } KeyPackage;
     
     // Version (u16)
-    const version_raw = reader.readU16() catch return error.UnexpectedEndOfStream;
+    try decoder.ensure(2);
+    const version_raw = decoder.decode(u16);
     const version = types.ProtocolVersion.fromInt(version_raw);
     
     // Cipher suite (u16)
-    const cipher_suite_raw = reader.readU16() catch return error.UnexpectedEndOfStream;
+    try decoder.ensure(2);
+    const cipher_suite_raw = decoder.decode(u16);
     const cipher_suite = types.Ciphersuite.fromInt(cipher_suite_raw);
     
     // Init key (variable length with u16 length prefix)
-    const init_key_len = reader.readU16() catch return error.UnexpectedEndOfStream;
-    std.log.debug("Init key length: {}", .{init_key_len});
-    if (init_key_len > 256) return error.InvalidKeyLength; // Sanity check
-    const init_key = allocator.alloc(u8, init_key_len) catch return error.UnexpectedEndOfStream;
-    reader.reader.readNoEof(init_key) catch return error.UnexpectedEndOfStream;
+    const init_key = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
+    std.log.debug("Init key length: {}", .{init_key.len});
+    if (init_key.len > 256) {
+        allocator.free(init_key);
+        return error.InvalidKeyLength; // Sanity check
+    }
     
     // Leaf node (variable length)
-    const leaf_node_len = reader.readU16() catch return error.UnexpectedEndOfStream;
-    const leaf_node_data = allocator.alloc(u8, leaf_node_len) catch return error.UnexpectedEndOfStream;
+    const leaf_node_data = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
     defer allocator.free(leaf_node_data);
-    reader.reader.readNoEof(leaf_node_data) catch return error.UnexpectedEndOfStream;
     const leaf_node = parseLeafNode(allocator, leaf_node_data) catch return error.InvalidLeafNode;
     
     // Extensions (variable length)
-    const extensions_len = reader.readU16() catch return error.UnexpectedEndOfStream;
-    const extensions_data = allocator.alloc(u8, extensions_len) catch return error.UnexpectedEndOfStream;
+    const extensions_data = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
     defer allocator.free(extensions_data);
-    reader.reader.readNoEof(extensions_data) catch return error.UnexpectedEndOfStream;
     const extensions = parseExtensions(allocator, extensions_data) catch return error.MalformedExtensions;
     
     // Signature (variable length with u16 length prefix)
-    const signature_len = reader.readU16() catch return error.UnexpectedEndOfStream;
-    if (signature_len > 512) return error.InvalidSignature; // Sanity check
-    const signature = allocator.alloc(u8, signature_len) catch return error.UnexpectedEndOfStream;
-    reader.reader.readNoEof(signature) catch return error.UnexpectedEndOfStream;
+    const signature = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
+    if (signature.len > 512) {
+        allocator.free(signature);
+        return error.InvalidSignature; // Sanity check
+    }
     
     return types.KeyPackage{
         .version = version,
@@ -237,7 +237,6 @@ pub fn serializeKeyPackage(
     defer buffer.deinit();
     
     // Use TLS codec convenience functions
-    const tls = mls_zig.tls_codec;
     
     // Serialize according to MLS KeyPackage format:
     // struct {
@@ -250,26 +249,26 @@ pub fn serializeKeyPackage(
     // } KeyPackage;
     
     // Version (u16)
-    try tls.writeU16ToList(&buffer, @intFromEnum(key_package.version));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(key_package.version));
     
     // Cipher suite (u16)
-    try tls.writeU16ToList(&buffer, @intFromEnum(key_package.cipher_suite));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(key_package.cipher_suite));
     
     // Init key (variable length with u16 length prefix)
-    try tls.writeVarBytesToList(&buffer, u16, key_package.init_key.data);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, key_package.init_key.data);
     
     // Leaf node - serialize as variable length (simplified for now)
     const leaf_node_data = try serializeLeafNode(allocator, key_package.leaf_node);
     defer allocator.free(leaf_node_data);
-    try tls.writeVarBytesToList(&buffer, u16, leaf_node_data);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, leaf_node_data);
     
     // Extensions - serialize as variable length 
     const extensions_data = try serializeExtensions(allocator, key_package.extensions);
     defer allocator.free(extensions_data);
-    try tls.writeVarBytesToList(&buffer, u16, extensions_data);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, extensions_data);
     
     // Signature (variable length with u16 length prefix)
-    try tls.writeVarBytesToList(&buffer, u16, key_package.signature);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, key_package.signature);
     
     return buffer.toOwnedSlice();
 }
@@ -524,78 +523,74 @@ fn serializeLeafNode(allocator: std.mem.Allocator, leaf_node: types.LeafNode) ![
     defer buffer.deinit();
     
     // Use TLS codec convenience functions
-    const tls = mls_zig.tls_codec;
     
     // Encryption key
-    try tls.writeVarBytesToList(&buffer, u16, leaf_node.encryption_key.data);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, leaf_node.encryption_key.data);
     
     // Signature key  
-    try tls.writeVarBytesToList(&buffer, u16, leaf_node.signature_key.data);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, leaf_node.signature_key.data);
     
     // Credential (simplified)
-    try tls.writeU8ToList(&buffer, @intFromEnum(types.CredentialType.basic));
+    try mls_zig.tls_encode.encodeInt(&buffer, u8, @intFromEnum(types.CredentialType.basic));
     switch (leaf_node.credential) {
         .basic => |basic| {
-            try tls.writeVarBytesToList(&buffer, u16, basic.identity);
+            try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, basic.identity);
         },
         else => return error.UnsupportedCredential,
     }
     
     // Capabilities (simplified - write as empty for now)
-    try tls.writeU16ToList(&buffer, 0);
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, 0);
     
     // Leaf node source
-    try tls.writeU8ToList(&buffer, @intFromEnum(leaf_node.leaf_node_source));
+    try mls_zig.tls_encode.encodeInt(&buffer, u8, @intFromEnum(leaf_node.leaf_node_source));
     
     // Extensions (simplified)
-    try tls.writeU16ToList(&buffer, @intCast(leaf_node.extensions.len));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intCast(leaf_node.extensions.len));
     for (leaf_node.extensions) |ext| {
-        try tls.writeU16ToList(&buffer, @intFromEnum(ext.extension_type));
-        try tls.writeVarBytesToList(&buffer, u16, ext.extension_data);
+        try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(ext.extension_type));
+        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, ext.extension_data);
     }
     
     // Signature
-    try tls.writeVarBytesToList(&buffer, u16, leaf_node.signature);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, leaf_node.signature);
     
     return buffer.toOwnedSlice();
 }
 
 /// Helper function to parse a leaf node
 fn parseLeafNode(allocator: std.mem.Allocator, data: []const u8) !types.LeafNode {
-    var stream = std.io.fixedBufferStream(data);
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(data);
     
     // Encryption key
-    const enc_key_len = try reader.readU16();
-    const enc_key_data = try allocator.alloc(u8, enc_key_len);
-    try reader.reader.readNoEof(enc_key_data);
+    const enc_key_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     // Signature key
-    const sig_key_len = try reader.readU16();
-    const sig_key_data = try allocator.alloc(u8, sig_key_len);
-    try reader.reader.readNoEof(sig_key_data);
+    const sig_key_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     // Credential
-    _ = try reader.readU8(); // credential type (ignore for now)
-    const identity_len = try reader.readU16();
-    const identity = try allocator.alloc(u8, identity_len);
-    try reader.reader.readNoEof(identity);
+    try decoder.ensure(1);
+    _ = decoder.decode(u8); // credential type (ignore for now)
+    const identity = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     // Skip capabilities for now
-    const cap_len = try reader.readU16();
-    try stream.seekBy(cap_len);
+    try decoder.ensure(2);
+    const cap_len = decoder.decode(u16);
+    try decoder.ensure(cap_len);
+    _ = decoder.slice(cap_len);
     
     // Leaf node source
-    const source = try reader.readU8();
+    try decoder.ensure(1);
+    const source = decoder.decode(u8);
     
     // Extensions
-    const ext_count = try reader.readU16();
+    try decoder.ensure(2);
+    const ext_count = decoder.decode(u16);
     const extensions = try allocator.alloc(types.Extension, ext_count);
     for (extensions) |*ext| {
-        const ext_type = try reader.readU16();
-        const ext_data_len = try reader.readU16();
-        const ext_data = try allocator.alloc(u8, ext_data_len);
-        try reader.reader.readNoEof(ext_data);
+        try decoder.ensure(2);
+        const ext_type = decoder.decode(u16);
+        const ext_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
         
         ext.* = types.Extension{
             .extension_type = types.ExtensionType.fromInt(ext_type),
@@ -605,9 +600,7 @@ fn parseLeafNode(allocator: std.mem.Allocator, data: []const u8) !types.LeafNode
     }
     
     // Signature
-    const sig_len = try reader.readU16();
-    const signature = try allocator.alloc(u8, sig_len);
-    try reader.reader.readNoEof(signature);
+    const signature = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     return types.LeafNode{
         .encryption_key = .{ .data = enc_key_data },
@@ -638,12 +631,11 @@ fn serializeExtensions(allocator: std.mem.Allocator, extensions: []const types.E
     defer buffer.deinit();
     
     // Use TLS codec convenience functions
-    const tls = mls_zig.tls_codec;
     
     for (extensions) |ext| {
-        try tls.writeU16ToList(&buffer, @intFromEnum(ext.extension_type));
-        try tls.writeU8ToList(&buffer, if (ext.critical) 1 else 0);
-        try tls.writeVarBytesToList(&buffer, u16, ext.extension_data);
+        try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(ext.extension_type));
+        try mls_zig.tls_encode.encodeInt(&buffer, u8, if (ext.critical) 1 else 0);
+        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, ext.extension_data);
     }
     
     return buffer.toOwnedSlice();
@@ -653,18 +645,19 @@ fn serializeExtensions(allocator: std.mem.Allocator, extensions: []const types.E
 fn parseExtensions(allocator: std.mem.Allocator, data: []const u8) ![]types.Extension {
     if (data.len == 0) return &.{};
     
-    var stream = std.io.fixedBufferStream(data);
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(data);
     
     var extensions = std.ArrayList(types.Extension).init(allocator);
     defer extensions.deinit();
     
-    while (stream.pos < data.len) {
-        const ext_type = try reader.readU16();
-        const critical = (try reader.readU8()) != 0;
-        const ext_data_len = try reader.readU16();
-        const ext_data = try allocator.alloc(u8, ext_data_len);
-        try reader.reader.readNoEof(ext_data);
+    while (decoder.eof() == false) {
+        if (decoder.rest().len < 3) break; // Need at least ext_type(2) + critical(1)
+        
+        try decoder.ensure(2);
+        const ext_type = decoder.decode(u16);
+        try decoder.ensure(1);
+        const critical = decoder.decode(u8) != 0;
+        const ext_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
         
         try extensions.append(types.Extension{
             .extension_type = types.ExtensionType.fromInt(ext_type),

@@ -1,4 +1,5 @@
 const std = @import("std");
+const tls = std.crypto.tls;
 const mls_zig = @import("mls_zig");
 const wasm_random = @import("../wasm_random.zig");
 
@@ -22,9 +23,8 @@ pub const TreeKem = struct {
         defer tree.deinit();
         
         // Parse leaf node
-        var stream = std.io.fixedBufferStream(leaf_node);
-        var tls_reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
-        const parsed_leaf = try mls_zig.leaf_node.LeafNode.deserialize(allocator, &tls_reader);
+        var decoder = tls.Decoder.fromTheirSlice(leaf_node);
+        const parsed_leaf = try mls_zig.leaf_node.LeafNode.deserialize(allocator, &decoder);
         defer {
             var mutable_leaf = parsed_leaf;
             mutable_leaf.deinit(allocator);
@@ -100,9 +100,8 @@ pub const TreeKem = struct {
         defer tree.deinit();
         
         // Convert update path to mls_zig format
-        var stream = std.io.fixedBufferStream(update_path.leaf_node);
-        var tls_reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
-        const leaf_node = try mls_zig.leaf_node.LeafNode.deserialize(allocator, &tls_reader);
+        var decoder = tls.Decoder.fromTheirSlice(update_path.leaf_node);
+        const leaf_node = try mls_zig.leaf_node.LeafNode.deserialize(allocator, &decoder);
         defer {
             var mutable_leaf = leaf_node;
             mutable_leaf.deinit(allocator);

@@ -27,10 +27,8 @@ const generateHpkeKeyPair = key_package.generateHpkeKeyPair;
 
 const LeafNode = @import("leaf_node.zig").LeafNode;
 
-const tls_codec = @import("tls_codec.zig");
-const TlsWriter = tls_codec.TlsWriter;
-const TlsReader = tls_codec.TlsReader;
-const VarBytes = tls_codec.VarBytes;
+const tls_encode = @import("tls_encode.zig");
+const tls = std.crypto.tls;
 
 /// Errors specific to TreeKEM operations
 pub const TreeKemError = error{
@@ -47,8 +45,9 @@ pub const TreeKemError = error{
 /// ParentNode represents an internal node in the TreeKEM tree
 pub const ParentNode = struct {
     encryption_key: HpkePublicKey,
-    parent_hash: VarBytes,
+    parent_hash: []u8,
     unmerged_leaves: []LeafNodeIndex,
+    allocator: std.mem.Allocator,
 
     pub fn init(
         allocator: Allocator,
@@ -57,14 +56,15 @@ pub const ParentNode = struct {
     ) !ParentNode {
         return ParentNode{
             .encryption_key = encryption_key,
-            .parent_hash = try VarBytes.init(allocator, parent_hash),
+            .parent_hash = try allocator.dupe(u8, parent_hash),
             .unmerged_leaves = try allocator.alloc(LeafNodeIndex, 0),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *ParentNode, allocator: Allocator) void {
         self.encryption_key.deinit(allocator);
-        self.parent_hash.deinit();
+        self.allocator.free(self.parent_hash);
         allocator.free(self.unmerged_leaves);
     }
 
@@ -72,8 +72,8 @@ pub const ParentNode = struct {
         const cloned_key = try HpkePublicKey.initOwned(allocator, self.encryption_key.asSlice());
         errdefer cloned_key.deinit(allocator);
 
-        const cloned_hash = try VarBytes.init(allocator, self.parent_hash.asSlice());
-        errdefer cloned_hash.deinit();
+        const cloned_hash = try allocator.dupe(u8, self.parent_hash);
+        errdefer allocator.free(cloned_hash);
 
         const cloned_leaves = try allocator.alloc(LeafNodeIndex, self.unmerged_leaves.len);
         @memcpy(cloned_leaves, self.unmerged_leaves);
@@ -82,6 +82,7 @@ pub const ParentNode = struct {
             .encryption_key = cloned_key,
             .parent_hash = cloned_hash,
             .unmerged_leaves = cloned_leaves,
+            .allocator = allocator,
         };
     }
 
@@ -91,7 +92,7 @@ pub const ParentNode = struct {
         cs: CipherSuite,
         left_hash: []const u8,
         right_hash: []const u8,
-    ) !VarBytes {
+    ) ![]u8 {
         // Parent hash = Hash(left_hash || right_hash)
         const total_len = left_hash.len + right_hash.len;
         const input = try allocator.alloc(u8, total_len);
@@ -103,7 +104,7 @@ pub const ParentNode = struct {
         var hash_secret = try cs.hash(allocator, input);
         defer hash_secret.deinit();
 
-        return VarBytes.init(allocator, hash_secret.asSlice());
+        return allocator.dupe(u8, hash_secret.asSlice());
     }
 
     /// Add an unmerged leaf to this parent node
@@ -120,42 +121,53 @@ pub const ParentNode = struct {
     pub fn serialize(self: ParentNode, writer: anytype) !void {
         // Write encryption key
         const key_data = self.encryption_key.asSlice();
-        try writer.writeInt(u16, @intCast(key_data.len), .big);
-        try writer.writeAll(key_data);
+        try tls_encode.writeVarBytes(writer, u16, key_data);
 
         // Write parent hash
-        const hash_data = self.parent_hash.asSlice();
-        try writer.writeInt(u16, @intCast(hash_data.len), .big);
-        try writer.writeAll(hash_data);
+        try tls_encode.writeVarBytes(writer, u16, self.parent_hash);
 
         // Write unmerged leaves
-        try writer.writeInt(u32, @intCast(self.unmerged_leaves.len), .big);
+        try tls_encode.writeInt(writer, u32, @intCast(self.unmerged_leaves.len));
         for (self.unmerged_leaves) |leaf_index| {
-            try writer.writeInt(u32, leaf_index.asU32(), .big);
+            try tls_encode.writeInt(writer, u32, leaf_index.asU32());
         }
     }
 
     /// Deserialize a parent node
     pub fn deserialize(allocator: Allocator, reader: anytype) !ParentNode {
-        // Read encryption key
-        const key_data = try reader.readVarBytes(u16, allocator);
+        // Read encryption key length
+        var key_len_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&key_len_buf);
+        var key_decoder = tls.Decoder.fromTheirSlice(&key_len_buf);
+        const key_len = key_decoder.decode(u16);
+        const key_data = try allocator.alloc(u8, key_len);
         defer allocator.free(key_data);
+        _ = try reader.readAll(key_data);
         var encryption_key = try HpkePublicKey.initOwned(allocator, key_data);
         errdefer encryption_key.deinit(allocator);
 
-        // Read parent hash
-        const hash_data = try reader.readVarBytes(u16, allocator);
-        defer allocator.free(hash_data);
-        var parent_hash = try VarBytes.init(allocator, hash_data);
-        errdefer parent_hash.deinit();
+        // Read parent hash length
+        var hash_len_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&hash_len_buf);
+        var hash_decoder = tls.Decoder.fromTheirSlice(&hash_len_buf);
+        const hash_len = hash_decoder.decode(u16);
+        const parent_hash = try allocator.alloc(u8, hash_len);
+        _ = try reader.readAll(parent_hash);
+        errdefer allocator.free(parent_hash);
 
-        // Read unmerged leaves
-        const num_leaves = try reader.readU32();
+        // Read unmerged leaves count
+        var leaves_len_buf: [4]u8 = undefined;
+        _ = try reader.readAll(&leaves_len_buf);
+        var leaves_decoder = tls.Decoder.fromTheirSlice(&leaves_len_buf);
+        const num_leaves = leaves_decoder.decode(u32);
         const unmerged_leaves = try allocator.alloc(LeafNodeIndex, num_leaves);
         errdefer allocator.free(unmerged_leaves);
 
         for (unmerged_leaves) |*leaf| {
-            const index = try reader.readU32();
+            var index_buf: [4]u8 = undefined;
+            _ = try reader.readAll(&index_buf);
+            var index_decoder = tls.Decoder.fromTheirSlice(&index_buf);
+            const index = index_decoder.decode(u32);
             leaf.* = LeafNodeIndex.new(index);
         }
 
@@ -163,6 +175,7 @@ pub const ParentNode = struct {
             .encryption_key = encryption_key,
             .parent_hash = parent_hash,
             .unmerged_leaves = unmerged_leaves,
+            .allocator = allocator,
         };
     }
 };
@@ -260,24 +273,32 @@ pub const UpdatePathNode = struct {
     pub fn serialize(self: UpdatePathNode, writer: anytype) !void {
         // Write public key
         const key_data = self.public_key.asSlice();
-        try writer.writeVarBytes(u16, key_data);
+        try tls_encode.writeVarBytes(writer, u16, key_data);
 
         // Write encrypted path secrets
-        try writer.writeU32(@intCast(self.encrypted_path_secrets.len));
+        try tls_encode.writeInt(writer, u32, @intCast(self.encrypted_path_secrets.len));
         for (self.encrypted_path_secrets) |ciphertext| {
             try ciphertext.serialize(writer);
         }
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !UpdatePathNode {
-        // Read public key
-        const key_data = try reader.readVarBytes(u16, allocator);
+        // Read public key length
+        var key_len_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&key_len_buf);
+        var key_decoder = tls.Decoder.fromTheirSlice(&key_len_buf);
+        const key_len = key_decoder.decode(u16);
+        const key_data = try allocator.alloc(u8, key_len);
         defer allocator.free(key_data);
+        _ = try reader.readAll(key_data);
         var public_key = try HpkePublicKey.initOwned(allocator, key_data);
         errdefer public_key.deinit(allocator);
 
-        // Read encrypted path secrets
-        const num_secrets = try reader.readU32();
+        // Read encrypted path secrets count
+        var secrets_len_buf: [4]u8 = undefined;
+        _ = try reader.readAll(&secrets_len_buf);
+        var secrets_decoder = tls.Decoder.fromTheirSlice(&secrets_len_buf);
+        const num_secrets = secrets_decoder.decode(u32);
         const encrypted_secrets = try allocator.alloc(HpkeCiphertext, num_secrets);
         errdefer {
             for (encrypted_secrets[0..]) |*secret| {
@@ -299,46 +320,59 @@ pub const UpdatePathNode = struct {
 
 /// HPKE ciphertext for encrypted path secrets
 pub const HpkeCiphertext = struct {
-    kem_output: VarBytes,
-    ciphertext: VarBytes,
+    kem_output: []u8,
+    ciphertext: []u8,
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: Allocator, kem_output: []const u8, ciphertext: []const u8) !HpkeCiphertext {
         return HpkeCiphertext{
-            .kem_output = try VarBytes.init(allocator, kem_output),
-            .ciphertext = try VarBytes.init(allocator, ciphertext),
+            .kem_output = try allocator.dupe(u8, kem_output),
+            .ciphertext = try allocator.dupe(u8, ciphertext),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *HpkeCiphertext) void {
-        self.kem_output.deinit();
-        self.ciphertext.deinit();
+        self.allocator.free(self.kem_output);
+        self.allocator.free(self.ciphertext);
     }
 
     pub fn clone(self: HpkeCiphertext, allocator: Allocator) !HpkeCiphertext {
         return HpkeCiphertext{
-            .kem_output = try VarBytes.init(allocator, self.kem_output.asSlice()),
-            .ciphertext = try VarBytes.init(allocator, self.ciphertext.asSlice()),
+            .kem_output = try allocator.dupe(u8, self.kem_output),
+            .ciphertext = try allocator.dupe(u8, self.ciphertext),
+            .allocator = allocator,
         };
     }
 
     pub fn serialize(self: HpkeCiphertext, writer: anytype) !void {
-        try self.kem_output.serialize(writer);
-        try self.ciphertext.serialize(writer);
+        try tls_encode.writeVarBytes(writer, u16, self.kem_output);
+        try tls_encode.writeVarBytes(writer, u16, self.ciphertext);
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !HpkeCiphertext {
-        const kem_output_data = try reader.readVarBytes(u16, allocator);
-        defer allocator.free(kem_output_data);
-        var kem_output = try VarBytes.init(allocator, kem_output_data);
-        errdefer kem_output.deinit();
+        // Read kem_output length
+        var kem_len_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&kem_len_buf);
+        var kem_decoder = tls.Decoder.fromTheirSlice(&kem_len_buf);
+        const kem_len = kem_decoder.decode(u16);
+        const kem_output = try allocator.alloc(u8, kem_len);
+        _ = try reader.readAll(kem_output);
+        errdefer allocator.free(kem_output);
 
-        const ciphertext_data = try reader.readVarBytes(u16, allocator);
-        defer allocator.free(ciphertext_data);
-        const ciphertext = try VarBytes.init(allocator, ciphertext_data);
+        // Read ciphertext length
+        var cipher_len_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&cipher_len_buf);
+        var cipher_decoder = tls.Decoder.fromTheirSlice(&cipher_len_buf);
+        const cipher_len = cipher_decoder.decode(u16);
+        const ciphertext = try allocator.alloc(u8, cipher_len);
+        _ = try reader.readAll(ciphertext);
+        errdefer allocator.free(ciphertext);
 
         return HpkeCiphertext{
             .kem_output = kem_output,
             .ciphertext = ciphertext,
+            .allocator = allocator,
         };
     }
 };
@@ -415,7 +449,7 @@ fn hpkeDecrypt(
     };
     
     var server_ctx = try SuiteType.createServerContext(
-        ciphertext.kem_output.asSlice(),
+        ciphertext.kem_output,
         server_kp,
         info,
         null, // no PSK
@@ -423,12 +457,12 @@ fn hpkeDecrypt(
 
     // Allocate space for plaintext
     const aead = SuiteType.aead;
-    const plaintext_len = ciphertext.ciphertext.len() - aead.tag_length;
+    const plaintext_len = ciphertext.ciphertext.len - aead.tag_length;
     const plaintext = try allocator.alloc(u8, plaintext_len);
     errdefer allocator.free(plaintext);
 
     // Decrypt
-    try server_ctx.decryptFromClient(plaintext, ciphertext.ciphertext.asSlice(), aad);
+    try server_ctx.decryptFromClient(plaintext, ciphertext.ciphertext, aad);
     
     return plaintext;
 }
@@ -471,7 +505,7 @@ pub const UpdatePath = struct {
     pub fn serialize(self: UpdatePath, writer: anytype) !void {
         try self.leaf_node.serialize(writer);
         
-        try writer.writeU32(@intCast(self.nodes.len));
+        try tls_encode.writeInt(writer, u32, @intCast(self.nodes.len));
         for (self.nodes) |node| {
             try node.serialize(writer);
         }
@@ -481,7 +515,10 @@ pub const UpdatePath = struct {
         var leaf = try LeafNode.deserialize(allocator, reader);
         errdefer leaf.deinit(allocator);
 
-        const num_nodes = try reader.readU32();
+        var nodes_len_buf: [4]u8 = undefined;
+        _ = try reader.readAll(&nodes_len_buf);
+        var nodes_decoder = tls.Decoder.fromTheirSlice(&nodes_len_buf);
+        const num_nodes = nodes_decoder.decode(u32);
         const nodes = try allocator.alloc(UpdatePathNode, num_nodes);
         errdefer {
             for (nodes[0..]) |*node| {
@@ -617,11 +654,11 @@ pub const TreeSync = struct {
     
     /// Compute the tree hash for the entire tree
     /// This is the hash of the root node after computing all leaf and parent hashes
-    pub fn computeTreeHash(self: *const TreeSync, allocator: Allocator) !VarBytes {
+    pub fn computeTreeHash(self: *const TreeSync, allocator: Allocator) ![]u8 {
         const tree_size = self.tree.treeSize();
         if (tree_size.asU32() == 0) {
             // Empty tree has empty hash
-            return VarBytes.init(allocator, &[_]u8{});
+            return allocator.dupe(u8, &[_]u8{});
         }
         
         // We need to compute hashes for all nodes from leaves up to root
@@ -629,11 +666,11 @@ pub const TreeSync = struct {
         // the maximum tree index, not the tree size
         const leaf_count = self.tree.leafCount();
         const max_tree_index = if (leaf_count > 0) 2 * leaf_count - 1 else 0;
-        var node_hashes = try allocator.alloc(?VarBytes, max_tree_index);
+        var node_hashes = try allocator.alloc(?[]u8, max_tree_index);
         defer {
-            for (node_hashes) |*hash| {
-                if (hash.*) |*h| {
-                    h.deinit();
+            for (node_hashes) |hash| {
+                if (hash) |h| {
+                    allocator.free(h);
                 }
             }
             allocator.free(node_hashes);
@@ -661,21 +698,14 @@ pub const TreeSync = struct {
                 var hash_secret = try self.cipher_suite.hash(allocator, buffer.items);
                 
                 if (tree_index < node_hashes.len) {
-                    // Transfer ownership from Secret to VarBytes
-                    node_hashes[tree_index] = VarBytes{
-                        .data = hash_secret.data,
-                        .allocator = allocator,
-                    };
-                    hash_secret.data = &[_]u8{}; // Prevent double-free
+                    // Store a copy of the hash data
+                    node_hashes[tree_index] = try allocator.dupe(u8, hash_secret.asSlice());
                 }
                 hash_secret.deinit();
             } else {
                 // Empty leaf has empty hash
                 if (tree_index < node_hashes.len) {
-                    node_hashes[tree_index] = VarBytes{
-                        .data = &[_]u8{},
-                        .allocator = allocator,
-                    };
+                    node_hashes[tree_index] = try allocator.dupe(u8, &[_]u8{});
                 }
             }
         }
@@ -699,12 +729,12 @@ pub const TreeSync = struct {
                 const right_idx = right_index.asU32();
                 
                 const left_hash = if (left_idx < node_hashes.len and node_hashes[left_idx] != null) 
-                    node_hashes[left_idx].?.asSlice()
+                    node_hashes[left_idx].?
                 else
                     &[_]u8{};
                     
                 const right_hash = if (right_idx < node_hashes.len and node_hashes[right_idx] != null)
-                    node_hashes[right_idx].?.asSlice()
+                    node_hashes[right_idx].?
                 else
                     &[_]u8{};
                 
@@ -722,7 +752,7 @@ pub const TreeSync = struct {
                     defer hash_secret.deinit();
                     
                     if (tree_index < node_hashes.len) {
-                        node_hashes[tree_index] = try VarBytes.init(allocator, hash_secret.asSlice());
+                        node_hashes[tree_index] = try allocator.dupe(u8, hash_secret.asSlice());
                     }
                 } else {
                     // Empty parent node - just hash the children
@@ -747,24 +777,14 @@ pub const TreeSync = struct {
         // Check if root index is within bounds and has a hash
         if (root_idx < node_hashes.len and node_hashes[root_idx] != null) {
             // Clone the root hash to return it
-            const root_data = try allocator.dupe(u8, node_hashes[root_idx].?.asSlice());
-            return VarBytes{
-                .data = root_data,
-                .allocator = allocator,
-            };
+            return try allocator.dupe(u8, node_hashes[root_idx].?);
         } else if (leaf_count == 0) {
             // Empty tree has empty hash
-            return VarBytes{
-                .data = &[_]u8{},
-                .allocator = allocator,
-            };
+            return try allocator.dupe(u8, &[_]u8{});
         } else {
             // For now, return empty hash instead of failing
             // TODO: Debug why root hash isn't being computed
-            return VarBytes{
-                .data = &[_]u8{},
-                .allocator = allocator,
-            };
+            return try allocator.dupe(u8, &[_]u8{});
         }
     }
 };
@@ -844,7 +864,7 @@ pub fn createUpdatePath(
                 const recipient_key = switch (res_node) {
                     .leaf => |idx| blk: {
                         const leaf = tree.tree.leafByIndex(idx) orelse continue;
-                        break :blk leaf.payload.encryption_key.asSlice();
+                        break :blk leaf.payload.encryption_key;
                     },
                     .parent => |idx| blk: {
                         const parent = tree.tree.parentByIndex(idx) orelse continue;
@@ -1063,17 +1083,15 @@ test "ParentNode creation and serialization" {
     // Test serialization
     var buffer: [1024]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
-    try parent_node.serialize(&writer);
+    try parent_node.serialize(stream.writer());
 
     // Test deserialization
     var read_stream = std.io.fixedBufferStream(buffer[0..stream.pos]);
-    var reader = TlsReader(@TypeOf(read_stream.reader())).init(read_stream.reader());
-    var decoded = try ParentNode.deserialize(allocator, &reader);
+    var decoded = try ParentNode.deserialize(allocator, read_stream.reader());
     defer decoded.deinit(allocator);
 
     try testing.expectEqualSlices(u8, parent_node.encryption_key.asSlice(), decoded.encryption_key.asSlice());
-    try testing.expectEqualSlices(u8, parent_node.parent_hash.asSlice(), decoded.parent_hash.asSlice());
+    try testing.expectEqualSlices(u8, parent_node.parent_hash, decoded.parent_hash);
     try testing.expectEqual(parent_node.unmerged_leaves.len, decoded.unmerged_leaves.len);
 }
 
@@ -1187,9 +1205,9 @@ test "UpdatePath serialization" {
     defer leaf.deinit(allocator);
     
     // Set required fields for testing
-    leaf.payload.encryption_key = try VarBytes.init(allocator, &[_]u8{0x01} ** 32);
-    leaf.payload.signature_key = try VarBytes.init(allocator, &[_]u8{0x02} ** 32);
-    leaf.signature = try VarBytes.init(allocator, &[_]u8{0x03} ** 64);
+    leaf.payload.encryption_key = try allocator.dupe(u8, &[_]u8{0x01} ** 32);
+    leaf.payload.signature_key = try allocator.dupe(u8, &[_]u8{0x02} ** 32);
+    leaf.signature = try allocator.dupe(u8, &[_]u8{0x03} ** 64);
 
     // Create update path nodes
     const key_data = [_]u8{0x04} ** 32;
@@ -1214,13 +1232,11 @@ test "UpdatePath serialization" {
     // Test serialization
     var buffer: [2048]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
-    try update_path.serialize(&writer);
+    try update_path.serialize(stream.writer());
 
     // Test deserialization
     var read_stream = std.io.fixedBufferStream(buffer[0..stream.pos]);
-    var reader = TlsReader(@TypeOf(read_stream.reader())).init(read_stream.reader());
-    var decoded = try UpdatePath.deserialize(allocator, &reader);
+    var decoded = try UpdatePath.deserialize(allocator, read_stream.reader());
     defer decoded.deinit(allocator);
 
     try testing.expectEqual(update_path.nodes.len, decoded.nodes.len);

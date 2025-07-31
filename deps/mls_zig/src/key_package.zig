@@ -4,7 +4,7 @@ const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
 const wasm_random = @import("wasm_random.zig");
 
-const tls_codec = @import("tls_codec.zig");
+const tls_encode = @import("tls_encode.zig");
 const cipher_suite = @import("cipher_suite.zig");
 const credentials = @import("credentials.zig");
 
@@ -784,8 +784,8 @@ pub fn signWithLabel(
     const full_label = try std.fmt.allocPrint(allocator, "{s}{s}", .{ cipher_suite.MLS_LABEL_PREFIX, label });
     defer allocator.free(full_label);
     
-    try tls_codec.writeVarBytesToList(&sign_content, u8, full_label);
-    try tls_codec.writeVarBytesToList(&sign_content, u32, content);
+    try tls_encode.encodeVarBytes(&sign_content, u8, full_label);
+    try tls_encode.encodeVarBytes(&sign_content, u32, content);
 
     const signature_data = switch (cs.signatureScheme()) {
         .ED25519 => blk: {
@@ -835,8 +835,8 @@ pub fn verifyWithLabel(
     const full_label = try std.fmt.allocPrint(allocator, "{s}{s}", .{ cipher_suite.MLS_LABEL_PREFIX, label });
     defer allocator.free(full_label);
     
-    try tls_codec.writeVarBytesToList(&sign_content, u8, full_label);
-    try tls_codec.writeVarBytesToList(&sign_content, u32, content);
+    try tls_encode.encodeVarBytes(&sign_content, u8, full_label);
+    try tls_encode.encodeVarBytes(&sign_content, u32, content);
 
     return switch (cs.signatureScheme()) {
         .ED25519 => blk: {

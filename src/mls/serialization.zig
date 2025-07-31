@@ -1,4 +1,5 @@
 const std = @import("std");
+const tls = std.crypto.tls;
 const types = @import("types.zig");
 const mls_zig = @import("mls_zig");
 
@@ -10,7 +11,7 @@ pub const Serializer = struct {
         defer buffer.deinit();
         
         var stream = std.io.fixedBufferStream(buffer.items);
-        var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
+        var writer = mls_zig.tls_encode.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
         
         // Write version
         try writer.writeU16(@intFromEnum(key_package.version));
@@ -39,7 +40,7 @@ pub const Serializer = struct {
         defer buffer.deinit();
         
         var stream = std.io.fixedBufferStream(buffer.items);
-        var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
+        var writer = mls_zig.tls_encode.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
         
         // Write cipher suite
         try writer.writeU16(@intFromEnum(welcome.cipher_suite));
@@ -62,7 +63,7 @@ pub const Serializer = struct {
         defer buffer.deinit();
         
         var stream = std.io.fixedBufferStream(buffer.items);
-        var writer = mls_zig.tls_codec.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
+        var writer = mls_zig.tls_encode.TlsWriter(@TypeOf(stream.writer())).init(stream.writer());
         
         // Write version
         try writer.writeU16(@intFromEnum(message.version));
@@ -214,7 +215,7 @@ pub const Deserializer = struct {
     /// Deserialize a KeyPackage from TLS wire format
     pub fn deserializeKeyPackage(allocator: std.mem.Allocator, data: []const u8) !types.KeyPackage {
         var stream = std.io.fixedBufferStream(data);
-        var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+        var reader = mls_zig.tls_encode.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
         
         // Read version
         const version = @as(types.ProtocolVersion, @enumFromInt(try reader.readU16()));
@@ -253,7 +254,7 @@ pub const Deserializer = struct {
     /// Deserialize a Welcome message from TLS wire format
     pub fn deserializeWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welcome {
         var stream = std.io.fixedBufferStream(data);
-        var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+        var reader = mls_zig.tls_encode.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
         
         // Read cipher suite
         const cipher_suite = @as(types.Ciphersuite, @enumFromInt(try reader.readU16()));

@@ -1,7 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
-const tls_codec = @import("tls_codec.zig");
+const tls_encode = @import("tls_encode.zig");
 const crypto = std.crypto;
+const tls = std.crypto.tls;
 const Allocator = std.mem.Allocator;
 
 pub const MLS_LABEL_PREFIX = "MLS 1.0 ";
@@ -331,8 +332,8 @@ pub const CipherSuite = enum(u16) {
         var info_list = std.ArrayList(u8).init(allocator);
         defer info_list.deinit();
 
-        // Manual serialization instead of TlsWriter
-        try tls_codec.writeU16ToList(&info_list, length);
+        // Use std.crypto.tls for encoding
+        try tls_encode.encodeInt(&info_list, u16, length);
         
         // Create full label by concatenating MLS prefix as bytes + label bytes
         // This handles binary labels correctly (like from OpenMLS test vectors)
@@ -343,8 +344,9 @@ pub const CipherSuite = enum(u16) {
         @memcpy(full_label[0..prefix_bytes.len], prefix_bytes);
         @memcpy(full_label[prefix_bytes.len..], label);
         
-        try tls_codec.writeVarBytesToList(&info_list, u8, full_label);
-        try tls_codec.writeVarBytesToList(&info_list, u8, context);
+        // Use our helper for variable-length encoding
+        try tls_encode.encodeVarBytes(&info_list, u8, full_label);
+        try tls_encode.encodeVarBytes(&info_list, u8, context);
 
         return self.hkdfExpand(allocator, prk, info_list.items, length);
     }
@@ -485,79 +487,79 @@ pub const HpkeAeadType = enum(u16) {
 };
 
 pub fn tlsEncodeCipherSuite(writer: anytype, cipher_suite: CipherSuite) !void {
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intFromEnum(cipher_suite));
+    try tls_encode.writeInt(writer, u16, @intFromEnum(cipher_suite));
 }
 
-pub fn tlsDecodeCipherSuite(reader: anytype) !CipherSuite {
-    var tls_reader = tls_codec.TlsReader(@TypeOf(reader)).init(reader);
-    const raw_value = try tls_reader.readU16();
+pub fn tlsDecodeCipherSuite(data: []const u8) !CipherSuite {
+    const mutable_data = @constCast(data);
+    var decoder = tls.Decoder.fromTheirSlice(mutable_data);
+    const raw_value = decoder.decode(u16);
     return @enumFromInt(raw_value);
 }
 
 pub fn tlsEncodeAeadType(writer: anytype, aead_type: AeadType) !void {
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intFromEnum(aead_type));
+    try tls_encode.writeInt(writer, u16, @intFromEnum(aead_type));
 }
 
-pub fn tlsDecodeAeadType(reader: anytype) !AeadType {
-    var tls_reader = tls_codec.TlsReader(@TypeOf(reader)).init(reader);
-    const raw_value = try tls_reader.readU16();
+pub fn tlsDecodeAeadType(data: []const u8) !AeadType {
+    const mutable_data = @constCast(data);
+    var decoder = tls.Decoder.fromTheirSlice(mutable_data);
+    const raw_value = decoder.decode(u16);
     return @enumFromInt(raw_value);
 }
 
 pub fn tlsEncodeHashType(writer: anytype, hash_type: HashType) !void {
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intFromEnum(hash_type));
+    try tls_encode.writeInt(writer, u16, @intFromEnum(hash_type));
 }
 
-pub fn tlsDecodeHashType(reader: anytype) !HashType {
-    var tls_reader = tls_codec.TlsReader(@TypeOf(reader)).init(reader);
-    const raw_value = try tls_reader.readU16();
+pub fn tlsDecodeHashType(data: []const u8) !HashType {
+    const mutable_data = @constCast(data);
+    var decoder = tls.Decoder.fromTheirSlice(mutable_data);
+    const raw_value = decoder.decode(u16);
     return @enumFromInt(raw_value);
 }
 
 pub fn tlsEncodeSignatureScheme(writer: anytype, signature_scheme: SignatureScheme) !void {
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intFromEnum(signature_scheme));
+    try tls_encode.writeInt(writer, u16, @intFromEnum(signature_scheme));
 }
 
-pub fn tlsDecodeSignatureScheme(reader: anytype) !SignatureScheme {
-    var tls_reader = tls_codec.TlsReader(@TypeOf(reader)).init(reader);
-    const raw_value = try tls_reader.readU16();
+pub fn tlsDecodeSignatureScheme(data: []const u8) !SignatureScheme {
+    const mutable_data = @constCast(data);
+    var decoder = tls.Decoder.fromTheirSlice(mutable_data);
+    const raw_value = decoder.decode(u16);
     return @enumFromInt(raw_value);
 }
 
 pub fn tlsEncodeHpkeKemType(writer: anytype, hpke_kem_type: HpkeKemType) !void {
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intFromEnum(hpke_kem_type));
+    try tls_encode.writeInt(writer, u16, @intFromEnum(hpke_kem_type));
 }
 
-pub fn tlsDecodeHpkeKemType(reader: anytype) !HpkeKemType {
-    var tls_reader = tls_codec.TlsReader(@TypeOf(reader)).init(reader);
-    const raw_value = try tls_reader.readU16();
+pub fn tlsDecodeHpkeKemType(data: []const u8) !HpkeKemType {
+    const mutable_data = @constCast(data);
+    var decoder = tls.Decoder.fromTheirSlice(mutable_data);
+    const raw_value = decoder.decode(u16);
     return @enumFromInt(raw_value);
 }
 
 pub fn tlsEncodeHpkeKdfType(writer: anytype, hpke_kdf_type: HpkeKdfType) !void {
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intFromEnum(hpke_kdf_type));
+    try tls_encode.writeInt(writer, u16, @intFromEnum(hpke_kdf_type));
 }
 
-pub fn tlsDecodeHpkeKdfType(reader: anytype) !HpkeKdfType {
-    var tls_reader = tls_codec.TlsReader(@TypeOf(reader)).init(reader);
-    const raw_value = try tls_reader.readU16();
+pub fn tlsDecodeHpkeKdfType(data: []const u8) !HpkeKdfType {
+    const mutable_data = @constCast(data);
+    var decoder = tls.Decoder.fromTheirSlice(mutable_data);
+    const raw_value = decoder.decode(u16);
     return @enumFromInt(raw_value);
 }
 
 pub fn tlsEncodeHpkeAeadType(writer: anytype, hpke_aead_type: HpkeAeadType) !void {
-    var tls_writer = tls_codec.TlsWriter(@TypeOf(writer)).init(writer);
-    try tls_writer.writeU16(@intFromEnum(hpke_aead_type));
+    try tls_encode.writeInt(writer, u16, @intFromEnum(hpke_aead_type));
 }
 
-pub fn tlsDecodeHpkeAeadType(reader: anytype) !HpkeAeadType {
-    var tls_reader = tls_codec.TlsReader(@TypeOf(reader)).init(reader);
-    const raw_value = try tls_reader.readU16();
+pub fn tlsDecodeHpkeAeadType(data: []const u8) !HpkeAeadType {
+    const mutable_data = @constCast(data);
+    var decoder = tls.Decoder.fromTheirSlice(mutable_data);
+    const raw_value = decoder.decode(u16);
     return @enumFromInt(raw_value);
 }
 
@@ -675,8 +677,7 @@ test "tls encoding and decoding" {
     const cs = CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
     try tlsEncodeCipherSuite(buffer.writer(), cs);
     
-    var reader = std.io.fixedBufferStream(buffer.items);
-    const decoded_cs = try tlsDecodeCipherSuite(reader.reader());
+    const decoded_cs = try tlsDecodeCipherSuite(buffer.items);
     
     try testing.expectEqual(cs, decoded_cs);
 }

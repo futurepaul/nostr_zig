@@ -1,4 +1,5 @@
 const std = @import("std");
+const tls = std.crypto.tls;
 const types = @import("types.zig");
 const provider = @import("provider.zig");
 const extension = @import("extension.zig");
@@ -169,17 +170,17 @@ pub fn createGroup(
     
     // Compute the tree hash
     var tree_hash_varbytes = try tree.computeTreeHash(allocator);
-    defer tree_hash_varbytes.deinit();
+    defer allocator.free(tree_hash_varbytes);
     
     // Convert VarBytes to fixed array
     var tree_hash_array: [32]u8 = undefined;
-    if (tree_hash_varbytes.asSlice().len == 32) {
-        @memcpy(&tree_hash_array, tree_hash_varbytes.asSlice()[0..32]);
+    if (tree_hash_varbytes.len == 32) {
+        @memcpy(&tree_hash_array, tree_hash_varbytes[0..32]);
     } else {
         // If hash is not 32 bytes, pad or truncate as needed
         @memset(&tree_hash_array, 0);
-        const copy_len = @min(tree_hash_varbytes.asSlice().len, 32);
-        @memcpy(tree_hash_array[0..copy_len], tree_hash_varbytes.asSlice()[0..copy_len]);
+        const copy_len = @min(tree_hash_varbytes.len, 32);
+        @memcpy(tree_hash_array[0..copy_len], tree_hash_varbytes[0..copy_len]);
     }
     
     // Update group context with computed tree hash
@@ -228,24 +229,23 @@ pub fn computeTranscriptHash(
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    const tls_codec = mls_zig.tls_codec;
     
     // Write group ID
-    try tls_codec.writeVarBytesToList(&buffer, u8, &group_context.group_id.data);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u8, &group_context.group_id.data);
     
     // Write epoch
-    try tls_codec.writeU64ToList(&buffer, group_context.epoch);
+    try mls_zig.tls_encode.encodeInt(&buffer, u64, group_context.epoch);
     
     // Write tree hash
-    try tls_codec.writeBytesToList(&buffer, &group_context.tree_hash);
+    try buffer.appendSlice(&group_context.tree_hash);
     
     // Write confirmed transcript hash (for interim transcript hash computation)
-    try tls_codec.writeBytesToList(&buffer, &group_context.confirmed_transcript_hash);
+    try buffer.appendSlice(&group_context.confirmed_transcript_hash);
     
     // Write extensions
     for (group_context.extensions) |ext| {
-        try tls_codec.writeU16ToList(&buffer, @intFromEnum(ext.extension_type));
-        try tls_codec.writeVarBytesToList(&buffer, u16, ext.extension_data);
+        try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(ext.extension_type));
+        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, ext.extension_data);
     }
     
     // Hash the serialized data
@@ -397,7 +397,7 @@ pub fn generateInitialEpochSecrets(
     // Serialize group context for key schedule
     var group_context_buf = std.ArrayList(u8).init(allocator);
     defer group_context_buf.deinit();
-    try mls_zig.tls_codec.writeVarBytesToList(&group_context_buf, u8, &group_id.data);
+    try mls_zig.tls_encode.encodeVarBytes(&group_context_buf, u8, &group_id.data);
     
     // Use proper key schedule
     const cipher_suite = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -443,25 +443,24 @@ fn createWelcomeForMember(
     defer group_info_buf.deinit();
     
     // Write group context
-    const tls_codec = mls_zig.tls_codec;
     // First serialize the group context itself
-    try tls_codec.writeU16ToList(&group_info_buf, @intFromEnum(group_context.version));
-    try tls_codec.writeU16ToList(&group_info_buf, @intFromEnum(group_context.cipher_suite));
-    try tls_codec.writeVarBytesToList(&group_info_buf, u8, &group_context.group_id.data);
-    try tls_codec.writeU64ToList(&group_info_buf, group_context.epoch);
-    try tls_codec.writeBytesToList(&group_info_buf, &group_context.tree_hash);
-    try tls_codec.writeBytesToList(&group_info_buf, &group_context.confirmed_transcript_hash);
-    try tls_codec.writeU16ToList(&group_info_buf, @intCast(group_context.extensions.len));
+    try mls_zig.tls_encode.encodeInt(&group_info_buf, u16, @intFromEnum(group_context.version));
+    try mls_zig.tls_encode.encodeInt(&group_info_buf, u16, @intFromEnum(group_context.cipher_suite));
+    try mls_zig.tls_encode.encodeVarBytes(&group_info_buf, u8, &group_context.group_id.data);
+    try mls_zig.tls_encode.encodeInt(&group_info_buf, u64, group_context.epoch);
+    try group_info_buf.appendSlice(&group_context.tree_hash);
+    try group_info_buf.appendSlice(&group_context.confirmed_transcript_hash);
+    try mls_zig.tls_encode.encodeInt(&group_info_buf, u16, @intCast(group_context.extensions.len));
     for (group_context.extensions) |ext| {
-        try tls_codec.writeU16ToList(&group_info_buf, @intFromEnum(ext.extension_type));
-        try tls_codec.writeVarBytesToList(&group_info_buf, u16, ext.extension_data);
+        try mls_zig.tls_encode.encodeInt(&group_info_buf, u16, @intFromEnum(ext.extension_type));
+        try mls_zig.tls_encode.encodeVarBytes(&group_info_buf, u16, ext.extension_data);
     }
     
     // Write members (empty array for now)
-    try tls_codec.writeU32ToList(&group_info_buf, 0);
+    try mls_zig.tls_encode.encodeInt(&group_info_buf, u32, 0);
     
     // Write ratchet tree (empty for now) 
-    try tls_codec.writeVarBytesToList(&group_info_buf, u32, &.{});
+    try mls_zig.tls_encode.encodeVarBytes(&group_info_buf, u32, &.{});
     
     // Encrypt GroupInfo using welcome_secret with AES-128-GCM
     // The cipher suite is MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
@@ -497,9 +496,9 @@ fn createWelcomeForMember(
     var secrets_buf = std.ArrayList(u8).init(allocator);
     defer secrets_buf.deinit();
     
-    try tls_codec.writeBytesToList(&secrets_buf, &epoch_secrets.joiner_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.joiner_secret);
     // Write null path secret (0 length)
-    try tls_codec.writeVarBytesToList(&secrets_buf, u8, &.{});
+    try mls_zig.tls_encode.encodeVarBytes(&secrets_buf, u8, &.{});
     
     // Encrypt to member's init key using HPKE
     const encrypted_secrets = try mls_provider.crypto.hpkeSealFn(

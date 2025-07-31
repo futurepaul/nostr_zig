@@ -1,4 +1,5 @@
 const std = @import("std");
+const tls = std.crypto.tls;
 const mls_zig = @import("mls_zig");
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
@@ -15,8 +16,9 @@ pub const WireFormat = enum(u16) {
         try writer.writeU16(@intFromEnum(self));
     }
     
-    pub fn tlsDeserialize(reader: anytype) !WireFormat {
-        const value = try reader.readU16();
+    pub fn tlsDeserialize(decoder: *tls.Decoder) !WireFormat {
+        try decoder.ensure(2);
+        const value = decoder.decode(u16);
         return switch (value) {
             0x0001 => .mls_plaintext,
             0x0002 => .mls_ciphertext,
@@ -38,8 +40,9 @@ pub const ContentType = enum(u8) {
         try writer.writeU8(@intFromEnum(self));
     }
     
-    pub fn tlsDeserialize(reader: anytype) !ContentType {
-        const value = try reader.readU8();
+    pub fn tlsDeserialize(decoder: *tls.Decoder) !ContentType {
+        try decoder.ensure(1);
+        const value = decoder.decode(u8);
         return switch (value) {
             0x01 => .application,
             0x02 => .proposal,
@@ -75,11 +78,22 @@ pub const Sender = union(enum) {
         }
     }
     
-    pub fn tlsDeserialize(reader: anytype) !Sender {
-        const sender_type = try reader.readU8();
+    pub fn tlsDeserialize(decoder: *tls.Decoder) !Sender {
+        try decoder.ensure(1);
+        const sender_type = decoder.decode(u8);
         return switch (sender_type) {
-            1 => .{ .member = try reader.readU32() },
-            2 => .{ .external = try reader.readU32() },
+            1 => blk: {
+                try decoder.ensure(4);
+                const bytes = decoder.slice(4);
+                const index = std.mem.readInt(u32, bytes[0..4], .big);
+                break :blk .{ .member = index };
+            },
+            2 => blk: {
+                try decoder.ensure(4);
+                const bytes = decoder.slice(4);
+                const index = std.mem.readInt(u32, bytes[0..4], .big);
+                break :blk .{ .external = index };
+            },
             3 => .new_member_proposal,
             4 => .new_member_commit,
             else => error.UnknownSenderType,
@@ -102,8 +116,14 @@ pub const ApplicationData = struct {
         try writer.writeVarBytes(u32, self.data);
     }
     
-    pub fn tlsDeserialize(reader: anytype, allocator: Allocator) !ApplicationData {
-        const data = try reader.readVarBytes(u32, allocator);
+    pub fn tlsDeserialize(decoder: *tls.Decoder, allocator: Allocator) !ApplicationData {
+        // Manual u32 var bytes decoding since readVarBytes doesn't support u32
+        try decoder.ensure(4);
+        const len_bytes = decoder.slice(4);
+        const len = std.mem.readInt(u32, len_bytes[0..4], .big);
+        try decoder.ensure(len);
+        const data = try allocator.alloc(u8, len);
+        @memcpy(data, decoder.slice(len));
         return ApplicationData{ .data = data };
     }
     
@@ -129,12 +149,30 @@ pub const Content = union(ContentType) {
         }
     }
     
-    pub fn tlsDeserialize(reader: anytype, allocator: Allocator) !Content {
-        const content_type = try ContentType.tlsDeserialize(reader);
+    pub fn tlsDeserialize(decoder: *tls.Decoder, allocator: Allocator) !Content {
+        const content_type = try ContentType.tlsDeserialize(decoder);
         return switch (content_type) {
-            .application => .{ .application = try ApplicationData.tlsDeserialize(reader, allocator) },
-            .proposal => .{ .proposal = try reader.readVarBytes(u32, allocator) },
-            .commit => .{ .commit = try reader.readVarBytes(u32, allocator) },
+            .application => .{ .application = try ApplicationData.tlsDeserialize(decoder, allocator) },
+            .proposal => blk: {
+                // Manual u32 var bytes decoding
+                try decoder.ensure(4);
+                const len_bytes = decoder.slice(4);
+                const len = std.mem.readInt(u32, len_bytes[0..4], .big);
+                try decoder.ensure(len);
+                const data = try allocator.alloc(u8, len);
+                @memcpy(data, decoder.slice(len));
+                break :blk .{ .proposal = data };
+            },
+            .commit => blk: {
+                // Manual u32 var bytes decoding
+                try decoder.ensure(4);
+                const len_bytes = decoder.slice(4);
+                const len = std.mem.readInt(u32, len_bytes[0..4], .big);
+                try decoder.ensure(len);
+                const data = try allocator.alloc(u8, len);
+                @memcpy(data, decoder.slice(len));
+                break :blk .{ .commit = data };
+            },
         };
     }
     
@@ -208,22 +246,31 @@ pub const MLSPlaintext = struct {
     }
     
     /// Deserialize from TLS wire format
-    pub fn tlsDeserialize(reader: anytype, allocator: Allocator) !MLSPlaintext {
-        const wire_format = try WireFormat.tlsDeserialize(reader);
+    pub fn tlsDeserialize(decoder: *tls.Decoder, allocator: Allocator) !MLSPlaintext {
+        const wire_format = try WireFormat.tlsDeserialize(decoder);
         if (wire_format != .mls_plaintext) return error.InvalidWireFormat;
         
-        const group_id_bytes = try reader.readVarBytes(u8, allocator);
+        const group_id_bytes = try mls_zig.tls_encode.readVarBytes(decoder, u8, allocator);
         defer allocator.free(group_id_bytes);
         if (group_id_bytes.len != 32) return error.InvalidGroupIdLength;
         
         var group_id: [32]u8 = undefined;
         @memcpy(&group_id, group_id_bytes);
         
-        const epoch = try reader.readU64();
-        const sender = try Sender.tlsDeserialize(reader);
-        const authenticated_data = try reader.readVarBytes(u32, allocator);
-        const content = try Content.tlsDeserialize(reader, allocator);
-        const signature = try reader.readVarBytes(u16, allocator);
+        // Manual u64 decoding since std.crypto.tls doesn't support it
+        try decoder.ensure(8);
+        const epoch_bytes = decoder.slice(8);
+        const epoch = std.mem.readInt(u64, epoch_bytes[0..8], .big);
+        const sender = try Sender.tlsDeserialize(decoder);
+        // Manual u32 var bytes decoding since readVarBytes doesn't support u32
+        try decoder.ensure(4);
+        const auth_len_bytes = decoder.slice(4);
+        const auth_len = std.mem.readInt(u32, auth_len_bytes[0..4], .big);
+        try decoder.ensure(auth_len);
+        const authenticated_data = try allocator.alloc(u8, auth_len);
+        @memcpy(authenticated_data, decoder.slice(auth_len));
+        const content = try Content.tlsDeserialize(decoder, allocator);
+        const signature = try mls_zig.tls_encode.readVarBytes(decoder, u16, allocator);
         
         return MLSPlaintext{
             .wire_format = wire_format,
@@ -241,38 +288,35 @@ pub const MLSPlaintext = struct {
         var content_buffer = std.ArrayList(u8).init(allocator);
         defer content_buffer.deinit();
         
-        // Use TLS codec convenience functions
-        const tls = mls_zig.tls_codec;
-        
         // Wire format (u16)
-        try tls.writeU16ToList(&content_buffer, @intFromEnum(self.wire_format));
+        try mls_zig.tls_encode.encodeInt(&content_buffer, u16, @intFromEnum(self.wire_format));
         
         // Group ID with length prefix (u8)
-        try tls.writeVarBytesToList(&content_buffer, u8, &self.group_id);
+        try mls_zig.tls_encode.encodeVarBytes(&content_buffer, u8, &self.group_id);
         
         // Epoch (u64)
-        try tls.writeU64ToList(&content_buffer, self.epoch);
+        try mls_zig.tls_encode.encodeInt(&content_buffer, u64, self.epoch);
         
         // Sender - use proper union serialization
         switch (self.sender) {
             .member => |index| {
-                try tls.writeU8ToList(&content_buffer, 1);
-                try tls.writeU32ToList(&content_buffer, index);
+                try mls_zig.tls_encode.encodeInt(&content_buffer, u8, 1);
+                try mls_zig.tls_encode.encodeInt(&content_buffer, u32, index);
             },
             .external => |index| {
-                try tls.writeU8ToList(&content_buffer, 2);
-                try tls.writeU32ToList(&content_buffer, index);
+                try mls_zig.tls_encode.encodeInt(&content_buffer, u8, 2);
+                try mls_zig.tls_encode.encodeInt(&content_buffer, u32, index);
             },
             .new_member_proposal => {
-                try tls.writeU8ToList(&content_buffer, 3);
+                try mls_zig.tls_encode.encodeInt(&content_buffer, u8, 3);
             },
             .new_member_commit => {
-                try tls.writeU8ToList(&content_buffer, 4);
+                try mls_zig.tls_encode.encodeInt(&content_buffer, u8, 4);
             },
         }
         
         // Authenticated data with length prefix (u32)
-        try tls.writeVarBytesToList(&content_buffer, u32, self.authenticated_data);
+        try mls_zig.tls_encode.encodeVarBytes(&content_buffer, u32, self.authenticated_data);
         
         // Content type (u8)
         const content_type = switch (self.content) {
@@ -280,13 +324,13 @@ pub const MLSPlaintext = struct {
             .proposal => ContentType.proposal,
             .commit => ContentType.commit,
         };
-        try tls.writeU8ToList(&content_buffer, @intFromEnum(content_type));
+        try mls_zig.tls_encode.encodeInt(&content_buffer, u8, @intFromEnum(content_type));
         
         // Content data based on type
         switch (self.content) {
             .application => |app_data| {
                 // Application data with length prefix (u32)
-                try tls.writeVarBytesToList(&content_buffer, u32, app_data.data);
+                try mls_zig.tls_encode.encodeVarBytes(&content_buffer, u32, app_data.data);
             },
             .proposal => |_| {
                 // TODO: Implement proposal serialization when needed
@@ -378,39 +422,37 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    // Use TLS codec convenience functions
     const plaintext = message.plaintext;
-    const tls = mls_zig.tls_codec;
     
     // Wire format (u16)
-    try tls.writeU16ToList(&buffer, @intFromEnum(plaintext.wire_format));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(plaintext.wire_format));
     
     // Group ID with length prefix (u8)
-    try tls.writeVarBytesToList(&buffer, u8, &plaintext.group_id);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u8, &plaintext.group_id);
     
     // Epoch (u64)
-    try tls.writeU64ToList(&buffer, plaintext.epoch);
+    try mls_zig.tls_encode.encodeInt(&buffer, u64, plaintext.epoch);
     
     // Sender - use proper union serialization
     switch (plaintext.sender) {
         .member => |index| {
-            try tls.writeU8ToList(&buffer, 1);
-            try tls.writeU32ToList(&buffer, index);
+            try mls_zig.tls_encode.encodeInt(&buffer, u8, 1);
+            try mls_zig.tls_encode.encodeInt(&buffer, u32, index);
         },
         .external => |index| {
-            try tls.writeU8ToList(&buffer, 2);
-            try tls.writeU32ToList(&buffer, index);
+            try mls_zig.tls_encode.encodeInt(&buffer, u8, 2);
+            try mls_zig.tls_encode.encodeInt(&buffer, u32, index);
         },
         .new_member_proposal => {
-            try tls.writeU8ToList(&buffer, 3);
+            try mls_zig.tls_encode.encodeInt(&buffer, u8, 3);
         },
         .new_member_commit => {
-            try tls.writeU8ToList(&buffer, 4);
+            try mls_zig.tls_encode.encodeInt(&buffer, u8, 4);
         },
     }
     
     // Authenticated data with length prefix (u32)
-    try tls.writeVarBytesToList(&buffer, u32, plaintext.authenticated_data);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u32, plaintext.authenticated_data);
     
     // Content type (u8)
     const content_type = switch (plaintext.content) {
@@ -418,13 +460,13 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
         .proposal => ContentType.proposal,
         .commit => ContentType.commit,
     };
-    try tls.writeU8ToList(&buffer, @intFromEnum(content_type));
+    try mls_zig.tls_encode.encodeInt(&buffer, u8, @intFromEnum(content_type));
     
     // Content data
     switch (plaintext.content) {
         .application => |app_data| {
             // Application data with length prefix (u32)
-            try tls.writeVarBytesToList(&buffer, u32, app_data.data);
+            try mls_zig.tls_encode.encodeVarBytes(&buffer, u32, app_data.data);
         },
         .proposal => |_| {
             // TODO: Implement proposal serialization when needed
@@ -437,17 +479,16 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
     }
     
     // Signature with length prefix (u16)
-    try tls.writeVarBytesToList(&buffer, u16, plaintext.signature);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, plaintext.signature);
     
     return try buffer.toOwnedSlice();
 }
 
 /// Deserialize MLSMessage from bytes after NIP-44 decryption
 pub fn deserializeMLSMessageFromDecryption(allocator: Allocator, data: []const u8) !MLSMessage {
-    var stream = std.io.fixedBufferStream(data);
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(@constCast(data));
     
-    return try MLSMessage.tlsDeserialize(&reader, allocator);
+    return try MLSMessage.tlsDeserialize(&decoder, allocator);
 }
 
 // Tests
@@ -493,19 +534,18 @@ test "WireFormat serialization" {
     var stream_buffer: [10]u8 = undefined;
     var stream = std.io.fixedBufferStream(&stream_buffer);
     
-    // Use TLS codec convenience functions
     const wire_format = WireFormat.mls_plaintext;
     var list_buffer = std.ArrayList(u8).init(std.testing.allocator);
     defer list_buffer.deinit();
     
-    try mls_zig.tls_codec.writeU16ToList(&list_buffer, @intFromEnum(wire_format));
+    try mls_zig.tls_encode.encodeInt(&list_buffer, u16, @intFromEnum(wire_format));
     _ = try stream.write(list_buffer.items);
     
     // Reset stream for reading
     stream.reset();
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(list_buffer.items);
     
-    const deserialized = try WireFormat.tlsDeserialize(&reader);
+    const deserialized = try WireFormat.tlsDeserialize(&decoder);
     try std.testing.expectEqual(WireFormat.mls_plaintext, deserialized);
 }
 
@@ -518,18 +558,17 @@ test "ApplicationData serialization" {
     var buffer: [100]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
     
-    // Use TLS codec convenience functions
     var list_buffer = std.ArrayList(u8).init(allocator);
     defer list_buffer.deinit();
     
-    try mls_zig.tls_codec.writeVarBytesToList(&list_buffer, u32, app_data.data);
+    try mls_zig.tls_encode.encodeVarBytes(&list_buffer, u32, app_data.data);
     _ = try stream.write(list_buffer.items);
     
     // Reset stream for reading
     stream.reset();
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(list_buffer.items);
     
-    var deserialized = try ApplicationData.tlsDeserialize(&reader, allocator);
+    var deserialized = try ApplicationData.tlsDeserialize(&decoder, allocator);
     defer deserialized.deinit(allocator);
     
     try std.testing.expectEqualSlices(u8, test_data, deserialized.data);

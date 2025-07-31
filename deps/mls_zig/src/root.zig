@@ -21,7 +21,7 @@ pub const key_schedule = @import("key_schedule.zig");
 pub const tree_math = @import("tree_math.zig");
 pub const binary_tree = @import("binary_tree.zig");
 pub const binary_tree_diff = @import("binary_tree_diff.zig");
-pub const tls_codec = @import("tls_codec.zig");
+pub const tls_encode = @import("tls_encode.zig");
 pub const leaf_node = @import("leaf_node.zig");
 pub const tree_kem = @import("tree_kem.zig");
 

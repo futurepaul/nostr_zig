@@ -1,4 +1,5 @@
 const std = @import("std");
+const tls = std.crypto.tls;
 const types = @import("types.zig");
 const provider = @import("provider.zig");
 const extension = @import("extension.zig");
@@ -248,8 +249,7 @@ pub fn createWelcome(
 /// Parse a serialized welcome message
 pub fn parseWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welcome {
     // Use TLS 1.3 wire format as per RFC 9420
-    var stream = std.io.fixedBufferStream(data);
-    var reader = mls_zig.tls_codec.TlsReader(@TypeOf(stream.reader())).init(stream.reader());
+    var decoder = tls.Decoder.fromTheirSlice(data);
     
     // Welcome message format:
     // struct {
@@ -259,23 +259,21 @@ pub fn parseWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welco
     // } Welcome;
     
     // Cipher suite (u16)
-    const cipher_suite_raw = try reader.readU16();
+    try decoder.ensure(2);
+    const cipher_suite_raw = decoder.decode(u16);
     const cipher_suite: types.Ciphersuite = @enumFromInt(cipher_suite_raw);
     
     // Secrets array (variable length with u16 count prefix)
-    const secrets_count = try reader.readU16();
+    try decoder.ensure(2);
+    const secrets_count = decoder.decode(u16);
     const secrets = try allocator.alloc(types.EncryptedGroupSecrets, secrets_count);
     
     for (secrets) |*secret| {
         // new_member (variable length with u16 length prefix)
-        const new_member_len = try reader.readU16();
-        const new_member = try allocator.alloc(u8, new_member_len);
-        try reader.reader.readNoEof(new_member);
+        const new_member = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
         
         // encrypted_group_secrets (variable length with u16 length prefix)
-        const encrypted_secrets_len = try reader.readU16();
-        const encrypted_secrets = try allocator.alloc(u8, encrypted_secrets_len);
-        try reader.reader.readNoEof(encrypted_secrets);
+        const encrypted_secrets = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
         
         secret.* = types.EncryptedGroupSecrets{
             .new_member = new_member,
@@ -284,9 +282,7 @@ pub fn parseWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welco
     }
     
     // Encrypted group info (variable length with u16 length prefix)
-    const group_info_len = try reader.readU16();
-    const encrypted_group_info = try allocator.alloc(u8, group_info_len);
-    try reader.reader.readNoEof(encrypted_group_info);
+    const encrypted_group_info = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
     
     return types.Welcome{
         .cipher_suite = cipher_suite,
@@ -311,23 +307,20 @@ pub fn serializeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) ![
     // } Welcome;
     
     // Cipher suite (u16)
-    try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(welcome.cipher_suite));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(welcome.cipher_suite));
     
     // Secrets array (variable length with u16 count prefix)
-    try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(welcome.secrets.len));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intCast(welcome.secrets.len));
     for (welcome.secrets) |secret| {
         // new_member (variable length with u16 length prefix)
-        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(secret.new_member.len));
-        try buffer.appendSlice(secret.new_member);
+        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, secret.new_member);
         
         // encrypted_group_secrets (variable length with u16 length prefix)
-        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(secret.encrypted_group_secrets.len));
-        try buffer.appendSlice(secret.encrypted_group_secrets);
+        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, secret.encrypted_group_secrets);
     }
     
     // Encrypted group info (variable length with u16 length prefix)
-    try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(welcome.encrypted_group_info.len));
-    try buffer.appendSlice(welcome.encrypted_group_info);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, welcome.encrypted_group_info);
     
     return buffer.toOwnedSlice();
 }
@@ -528,49 +521,43 @@ fn serializeGroupInfo(allocator: std.mem.Allocator, group_info: types.GroupInfo)
     
     // Serialize GroupContext
     // Protocol version (u16)
-    try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(group_info.group_context.version));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(group_info.group_context.version));
     
     // Cipher suite (u16)
-    try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(group_info.group_context.cipher_suite));
+    try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(group_info.group_context.cipher_suite));
     
     // Group ID (variable length with u8 length prefix)
-    try mls_zig.tls_codec.writeU8ToList(&buffer, @intCast(group_info.group_context.group_id.len));
-    try buffer.appendSlice(&group_info.group_context.group_id);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u8, &group_info.group_context.group_id);
     
     // Epoch (u64)
-    try mls_zig.tls_codec.writeU64ToList(&buffer, group_info.group_context.epoch);
+    try mls_zig.tls_encode.encodeInt(&buffer, u64, group_info.group_context.epoch);
     
     // Tree hash (variable length with u8 length prefix)
-    try mls_zig.tls_codec.writeU8ToList(&buffer, @intCast(group_info.group_context.tree_hash.len));
-    try buffer.appendSlice(&group_info.group_context.tree_hash);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u8, &group_info.group_context.tree_hash);
     
     // Confirmed transcript hash (variable length with u8 length prefix)
-    try mls_zig.tls_codec.writeU8ToList(&buffer, @intCast(group_info.group_context.confirmed_transcript_hash.len));
-    try buffer.appendSlice(&group_info.group_context.confirmed_transcript_hash);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u8, &group_info.group_context.confirmed_transcript_hash);
     
     // Extensions (variable length with u32 length prefix)
-    try mls_zig.tls_codec.writeU32ToList(&buffer, @intCast(group_info.group_context.extensions.len));
+    try mls_zig.tls_encode.encodeInt(&buffer, u32, @intCast(group_info.group_context.extensions.len));
     for (group_info.group_context.extensions) |ext| {
         // Extension type (u16)
-        try mls_zig.tls_codec.writeU16ToList(&buffer, @intFromEnum(ext.extension_type));
+        try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(ext.extension_type));
         // Extension data (variable length with u16 length prefix)
-        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(ext.extension_data.len));
-        try buffer.appendSlice(ext.extension_data);
+        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, ext.extension_data);
     }
     
     // Members (variable length with u32 length prefix)
-    try mls_zig.tls_codec.writeU32ToList(&buffer, @intCast(group_info.members.len));
+    try mls_zig.tls_encode.encodeInt(&buffer, u32, @intCast(group_info.members.len));
     for (group_info.members) |member| {
         // For now, serialize member index as u32
-        try mls_zig.tls_codec.writeU32ToList(&buffer, member.index);
+        try mls_zig.tls_encode.encodeInt(&buffer, u32, member.index);
         // Add credential data length and data
-        try mls_zig.tls_codec.writeU16ToList(&buffer, @intCast(member.credential.identity.len));
-        try buffer.appendSlice(member.credential.identity);
+        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, member.credential.identity);
     }
     
     // Ratchet tree (variable length with u32 length prefix)
-    try mls_zig.tls_codec.writeU32ToList(&buffer, @intCast(group_info.ratchet_tree.len));
-    try buffer.appendSlice(group_info.ratchet_tree);
+    try mls_zig.tls_encode.encodeVarBytes(&buffer, u32, group_info.ratchet_tree);
     
     return buffer.toOwnedSlice();
 }

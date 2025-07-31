@@ -13,8 +13,8 @@ const LeafNode = @import("leaf_node.zig").LeafNode;
 const TreeSync = @import("tree_kem.zig").TreeSync;
 const createUpdatePath = @import("tree_kem.zig").createUpdatePath;
 const applyUpdatePath = @import("tree_kem.zig").applyUpdatePath;
-const VarBytes = @import("tls_codec.zig").VarBytes;
-const TlsReader = @import("tls_codec.zig").TlsReader;
+const tls_encode = @import("tls_encode.zig");
+const tls = std.crypto.tls;
 const LeafNodeIndex = @import("tree_math.zig").LeafNodeIndex;
 
 /// Errors specific to MLS group operations
@@ -43,8 +43,10 @@ pub const ProtocolVersion = enum(u16) {
     }
 
     pub fn deserialize(reader: anytype) !ProtocolVersion {
-        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
-        const value = try tls_reader.readU16();
+        var buf: [2]u8 = undefined;
+        _ = try reader.readAll(&buf);
+        var decoder = tls.Decoder.fromTheirSlice(&buf);
+        const value = decoder.decode(u16);
         return @enumFromInt(value);
     }
 };
@@ -56,11 +58,14 @@ pub const ContentType = enum(u8) {
     commit = 0x03,
 
     pub fn serialize(self: ContentType, writer: anytype) !void {
-        try writer.writeU8(@intFromEnum(self));
+        try tls_encode.writeInt(writer, u8, @intFromEnum(self));
     }
 
     pub fn deserialize(reader: anytype) !ContentType {
-        const value = try reader.readU8();
+        var buf: [1]u8 = undefined;
+        _ = try reader.readAll(&buf);
+        var decoder = tls.Decoder.fromTheirSlice(&buf);
+        const value = decoder.decode(u8);
         return @enumFromInt(value);
     }
 };
@@ -83,24 +88,28 @@ pub const ProposalType = enum(u16) {
     }
 
     pub fn deserialize(reader: anytype) !ProposalType {
-        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
-        const value = try tls_reader.readU16();
+        var buf: [2]u8 = undefined;
+        _ = try reader.readAll(&buf);
+        var decoder = tls.Decoder.fromTheirSlice(&buf);
+        const value = decoder.decode(u16);
         return @enumFromInt(value);
     }
 };
 
 /// Proposal reference for commit messages
 pub const ProposalRef = struct {
-    proposal_hash: VarBytes,
+    proposal_hash: []u8,
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: Allocator, hash: []const u8) !ProposalRef {
         return ProposalRef{
-            .proposal_hash = try VarBytes.init(allocator, hash),
+            .proposal_hash = try allocator.dupe(u8, hash),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *ProposalRef) void {
-        self.proposal_hash.deinit();
+        self.allocator.free(self.proposal_hash);
     }
 };
 
@@ -163,11 +172,12 @@ pub const Proposal = union(ProposalType) {
 pub const GroupContext = struct {
     protocol_version: ProtocolVersion,
     cipher_suite: CipherSuite,
-    group_id: VarBytes,
+    group_id: []u8,
     epoch: u64,
-    tree_hash: VarBytes,
-    confirmed_transcript_hash: VarBytes,
-    extensions: VarBytes,
+    tree_hash: []u8,
+    confirmed_transcript_hash: []u8,
+    extensions: []u8,
+    allocator: std.mem.Allocator,
 
     pub fn init(
         allocator: Allocator,
@@ -177,19 +187,20 @@ pub const GroupContext = struct {
         return GroupContext{
             .protocol_version = .mls10,
             .cipher_suite = cipher_suite,
-            .group_id = try VarBytes.init(allocator, group_id),
+            .group_id = try allocator.dupe(u8, group_id),
             .epoch = 0,
-            .tree_hash = try VarBytes.init(allocator, &[_]u8{}),
-            .confirmed_transcript_hash = try VarBytes.init(allocator, &[_]u8{}),
-            .extensions = try VarBytes.init(allocator, &[_]u8{}),
+            .tree_hash = try allocator.dupe(u8, &[_]u8{}),
+            .confirmed_transcript_hash = try allocator.dupe(u8, &[_]u8{}),
+            .extensions = try allocator.dupe(u8, &[_]u8{}),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *GroupContext) void {
-        self.group_id.deinit();
-        self.tree_hash.deinit();
-        self.confirmed_transcript_hash.deinit();
-        self.extensions.deinit();
+        self.allocator.free(self.group_id);
+        self.allocator.free(self.tree_hash);
+        self.allocator.free(self.confirmed_transcript_hash);
+        self.allocator.free(self.extensions);
     }
 
     pub fn serialize(self: GroupContext, writer: anytype) !void {
@@ -202,50 +213,54 @@ pub const GroupContext = struct {
         try writer.writeAll(buf[0..2]);
         
         // Group ID (variable bytes with u16 length)
-        std.mem.writeInt(u16, buf[0..2], @intCast(self.group_id.asSlice().len), .big);
-        try writer.writeAll(buf[0..2]);
-        try writer.writeAll(self.group_id.asSlice());
+        try tls_encode.writeVarBytes(writer, u16, self.group_id);
         
         // Epoch (u64)
-        std.mem.writeInt(u64, buf[0..8], self.epoch, .big);
-        try writer.writeAll(buf[0..8]);
+        try tls_encode.writeInt(writer, u64, self.epoch);
         
         // Tree hash (variable bytes with u16 length)
-        std.mem.writeInt(u16, buf[0..2], @intCast(self.tree_hash.asSlice().len), .big);
-        try writer.writeAll(buf[0..2]);
-        try writer.writeAll(self.tree_hash.asSlice());
+        try tls_encode.writeVarBytes(writer, u16, self.tree_hash);
         
         // Confirmed transcript hash (variable bytes with u16 length)
-        std.mem.writeInt(u16, buf[0..2], @intCast(self.confirmed_transcript_hash.asSlice().len), .big);
-        try writer.writeAll(buf[0..2]);
-        try writer.writeAll(self.confirmed_transcript_hash.asSlice());
+        try tls_encode.writeVarBytes(writer, u16, self.confirmed_transcript_hash);
         
         // Extensions (variable bytes with u16 length)
-        std.mem.writeInt(u16, buf[0..2], @intCast(self.extensions.asSlice().len), .big);
-        try writer.writeAll(buf[0..2]);
-        try writer.writeAll(self.extensions.asSlice());
+        try tls_encode.writeVarBytes(writer, u16, self.extensions);
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !GroupContext {
-        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
         const protocol_version = try ProtocolVersion.deserialize(reader);
-        const cipher_suite = @as(CipherSuite, @enumFromInt(try tls_reader.readU16()));
-        const group_id_data = try tls_reader.readVarBytes(u16, allocator);
+        
+        // Read cipher suite
+        var cs_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&cs_buf);
+        var cs_decoder = tls.Decoder.fromTheirSlice(&cs_buf);
+        const cipher_suite = @as(CipherSuite, @enumFromInt(cs_decoder.decode(u16)));
+        
+        const group_id_data = try tls_encode.readVarBytes(&tls.Decoder.fromTheirSlice(&[_]u8{}), u16, allocator);
         defer allocator.free(group_id_data);
-        var group_id = try VarBytes.init(allocator, group_id_data);
-        errdefer group_id.deinit();
-        const epoch = try reader.readU64();
-        const tree_hash_data = try reader.readVarBytes(u16, allocator);
+        const group_id = try allocator.dupe(u8, group_id_data);
+        errdefer allocator.free(group_id);
+        
+        // Read epoch
+        var epoch_buf: [8]u8 = undefined;
+        _ = try reader.readAll(&epoch_buf);
+        var epoch_decoder = tls.Decoder.fromTheirSlice(&epoch_buf);
+        const epoch = epoch_decoder.decode(u64);
+        
+        const tree_hash_data = try tls_encode.readVarBytes(&tls.Decoder.fromTheirSlice(&[_]u8{}), u16, allocator);
         defer allocator.free(tree_hash_data);
-        var tree_hash = try VarBytes.init(allocator, tree_hash_data);
-        errdefer tree_hash.deinit();
-        const confirmed_transcript_hash_data = try reader.readVarBytes(u16, allocator);
+        const tree_hash = try allocator.dupe(u8, tree_hash_data);
+        errdefer allocator.free(tree_hash);
+        
+        const confirmed_transcript_hash_data = try tls_encode.readVarBytes(&tls.Decoder.fromTheirSlice(&[_]u8{}), u16, allocator);
         defer allocator.free(confirmed_transcript_hash_data);
-        var confirmed_transcript_hash = try VarBytes.init(allocator, confirmed_transcript_hash_data);
-        errdefer confirmed_transcript_hash.deinit();
-        const extensions_data = try reader.readVarBytes(u16, allocator);
+        const confirmed_transcript_hash = try allocator.dupe(u8, confirmed_transcript_hash_data);
+        errdefer allocator.free(confirmed_transcript_hash);
+        
+        const extensions_data = try tls_encode.readVarBytes(&tls.Decoder.fromTheirSlice(&[_]u8{}), u16, allocator);
         defer allocator.free(extensions_data);
-        const extensions = try VarBytes.init(allocator, extensions_data);
+        const extensions = try allocator.dupe(u8, extensions_data);
 
         return GroupContext{
             .protocol_version = protocol_version,
@@ -255,6 +270,7 @@ pub const GroupContext = struct {
             .tree_hash = tree_hash,
             .confirmed_transcript_hash = confirmed_transcript_hash,
             .extensions = extensions,
+            .allocator = allocator,
         };
     }
 
@@ -272,28 +288,28 @@ pub const GroupContext = struct {
         try list.appendSlice(&cs_bytes);
         // Group ID with length prefix
         var gid_len: [2]u8 = undefined;
-        std.mem.writeInt(u16, &gid_len, @intCast(self.group_id.asSlice().len), .big);
+        std.mem.writeInt(u16, &gid_len, @intCast(self.group_id.len), .big);
         try list.appendSlice(&gid_len);
-        try list.appendSlice(self.group_id.asSlice());
+        try list.appendSlice(self.group_id);
         // Epoch
         var epoch_bytes: [8]u8 = undefined;
         std.mem.writeInt(u64, &epoch_bytes, self.epoch, .big);
         try list.appendSlice(&epoch_bytes);
         // Tree hash with length prefix
         var th_len: [2]u8 = undefined;
-        std.mem.writeInt(u16, &th_len, @intCast(self.tree_hash.asSlice().len), .big);
+        std.mem.writeInt(u16, &th_len, @intCast(self.tree_hash.len), .big);
         try list.appendSlice(&th_len);
-        try list.appendSlice(self.tree_hash.asSlice());
+        try list.appendSlice(self.tree_hash);
         // Confirmed transcript hash with length prefix
         var cth_len: [2]u8 = undefined;
-        std.mem.writeInt(u16, &cth_len, @intCast(self.confirmed_transcript_hash.asSlice().len), .big);
+        std.mem.writeInt(u16, &cth_len, @intCast(self.confirmed_transcript_hash.len), .big);
         try list.appendSlice(&cth_len);
-        try list.appendSlice(self.confirmed_transcript_hash.asSlice());
+        try list.appendSlice(self.confirmed_transcript_hash);
         // Extensions with length prefix
         var ext_len: [2]u8 = undefined;
-        std.mem.writeInt(u16, &ext_len, @intCast(self.extensions.asSlice().len), .big);
+        std.mem.writeInt(u16, &ext_len, @intCast(self.extensions.len), .big);
         try list.appendSlice(&ext_len);
-        try list.appendSlice(self.extensions.asSlice());
+        try list.appendSlice(self.extensions);
 
         return list.toOwnedSlice();
     }
@@ -302,8 +318,9 @@ pub const GroupContext = struct {
 /// Welcome message for new members
 pub const Welcome = struct {
     cipher_suite: CipherSuite,
-    secrets: VarBytes, // Encrypted group secrets
-    encrypted_group_info: VarBytes,
+    secrets: []u8, // Encrypted group secrets
+    encrypted_group_info: []u8,
+    allocator: std.mem.Allocator,
 
     pub fn init(
         allocator: Allocator,
@@ -313,14 +330,15 @@ pub const Welcome = struct {
     ) !Welcome {
         return Welcome{
             .cipher_suite = cipher_suite,
-            .secrets = try VarBytes.init(allocator, secrets),
-            .encrypted_group_info = try VarBytes.init(allocator, group_info),
+            .secrets = try allocator.dupe(u8, secrets),
+            .encrypted_group_info = try allocator.dupe(u8, group_info),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Welcome) void {
-        self.secrets.deinit();
-        self.encrypted_group_info.deinit();
+        self.allocator.free(self.secrets);
+        self.allocator.free(self.encrypted_group_info);
     }
 
     pub fn serialize(self: Welcome, writer: anytype) !void {
@@ -332,31 +350,41 @@ pub const Welcome = struct {
         try writer.writeAll(buf[0..2]);
         
         // Secrets (variable bytes with u32 length)
-        std.mem.writeInt(u32, buf[0..4], @intCast(self.secrets.asSlice().len), .big);
-        try writer.writeAll(buf[0..4]);
-        try writer.writeAll(self.secrets.asSlice());
+        try tls_encode.writeVarBytes(writer, u32, self.secrets);
         
         // Encrypted group info (variable bytes with u32 length)
-        std.mem.writeInt(u32, buf[0..4], @intCast(self.encrypted_group_info.asSlice().len), .big);
-        try writer.writeAll(buf[0..4]);
-        try writer.writeAll(self.encrypted_group_info.asSlice());
+        try tls_encode.writeVarBytes(writer, u32, self.encrypted_group_info);
     }
 
     pub fn deserialize(allocator: Allocator, reader: anytype) !Welcome {
-        var tls_reader = TlsReader(@TypeOf(reader)).init(reader);
-        const cipher_suite = @as(CipherSuite, @enumFromInt(try tls_reader.readU16()));
-        const secrets_data = try tls_reader.readVarBytes(u32, allocator);
-        defer allocator.free(secrets_data);
-        var secrets = try VarBytes.init(allocator, secrets_data);
-        errdefer secrets.deinit();
-        const group_info_data = try tls_reader.readVarBytes(u32, allocator);
-        defer allocator.free(group_info_data);
-        const encrypted_group_info = try VarBytes.init(allocator, group_info_data);
+        // Read cipher suite
+        var cs_buf: [2]u8 = undefined;
+        _ = try reader.readAll(&cs_buf);
+        var cs_decoder = tls.Decoder.fromTheirSlice(&cs_buf);
+        const cipher_suite = @as(CipherSuite, @enumFromInt(cs_decoder.decode(u16)));
+        
+        // Read secrets length
+        var secrets_len_buf: [4]u8 = undefined;
+        _ = try reader.readAll(&secrets_len_buf);
+        var secrets_decoder = tls.Decoder.fromTheirSlice(&secrets_len_buf);
+        const secrets_len = secrets_decoder.decode(u32);
+        const secrets = try allocator.alloc(u8, secrets_len);
+        _ = try reader.readAll(secrets);
+        errdefer allocator.free(secrets);
+        
+        // Read group info length
+        var info_len_buf: [4]u8 = undefined;
+        _ = try reader.readAll(&info_len_buf);
+        var info_decoder = tls.Decoder.fromTheirSlice(&info_len_buf);
+        const info_len = info_decoder.decode(u32);
+        const encrypted_group_info = try allocator.alloc(u8, info_len);
+        _ = try reader.readAll(encrypted_group_info);
 
         return Welcome{
             .cipher_suite = cipher_suite,
             .secrets = secrets,
             .encrypted_group_info = encrypted_group_info,
+            .allocator = allocator,
         };
     }
 };
@@ -373,7 +401,7 @@ pub const Commit = struct {
     ) !Commit {
         const props = try allocator.alloc(ProposalRef, proposals.len);
         for (proposals, 0..) |prop, i| {
-            props[i] = try ProposalRef.init(allocator, prop.proposal_hash.asSlice());
+            props[i] = try ProposalRef.init(allocator, prop.proposal_hash);
         }
 
         return Commit{
@@ -839,12 +867,11 @@ test "Welcome message serialization" {
 
     // Test deserialization
     var read_stream = std.io.fixedBufferStream(buffer[0..stream.pos]);
-    var reader = TlsReader(@TypeOf(read_stream.reader())).init(read_stream.reader());
-    var decoded = try Welcome.deserialize(allocator, &reader);
+    var decoded = try Welcome.deserialize(allocator, read_stream.reader());
     defer decoded.deinit();
 
     try testing.expectEqual(welcome.cipher_suite, decoded.cipher_suite);
-    try testing.expectEqualSlices(u8, welcome.secrets.asSlice(), decoded.secrets.asSlice());
+    try testing.expectEqualSlices(u8, welcome.secrets, decoded.secrets);
 }
 
 test "Group context serialization" {
