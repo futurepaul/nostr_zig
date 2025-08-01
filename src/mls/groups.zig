@@ -218,37 +218,90 @@ pub fn createGroup(
 }
 
 /// Compute transcript hash for a group context
-/// This is a simplified implementation that hashes the group context
-/// TODO: Implement full MLS transcript hash computation including all commits
+/// 
+/// According to RFC 9420 Section 8.2, the transcript hash is computed as follows:
+/// - For initial group creation (epoch 0), the confirmed_transcript_hash is empty
+/// - The interim_transcript_hash is computed from confirmed_transcript_hash + confirmation_tag
+/// - For subsequent epochs, the confirmed_transcript_hash is updated with each Commit
+///
+/// This function computes the initial transcript hash for group creation
 pub fn computeTranscriptHash(
     allocator: std.mem.Allocator,
     mls_provider: *provider.MlsProvider,
     group_context: *const types.GroupContext,
 ) ![32]u8 {
-    // Serialize the group context for hashing
+    // For initial group creation (epoch 0), return empty transcript hash
+    // The actual transcript hash will be computed when processing the first Commit
+    if (group_context.epoch == 0) {
+        // RFC 9420: "Confirmed transcript hash: The zero-length octet string"
+        return [_]u8{0} ** 32;
+    }
+    
+    // For non-zero epochs, this would involve:
+    // 1. Taking the previous confirmed_transcript_hash
+    // 2. Serializing the AuthenticatedContent of the Commit that advanced to this epoch
+    // 3. Computing hash(confirmed_transcript_hash || commit_authenticated_content)
+    //
+    // Since we don't have access to the Commit history here, we return a placeholder
+    // In a full implementation, the transcript hash would be maintained by the state machine
+    // as it processes each Commit message
+    
+    // For now, compute a deterministic hash based on the group context
+    // This ensures the hash changes with epoch/tree updates
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     
-    
-    // Write group ID
+    // Serialize key group state for hashing
     try mls_zig.tls_encode.encodeVarBytes(&buffer, u8, &group_context.group_id.data);
-    
-    // Write epoch
     try mls_zig.tls_encode.encodeInt(&buffer, u64, group_context.epoch);
-    
-    // Write tree hash
     try buffer.appendSlice(&group_context.tree_hash);
     
-    // Write confirmed transcript hash (for interim transcript hash computation)
-    try buffer.appendSlice(&group_context.confirmed_transcript_hash);
-    
-    // Write extensions
-    for (group_context.extensions) |ext| {
-        try mls_zig.tls_encode.encodeInt(&buffer, u16, @intFromEnum(ext.extension_type));
-        try mls_zig.tls_encode.encodeVarBytes(&buffer, u16, ext.extension_data);
-    }
-    
     // Hash the serialized data
+    return mls_provider.crypto.hashFn(allocator, buffer.items);
+}
+
+/// Compute interim transcript hash according to RFC 9420 Section 8.2
+/// 
+/// interim_transcript_hash = Hash(confirmed_transcript_hash || confirmation_tag)
+pub fn computeInterimTranscriptHash(
+    allocator: std.mem.Allocator,
+    mls_provider: *provider.MlsProvider,
+    confirmed_transcript_hash: [32]u8,
+    confirmation_tag: []const u8,
+) ![32]u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    // Append confirmed transcript hash
+    try buffer.appendSlice(&confirmed_transcript_hash);
+    
+    // Append confirmation tag
+    try buffer.appendSlice(confirmation_tag);
+    
+    // Hash the concatenation
+    return mls_provider.crypto.hashFn(allocator, buffer.items);
+}
+
+/// Update transcript hash with a new Commit message
+/// 
+/// According to RFC 9420, the transcript hash is updated as:
+/// new_confirmed_transcript_hash = Hash(old_confirmed_transcript_hash || commit_authenticated_content)
+pub fn updateTranscriptHashWithCommit(
+    allocator: std.mem.Allocator,
+    mls_provider: *provider.MlsProvider,
+    current_transcript_hash: [32]u8,
+    commit_authenticated_content: []const u8,
+) ![32]u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    // Append current transcript hash
+    try buffer.appendSlice(&current_transcript_hash);
+    
+    // Append the serialized AuthenticatedContent of the Commit
+    try buffer.appendSlice(commit_authenticated_content);
+    
+    // Hash the concatenation
     return mls_provider.crypto.hashFn(allocator, buffer.items);
 }
 

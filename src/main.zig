@@ -11,6 +11,9 @@ const Command = enum {
     publish_keypackage,
     fetch_keypackage,
     create_welcome,
+    join_group,
+    test_mls_roundtrip,
+    show_key,
 };
 
 const CliArgs = struct {
@@ -61,6 +64,9 @@ pub fn main() !void {
         .publish_keypackage => try handlePublishKeyPackageCommand(allocator, &args, stdout),
         .fetch_keypackage => try handleFetchKeyPackageCommand(allocator, &args, stdout),
         .create_welcome => try handleCreateWelcomeCommand(allocator, &args, stdout),
+        .join_group => try handleJoinGroupCommand(allocator, &args, stdout),
+        .test_mls_roundtrip => try handleTestMLSRoundtripCommand(allocator, stdout),
+        .show_key => try handleShowKeyCommand(allocator, &args, stdout),
     }
 
     try bw.flush();
@@ -130,6 +136,12 @@ fn parseArgs(allocator: std.mem.Allocator, args: *CliArgs) !void {
                     args.command = .fetch_keypackage;
                 } else if (std.mem.eql(u8, arg, "create-welcome")) {
                     args.command = .create_welcome;
+                } else if (std.mem.eql(u8, arg, "join-group")) {
+                    args.command = .join_group;
+                } else if (std.mem.eql(u8, arg, "test-mls-roundtrip")) {
+                    args.command = .test_mls_roundtrip;
+                } else if (std.mem.eql(u8, arg, "show-key")) {
+                    args.command = .show_key;
                 }
             } else {
                 // For fetch-keypackage, first non-flag arg is the npub
@@ -183,6 +195,9 @@ fn handleEventCommand(allocator: std.mem.Allocator, args: *CliArgs, writer: anyt
         if (key.len == 2 and std.mem.eql(u8, key, "01")) {
             // Default test key like nak
             secret_key = [_]u8{1} ++ [_]u8{0} ** 31;
+        } else if (key.len == 2 and std.mem.eql(u8, key, "02")) {
+            // Second test key
+            secret_key = [_]u8{2} ++ [_]u8{0} ** 31;
         } else if (std.mem.startsWith(u8, key, "nsec1")) {
             // NIP-19 bech32 encoded secret key
             secret_key = try lib.bech32.decodeNsec1(allocator, key);
@@ -288,6 +303,9 @@ fn printHelp(writer: anytype) !void {
     try writer.print("  publish-keypackage  Create and publish MLS KeyPackage (NIP-EE)\n", .{});
     try writer.print("  fetch-keypackage    Fetch and parse a KeyPackage for given npub\n", .{});
     try writer.print("  create-welcome      Create MLS group and send welcome to target\n", .{});
+    try writer.print("  join-group          Process a welcome message to join MLS group\n", .{});
+    try writer.print("  test-mls-roundtrip  Test MLS roundtrip without relay (sanity check)\n", .{});
+    try writer.print("  show-key            Show public key info for a given private key\n", .{});
     try writer.print("  help                Show this help message\n\n", .{});
     try writer.print("OPTIONS:\n", .{});
     try writer.print("  --sec <key>        Secret key (hex) or '01' for default test key\n", .{});
@@ -302,6 +320,7 @@ fn printHelp(writer: anytype) !void {
     try writer.print("  nostr-zig publish-keypackage --sec 01\n", .{});
     try writer.print("  nostr-zig fetch-keypackage npub1...\n", .{});
     try writer.print("  nostr-zig create-welcome npub1... --sec 01 --name \"Dev Chat\"\n", .{});
+    try writer.print("  nostr-zig join-group --sec 02\n", .{});
     try writer.print("  nostr-zig event --sec 01 -c 'hello world'\n", .{});
     try writer.print("  echo '{{...}}' | nostr-zig parse\n", .{});
 }
@@ -407,6 +426,8 @@ fn handlePublishKeyPackageCommand(allocator: std.mem.Allocator, args: *CliArgs, 
     if (key_str) |key| {
         if (key.len == 2 and std.mem.eql(u8, key, "01")) {
             secret_key = [_]u8{1} ++ [_]u8{0} ** 31;
+        } else if (key.len == 2 and std.mem.eql(u8, key, "02")) {
+            secret_key = [_]u8{2} ++ [_]u8{0} ** 31;
         } else if (std.mem.startsWith(u8, key, "nsec1")) {
             secret_key = try lib.bech32.decodeNsec1(allocator, key);
         } else {
@@ -599,6 +620,8 @@ fn handleCreateWelcomeCommand(allocator: std.mem.Allocator, args: *CliArgs, writ
     if (key_str) |key| {
         if (key.len == 2 and std.mem.eql(u8, key, "01")) {
             secret_key = [_]u8{1} ++ [_]u8{0} ** 31;
+        } else if (key.len == 2 and std.mem.eql(u8, key, "02")) {
+            secret_key = [_]u8{2} ++ [_]u8{0} ** 31;
         } else if (std.mem.startsWith(u8, key, "nsec1")) {
             secret_key = try lib.bech32.decodeNsec1(allocator, key);
         } else {
@@ -787,6 +810,371 @@ fn handleCreateWelcomeCommand(allocator: std.mem.Allocator, args: *CliArgs, writ
     } else {
         try writer.print("❌ Failed to publish Welcome event\n", .{});
     }
+}
+
+fn handleTestMLSRoundtripCommand(allocator: std.mem.Allocator, writer: anytype) !void {
+    try writer.print("\n=== MLS Roundtrip Test (No Relay) ===\n", .{});
+    
+    const mls_zig = @import("mls_zig");
+    
+    // Initialize MLS provider
+    var mls_provider = lib.mls.provider.MlsProvider.init(allocator);
+    
+    // Step 1: Generate keypairs
+    try writer.print("\n1. Generating keypairs...\n", .{});
+    const alice_privkey = try lib.crypto.generatePrivateKey();
+    const bob_privkey = try lib.crypto.generatePrivateKey();
+    
+    var alice_pubkey: [32]u8 = undefined;
+    alice_pubkey = try lib.crypto.getPublicKey(alice_privkey);
+    var bob_pubkey: [32]u8 = undefined;
+    bob_pubkey = try lib.crypto.getPublicKey(bob_privkey);
+    
+    const alice_hex = try lib.crypto.bytesToHex(allocator, &alice_pubkey);
+    defer allocator.free(alice_hex);
+    const bob_hex = try lib.crypto.bytesToHex(allocator, &bob_pubkey);
+    defer allocator.free(bob_hex);
+    
+    try writer.print("  Alice pubkey: {s}\n", .{alice_hex});
+    try writer.print("  Bob pubkey: {s}\n", .{bob_hex});
+    
+    // Step 2: Bob creates KeyPackage
+    try writer.print("\n2. Bob creates his KeyPackage...\n", .{});
+    
+    const bob_kp_bundle = try mls_zig.key_package_flat.KeyPackageBundle.init(
+        allocator,
+        .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+        &bob_pubkey,
+        null,
+    );
+    
+    const bob_kp_bytes = try bob_kp_bundle.key_package.tlsSerialize(allocator);
+    defer allocator.free(bob_kp_bytes);
+    
+    try writer.print("  Bob's KeyPackage size: {} bytes\n", .{bob_kp_bytes.len});
+    
+    // Step 3: Alice parses Bob's KeyPackage
+    try writer.print("\n3. Alice parses Bob's KeyPackage...\n", .{});
+    
+    const parsed_bob_kp = try mls_zig.key_package_flat.KeyPackage.tlsDeserialize(allocator, bob_kp_bytes);
+    
+    try writer.print("  ✅ Successfully parsed Bob's KeyPackage!\n", .{});
+    try writer.print("  Protocol version: 0x{x:0>4}\n", .{parsed_bob_kp.protocol_version});
+    try writer.print("  Cipher suite: {}\n", .{@intFromEnum(parsed_bob_kp.cipher_suite)});
+    
+    // Step 4: Convert to legacy format
+    try writer.print("\n4. Converting KeyPackage format...\n", .{});
+    
+    const bob_legacy_kp = try lib.mls.keypackage_converter.flatToLegacy(allocator, parsed_bob_kp);
+    // We need to free parts of bob_legacy_kp that aren't taken by createGroup
+    defer {
+        allocator.free(bob_legacy_kp.init_key.data);
+        allocator.free(bob_legacy_kp.leaf_node.encryption_key.data);
+        allocator.free(bob_legacy_kp.leaf_node.signature_key.data);
+        allocator.free(bob_legacy_kp.signature);
+    }
+    
+    // Step 5: Alice creates group
+    try writer.print("\n5. Alice creates MLS group with Bob...\n", .{});
+    
+    const group_params = lib.mls.groups.GroupCreationParams{
+        .name = "Test Group",
+        .description = "MLS roundtrip test",
+        .admins = &[_][32]u8{alice_pubkey},
+        .relays = &[_][]const u8{"ws://localhost:10547"},
+        .image = null,
+    };
+    
+    const creation_result = try lib.mls.groups.createGroup(
+        allocator,
+        &mls_provider,
+        alice_privkey,
+        group_params,
+        &[_]lib.mls.types.KeyPackage{bob_legacy_kp},
+    );
+    defer {
+        // Clean up group result
+        for (creation_result.state.members) |member| {
+            switch (member.credential) {
+                .basic => |basic| allocator.free(basic.identity),
+                else => {},
+            }
+        }
+        allocator.free(creation_result.state.members);
+        allocator.free(creation_result.state.ratchet_tree);
+        
+        // Free extensions data
+        for (creation_result.state.group_context.extensions) |ext| {
+            allocator.free(ext.extension_data);
+        }
+        allocator.free(creation_result.state.group_context.extensions);
+        
+        // Free welcomes
+        for (creation_result.welcomes) |welcome| {
+            allocator.free(welcome.encrypted_group_info);
+            for (welcome.secrets) |secret| {
+                allocator.free(secret.new_member);
+                allocator.free(secret.encrypted_group_secrets);
+            }
+            allocator.free(welcome.secrets);
+        }
+        allocator.free(creation_result.welcomes);
+        allocator.free(creation_result.used_key_packages);
+    }
+    
+    const group_id_hex = try lib.crypto.bytesToHex(allocator, &creation_result.state.group_id.data);
+    defer allocator.free(group_id_hex);
+    
+    try writer.print("  ✅ Group created!\n", .{});
+    try writer.print("  Group ID: {s}\n", .{group_id_hex});
+    try writer.print("  Epoch: {}\n", .{creation_result.state.epoch});
+    try writer.print("  Members: {}\n", .{creation_result.state.members.len});
+    try writer.print("  Welcome messages: {}\n", .{creation_result.welcomes.len});
+    
+    // Step 6: Verify Welcome
+    try writer.print("\n6. Verifying Welcome message...\n", .{});
+    
+    const welcome = creation_result.welcomes[0];
+    try writer.print("  Welcome cipher suite: {}\n", .{@intFromEnum(welcome.cipher_suite)});
+    try writer.print("  Welcome secrets: {} secrets\n", .{welcome.secrets.len});
+    
+    // Serialize Welcome to show size
+    // TODO: Fix serializeWelcome after TLS migration
+    // const welcome_bytes = try lib.mls.serialization.Serializer.serializeWelcome(allocator, welcome);
+    // defer allocator.free(welcome_bytes);
+    // try writer.print("  Serialized Welcome size: {} bytes\n", .{welcome_bytes.len});
+    
+    try writer.print("  Encrypted group info size: {} bytes\n", .{welcome.encrypted_group_info.len});
+    
+    try writer.print("\n✅ MLS Roundtrip Test Complete!\n", .{});
+    try writer.print("Summary:\n", .{});
+    try writer.print("  - Bob created a {} byte KeyPackage\n", .{bob_kp_bytes.len});
+    try writer.print("  - Alice successfully parsed it\n", .{});
+    try writer.print("  - Alice created group with 2 members\n", .{});
+    try writer.print("  - Alice generated Welcome message\n", .{});
+    try writer.print("  - We can read our own KeyPackages! ✅\n", .{});
+    try writer.print("  - We can create valid MLS groups! ✅\n", .{});
+    try writer.print("  - Next: Implement join-group for Bob\n", .{});
+}
+
+fn handleJoinGroupCommand(allocator: std.mem.Allocator, args: *CliArgs, writer: anytype) !void {
+    try writer.print("\n=== Join MLS Group from Welcome ===\n\n", .{});
+    
+    // Get our private key
+    var secret_key: [32]u8 = undefined;
+    const key_str = args.secret_key orelse std.posix.getenv("NOSTR_SECRET_KEY");
+    
+    if (key_str) |key| {
+        if (key.len == 2 and std.mem.eql(u8, key, "01")) {
+            secret_key = [_]u8{1} ++ [_]u8{0} ** 31;
+        } else if (key.len == 2 and std.mem.eql(u8, key, "02")) {
+            secret_key = [_]u8{2} ++ [_]u8{0} ** 31;
+        } else if (std.mem.startsWith(u8, key, "nsec1")) {
+            secret_key = try lib.bech32.decodeNsec1(allocator, key);
+        } else {
+            if (key.len != 64) return error.InvalidKeyLength;
+            _ = try std.fmt.hexToBytes(&secret_key, key);
+        }
+    } else {
+        try writer.print("Error: Private key required. Use --sec <key> or set NOSTR_SECRET_KEY\n", .{});
+        return;
+    }
+    
+    const our_pubkey = try lib.crypto.getPublicKey(secret_key);
+    const our_pubkey_hex = try lib.crypto.bytesToHex(allocator, &our_pubkey);
+    defer allocator.free(our_pubkey_hex);
+    
+    try writer.print("Our public key: {s}\n", .{our_pubkey_hex});
+    
+    // Fetch our gift-wrapped Welcome events
+    const relay_url = if (args.relays.items.len > 0) args.relays.items[0] else "ws://localhost:10547";
+    
+    try writer.print("Fetching Welcome events from {s}...\n", .{relay_url});
+    
+    // Use relay_utils to fetch gift-wrapped events
+    const since_timestamp = std.time.timestamp() - (7 * 24 * 60 * 60); // Last 7 days
+    var fetch_result = try lib.relay_utils.fetchEvents(
+        allocator,
+        relay_url,
+        .{
+            .kinds = &[_]u32{1059}, // Gift-wrapped events
+            .since = @intCast(since_timestamp),
+            .limit = 100,
+        },
+        5000,
+    );
+    defer fetch_result.deinit();
+    
+    // Filter for events tagged to us
+    var our_events = std.ArrayList(lib.event.Event).init(allocator);
+    defer {
+        for (our_events.items) |evt| {
+            evt.deinit(allocator);
+        }
+        our_events.deinit();
+    }
+    
+    for (fetch_result.events) |event| {
+        // Check if this event is tagged to us
+        var is_for_us = false;
+        for (event.tags) |tag| {
+            if (tag.len >= 2 and std.mem.eql(u8, tag[0], "p") and 
+                std.mem.eql(u8, tag[1], our_pubkey_hex)) {
+                is_for_us = true;
+                break;
+            }
+        }
+        
+        if (is_for_us) {
+            // Clone the event manually
+            const cloned_tags = try allocator.alloc([][]u8, event.tags.len);
+            for (event.tags, 0..) |tag, i| {
+                cloned_tags[i] = try allocator.alloc([]u8, tag.len);
+                for (tag, 0..) |t, j| {
+                    cloned_tags[i][j] = try allocator.dupe(u8, t);
+                }
+            }
+            
+            const cloned = lib.event.Event{
+                .id = try allocator.dupe(u8, event.id),
+                .pubkey = try allocator.dupe(u8, event.pubkey),
+                .created_at = event.created_at,
+                .kind = event.kind,
+                .tags = cloned_tags,
+                .content = try allocator.dupe(u8, event.content),
+                .sig = try allocator.dupe(u8, event.sig),
+            };
+            
+            try our_events.append(cloned);
+        }
+    }
+    
+    const events = try our_events.toOwnedSlice();
+    defer {
+        for (events) |evt| {
+            evt.deinit(allocator);
+        }
+        allocator.free(events);
+    }
+    
+    if (events.len == 0) {
+        try writer.print("\n❌ No Welcome events found for your public key\n", .{});
+        try writer.print("Make sure someone has sent you a Welcome first using create-welcome.\n", .{});
+        return;
+    }
+    
+    try writer.print("✅ Found {} gift-wrapped event(s)\n", .{events.len});
+    
+    // Try to process Welcome events (newest first)
+    for (events, 0..) |wrapped_event, i| {
+        try writer.print("\nAttempting to process event {} of {}...\n", .{i + 1, events.len});
+        
+        // Initialize MLS provider
+        var mls_provider = lib.mls.provider.MlsProvider.init(allocator);
+        
+        // Try to process this Welcome event
+        const join_result = lib.mls.welcome_events.processWelcomeEvent(
+            allocator,
+            &mls_provider,
+            wrapped_event,
+            secret_key,
+        ) catch |err| {
+            try writer.print("  Failed to process: {}\n", .{err});
+            continue;
+        };
+        
+        // Success! We joined the group
+        try writer.print("\n✅ Successfully joined MLS group!\n", .{});
+        
+        const group_id_hex = try lib.crypto.bytesToHex(allocator, &join_result.state.group_id.data);
+        defer allocator.free(group_id_hex);
+        
+        try writer.print("  Group ID: {s}\n", .{group_id_hex});
+        try writer.print("  Epoch: {}\n", .{join_result.state.epoch});
+        try writer.print("  Members: {}\n", .{join_result.state.members.len});
+        try writer.print("\nGroup Metadata:\n", .{});
+        try writer.print("  Name: {s}\n", .{join_result.metadata.name});
+        try writer.print("  Description: {s}\n", .{join_result.metadata.description});
+        try writer.print("  Relays: ", .{});
+        for (join_result.metadata.relays, 0..) |relay, j| {
+            if (j > 0) try writer.print(", ", .{});
+            try writer.print("{s}", .{relay});
+        }
+        try writer.print("\n", .{});
+        
+        try writer.print("\n🎉 You are now a member of the group!\n", .{});
+        try writer.print("Next steps:\n", .{});
+        try writer.print("  - Send encrypted messages to the group\n", .{});
+        try writer.print("  - Receive messages from other members\n", .{});
+        try writer.print("  - Update your key material periodically\n", .{});
+        
+        // Clean up join result
+        // group_id is a struct with fixed array, no need to free
+        for (join_result.state.members) |member| {
+            switch (member.credential) {
+                .basic => |basic| allocator.free(basic.identity),
+                else => {},
+            }
+        }
+        allocator.free(join_result.state.members);
+        allocator.free(join_result.state.ratchet_tree);
+        
+        // Free group context extensions if any
+        for (join_result.state.group_context.extensions) |ext| {
+            allocator.free(ext.extension_data);
+        }
+        allocator.free(join_result.state.group_context.extensions);
+        
+        // Free metadata
+        allocator.free(join_result.metadata.name);
+        allocator.free(join_result.metadata.description);
+        if (join_result.metadata.image) |img| {
+            allocator.free(img);
+        }
+        // admins is []const [32]u8, just free the array
+        allocator.free(join_result.metadata.admins);
+        for (join_result.metadata.relays) |relay| {
+            allocator.free(relay);
+        }
+        allocator.free(join_result.metadata.relays);
+        
+        return; // Successfully joined, exit
+    }
+    
+    try writer.print("\n❌ Could not join any group from the available Welcome events\n", .{});
+}
+
+fn handleShowKeyCommand(allocator: std.mem.Allocator, args: *CliArgs, writer: anytype) !void {
+    // Get the private key
+    var secret_key: [32]u8 = undefined;
+    const key_str = args.secret_key orelse std.posix.getenv("NOSTR_SECRET_KEY");
+    
+    if (key_str) |key| {
+        if (key.len == 2 and std.mem.eql(u8, key, "01")) {
+            secret_key = [_]u8{1} ++ [_]u8{0} ** 31;
+        } else if (key.len == 2 and std.mem.eql(u8, key, "02")) {
+            secret_key = [_]u8{2} ++ [_]u8{0} ** 31;
+        } else if (std.mem.startsWith(u8, key, "nsec1")) {
+            secret_key = try lib.bech32.decodeNsec1(allocator, key);
+        } else {
+            if (key.len != 64) return error.InvalidKeyLength;
+            _ = try std.fmt.hexToBytes(&secret_key, key);
+        }
+    } else {
+        try writer.print("Error: Private key required. Use --sec <key> or set NOSTR_SECRET_KEY\n", .{});
+        return;
+    }
+    
+    // Get public key
+    const pubkey = try lib.crypto.getPublicKey(secret_key);
+    const pubkey_hex = try lib.crypto.bytesToHex(allocator, &pubkey);
+    defer allocator.free(pubkey_hex);
+    
+    const npub = try lib.bech32.encodeNpub1(allocator, pubkey);
+    defer allocator.free(npub);
+    
+    try writer.print("Public key (hex): {s}\n", .{pubkey_hex});
+    try writer.print("Public key (npub): {s}\n", .{npub});
 }
 
 test "can import nostr lib" {

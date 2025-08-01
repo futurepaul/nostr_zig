@@ -122,70 +122,57 @@ pub const KeyPackage = struct {
     
     /// TLS deserialize a KeyPackage (RFC 9420 format)
     pub fn tlsDeserialize(allocator: Allocator, data: []const u8) !KeyPackage {
-        var stream = std.io.fixedBufferStream(data);
-        var reader = stream.reader();
+        // Check if we have enough data
+        if (data.len < 8) {
+            return error.InsufficientData;
+        }
+        
+        // Use ConstReader for const data without copying
+        var const_reader = tls_encode.ConstReader.init(data);
         
         // Protocol version
-        var version_buf: [2]u8 = undefined;
-        _ = try reader.readAll(&version_buf);
-        var version_decoder = tls.Decoder.fromTheirSlice(&version_buf);
-        const protocol_version = version_decoder.decode(u16);
+        const protocol_version = try const_reader.readInt(u16);
         if (protocol_version != MLS_PROTOCOL_VERSION) {
             return error.UnsupportedVersion;
         }
         
         // Cipher suite
-        var suite_buf: [2]u8 = undefined;
-        _ = try reader.readAll(&suite_buf);
-        var suite_decoder = tls.Decoder.fromTheirSlice(&suite_buf);
-        const cipher_suite_value = suite_decoder.decode(u16);
+        const cipher_suite_value = try const_reader.readInt(u16);
         const cs = std.meta.intToEnum(cipher_suite.CipherSuite, cipher_suite_value) catch {
             return error.UnsupportedCipherSuite;
         };
         
         // Init key - HPKE public keys use opaque<1..2^8-1> encoding
-        var key_len_buf: [1]u8 = undefined;
-        _ = try reader.readAll(&key_len_buf);
-        const key_len = key_len_buf[0];
+        const key_len = try const_reader.readInt(u8);
         if (key_len != 32) {
             return error.InvalidKeyLength;
         }
         var init_key: [32]u8 = undefined;
-        _ = try reader.readAll(&init_key);
+        _ = try const_reader.readAll(&init_key);
         
         // LeafNode is NOT wrapped in opaque - direct struct fields
         
         // encryption_key: HPKEPublicKey opaque<1..2^8-1>
-        var enc_len_buf: [1]u8 = undefined;
-        _ = try reader.readAll(&enc_len_buf);
-        const enc_len = enc_len_buf[0];
+        const enc_len = try const_reader.readInt(u8);
         if (enc_len != 32) {
             return error.InvalidKeyLength;
         }
         var encryption_key: [32]u8 = undefined;
-        _ = try reader.readAll(&encryption_key);
+        _ = try const_reader.readAll(&encryption_key);
         
         // signature_key: SignaturePublicKey opaque<1..2^8-1> (Ed25519 keys are 32 bytes)
-        var sig_len_buf: [1]u8 = undefined;
-        _ = try reader.readAll(&sig_len_buf);
-        const sig_len = sig_len_buf[0];
+        const sig_len = try const_reader.readInt(u8);
         if (sig_len != 32) {
             return error.InvalidKeyLength;
         }
         var signature_key: [32]u8 = undefined;
-        _ = try reader.readAll(&signature_key);
+        _ = try const_reader.readAll(&signature_key);
         
         // credential: Credential opaque<1..2^16-1>
-        var cred_buf: [2]u8 = undefined;
-        _ = try reader.readAll(&cred_buf);
-        var cred_decoder = tls.Decoder.fromTheirSlice(&cred_buf);
-        const credential_len_raw = cred_decoder.decode(u16);
+        const credential_len = try const_reader.readInt(u16);
         
         // Skip the credential data
-        const skip_buf = try allocator.alloc(u8, credential_len_raw);
-        defer allocator.free(skip_buf);
-        _ = try reader.readAll(skip_buf);
-        const credential_len = credential_len_raw;
+        try const_reader.skip(credential_len);
         
         // The signature is always at the end of the KeyPackage
         // Try to find it by checking both u8 and u16 length prefixes
@@ -215,25 +202,16 @@ pub const KeyPackage = struct {
             return error.SignatureNotFound;
         }
         
-        // Skip to the signature position
-        try stream.seekTo(sig_offset);
-        var new_reader = stream.reader();
-        
         // Read signature based on detected prefix type
         const sig_data = if (sig_uses_u16) blk: {
-            var len_buf: [2]u8 = undefined;
-            _ = try new_reader.readAll(&len_buf);
-            var decoder = tls.Decoder.fromTheirSlice(&len_buf);
-            const len = decoder.decode(u16);
+            const len = std.mem.readInt(u16, data[sig_offset..][0..2], .big);
             const sig_bytes = try allocator.alloc(u8, len);
-            _ = try new_reader.readAll(sig_bytes);
+            @memcpy(sig_bytes, data[sig_offset + 2..][0..len]);
             break :blk sig_bytes;
         } else blk: {
-            var len_buf: [1]u8 = undefined;
-            _ = try new_reader.readAll(&len_buf);
-            const len = len_buf[0];
+            const len = data[sig_offset];
             const sig_bytes = try allocator.alloc(u8, len);
-            _ = try new_reader.readAll(sig_bytes);
+            @memcpy(sig_bytes, data[sig_offset + 1..][0..len]);
             break :blk sig_bytes;
         };
             

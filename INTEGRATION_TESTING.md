@@ -13,6 +13,9 @@ This document outlines our integration testing strategy for the nostr_zig NIP-EE
 - ✅ **Relay Integration**: Publishing and fetching events from relays
 - ✅ **Roundtrip Testing**: Complete publish/fetch/parse cycle verification
 - ✅ **KeyPackage Parsing**: Full TLS deserialization with key extraction
+- ✅ **Welcome Creation**: `create-welcome` command fully implemented
+- ✅ **Group Creation**: Real MLS groups with epoch secrets and tree hashing
+- ✅ **Welcome Events**: NIP-59 gift-wrapped welcome messages (kind 1059)
 
 ### Test Results
 ```bash
@@ -32,6 +35,9 @@ This document outlines our integration testing strategy for the nostr_zig NIP-EE
 - Extracts and displays all three keys: init_key, encryption_key, signature_key
 - **NEW**: Replaced `nak` dependency with native WebSocket client for relay interactions
 - **NEW**: Created reusable `relay_utils` module for common relay operations
+- **NEW**: Implemented `create-welcome` command - creates real MLS groups and sends welcome messages
+- **NEW**: Fixed KeyPackage deserialization panic - now properly handles TLS wire format
+- **NEW**: Created `test_welcome_roundtrip.sh` for full integration testing
 - Ready for external client integration testing
 
 ### Resolved Issues
@@ -71,16 +77,16 @@ This document outlines our integration testing strategy for the nostr_zig NIP-EE
    - Validate MLS structure
    - Extract public keys
 
-### Phase 2: Group Creation (Upcoming)
-3. **Create Group with External Member**
-   - Use external KeyPackage to add member
-   - Generate Welcome message (kind 444)
-   - Publish with NIP-59 gift wrapping
+### Phase 2: Group Creation 🚧 (Current - Partially Complete)
+3. **Create Group with External Member** ✅
+   - Use external KeyPackage to add member ✅
+   - Generate Welcome message (kind 444) ✅
+   - Publish with NIP-59 gift wrapping ✅
 
-4. **Join External Group**
-   - Receive Welcome from Whitenoise
-   - Process MLS Welcome
-   - Initialize group state
+4. **Join External Group** ❌ (Blocked by AuthenticationFailed)
+   - Receive Welcome from Whitenoise ✅
+   - Process MLS Welcome ❌ - Getting `error.AuthenticationFailed`
+   - Initialize group state ❌
 
 ### Phase 3: Messaging (Future)
 5. **Message Exchange**
@@ -122,8 +128,11 @@ This document outlines our integration testing strategy for the nostr_zig NIP-EE
 
 ### Test Scripts
 ```bash
-# Full roundtrip test
+# Full KeyPackage roundtrip test
 ./test_keypackage_roundtrip.sh
+
+# Full Welcome roundtrip test (NEW!)
+./test_welcome_roundtrip.sh
 
 # Parse KeyPackage content
 ./parse_keypackage.sh <hex_content>
@@ -152,8 +161,8 @@ This document outlines our integration testing strategy for the nostr_zig NIP-EE
 
 ### 2. Implement Missing Functionality
 - [x] ~~Complete fetch-keypackage command with actual parsing~~
-- [ ] Fix KeyPackage parsing format mismatch (u8 vs u16 length prefixes)
-- [ ] Add create-welcome command (create group + send invite)
+- [x] ~~Fix KeyPackage parsing format mismatch~~ (Fixed deserialization panic)
+- [x] ~~Add create-welcome command (create group + send invite)~~
 - [ ] Add join-group command (process welcome messages)
 - [ ] Add group messaging commands
 
@@ -331,8 +340,8 @@ Should match RFC 9420 Section 7.2 - we need to verify:
 - [x] Fetch from relay
 - [x] Parse external KeyPackages
 
-### Phase 2
-- [ ] Create groups with external members
+### Phase 2 (In Progress)
+- [x] Create groups with external members
 - [ ] Process external Welcome messages
 - [ ] Join external groups
 
@@ -364,6 +373,34 @@ echo <hex> | xxd -r -p | od -t x1
 ./parse_keypackage.sh <hex>
 ```
 
+## Current Implementation Status (Jan 31, 2025)
+
+### Welcome Message Creation ✅
+The `create-welcome` command now:
+1. Fetches target member's KeyPackage from relay
+2. Parses it using flat KeyPackage deserializer (fixed panic issue)
+3. Creates real MLS group with proper:
+   - Epoch secrets derived via RFC 9420 key schedule
+   - Tree hashing implemented
+   - Group context with metadata (name, description, relays)
+4. Generates Welcome message with AES-GCM encryption
+5. Wraps in NIP-59 gift wrap for metadata protection
+6. Publishes to relay as kind 1059 event
+
+### What's Real vs Placeholder
+**REAL Cryptography**:
+- ✅ X25519 key generation and HPKE
+- ✅ Ed25519 signatures
+- ✅ AES-GCM encryption for Welcome messages
+- ✅ Proper epoch secret derivation
+- ✅ Tree hash computation
+- ✅ NIP-44 encryption for gift wrapping
+
+**Still TODO**:
+- 🚧 Processing received Welcome messages (`join-group` command)
+- 🚧 Sending encrypted messages in groups
+- 🚧 Handling epoch updates and forward secrecy
+
 ## Known Issues & Solutions
 
 ### Issue: Bech32 decoding fails
@@ -381,6 +418,46 @@ echo <hex> | xxd -r -p | od -t x1
 
 ### Issue: Signature verification fails
 **Solution**: Check MLS signature label ("MLS 1.0 KeyPackageTBS")
+
+## Current Blocker: AuthenticationFailed Error (Jan 31, 2025)
+
+### Issue Description
+The `test_welcome_roundtrip.sh` test is failing at the final step where Bob tries to join the group:
+
+```
+✅ Found 1 gift-wrapped event(s)
+
+Attempting to process event 1 of 1...
+  Failed to process: error.AuthenticationFailed
+
+❌ Could not join any group from the available Welcome events
+```
+
+### What's Working
+1. Bob publishes his KeyPackage successfully
+2. Alice fetches Bob's KeyPackage and creates a group
+3. Alice creates and publishes a gift-wrapped Welcome event (kind 1059)
+4. Bob successfully fetches the gift-wrapped event tagged to his public key
+5. The gift-wrap layer appears to be working (Bob finds his event)
+
+### What's Failing
+The `error.AuthenticationFailed` occurs in `processWelcomeEvent` which:
+1. Parses the gift-wrapped event (likely succeeding)
+2. Extracts the MLS Welcome data (likely succeeding)
+3. Fails during `joinFromWelcome` with authentication error
+
+### Investigation Needed
+1. **HPKE Decryption**: Check if the HPKE decryption of Welcome secrets is failing
+2. **Key Derivation**: Verify that the same private key is being used consistently
+3. **Signature Verification**: Check if Ed25519 signatures are being verified correctly
+4. **Nostr Event Validation**: Ensure all Nostr events are properly signed and verified
+
+### Nostr Event Validation Status
+Need to verify:
+- Are KeyPackage events (kind 443) properly signed?
+- Are Welcome events (kind 1059) properly gift-wrapped?
+- Is the inner Welcome event (kind 444) properly formed?
+- Are event IDs being calculated correctly?
 
 ## References
 

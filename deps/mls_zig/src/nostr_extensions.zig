@@ -108,6 +108,7 @@ pub const NostrGroupData = struct {
         errdefer allocator.free(group_id);
         
         // Read relay URLs
+        try decoder.ensure(2);
         const relay_count = decoder.decode(u16);
         const relays = try allocator.alloc([]u8, relay_count);
         errdefer {
@@ -127,6 +128,45 @@ pub const NostrGroupData = struct {
         
         // Read metadata
         const metadata = try tls_encode.readVarBytes(decoder, u32, allocator);
+        errdefer allocator.free(metadata);
+        
+        return NostrGroupData{
+            .nostr_group_id = group_id,
+            .relay_urls = relays,
+            .creator_pubkey = creator_pk,
+            .metadata = metadata,
+            .allocator = allocator,
+        };
+    }
+    
+    /// Deserialize from const data using reader-based approach
+    pub fn deserializeFromConst(allocator: Allocator, data: []const u8) !NostrGroupData {
+        var reader = tls_encode.ConstReader.init(data);
+        
+        // Read group ID
+        const group_id = try reader.readVarBytes(u16, allocator);
+        errdefer allocator.free(group_id);
+        
+        // Read relay URLs
+        const relay_count = try reader.readInt(u16);
+        const relays = try allocator.alloc([]u8, relay_count);
+        errdefer {
+            for (relays[0..relay_count]) |relay| {
+                allocator.free(relay);
+            }
+            allocator.free(relays);
+        }
+        
+        for (relays) |*relay| {
+            relay.* = try reader.readVarBytes(u16, allocator);
+        }
+        
+        // Read creator pubkey
+        const creator_pk = try reader.readVarBytes(u16, allocator);
+        errdefer allocator.free(creator_pk);
+        
+        // Read metadata
+        const metadata = try reader.readVarBytes(u32, allocator);
         errdefer allocator.free(metadata);
         
         return NostrGroupData{
@@ -283,6 +323,47 @@ test "NostrGroupData serialization" {
     var decoder = tls.Decoder.fromTheirSlice(buffer.items);
     
     var decoded = try NostrGroupData.deserialize(allocator, &decoder);
+    defer decoded.deinit();
+    
+    // Verify data
+    try testing.expectEqualSlices(u8, group_id, decoded.nostr_group_id);
+    try testing.expectEqualSlices(u8, creator_pubkey, decoded.creator_pubkey);
+    try testing.expectEqualSlices(u8, metadata, decoded.metadata);
+    try testing.expectEqual(@as(usize, 2), decoded.relay_urls.len);
+    try testing.expectEqualSlices(u8, relay_urls[0], decoded.relay_urls[0]);
+    try testing.expectEqualSlices(u8, relay_urls[1], decoded.relay_urls[1]);
+}
+
+test "NostrGroupData deserialize from const data" {
+    const allocator = testing.allocator;
+    
+    const group_id = "deadbeef1234567890abcdef";
+    const relay_urls = [_][]const u8{
+        "wss://relay1.example.com",
+        "wss://relay2.example.com",
+    };
+    const creator_pubkey = "1234567890abcdef1234567890abcdef12345678";
+    const metadata = "{\"name\":\"Test Group\",\"description\":\"A test group\"}";
+    
+    // Create NostrGroupData
+    var group_data = try NostrGroupData.init(
+        allocator,
+        group_id,
+        &relay_urls,
+        creator_pubkey,
+        metadata
+    );
+    defer group_data.deinit();
+    
+    // Serialize
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    
+    try group_data.serialize(&buffer);
+    
+    // Test reader-based deserialization from const data
+    const const_data: []const u8 = buffer.items;
+    var decoded = try NostrGroupData.deserializeFromConst(allocator, const_data);
     defer decoded.deinit();
     
     // Verify data

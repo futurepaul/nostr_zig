@@ -2,6 +2,7 @@ const std = @import("std");
 const tls = std.crypto.tls;
 const mls_zig = @import("mls_zig");
 const crypto = std.crypto;
+const types = @import("types.zig");
 const Allocator = std.mem.Allocator;
 
 /// Wire format types as per MLS RFC 9420
@@ -332,13 +333,13 @@ pub const MLSPlaintext = struct {
                 // Application data with length prefix (u32)
                 try mls_zig.tls_encode.encodeVarBytes(&content_buffer, u32, app_data.data);
             },
-            .proposal => |_| {
-                // TODO: Implement proposal serialization when needed
-                return error.NotImplemented;
+            .proposal => |data| {
+                // For now, proposal content is raw bytes
+                try mls_zig.tls_encode.encodeVarBytes(&content_buffer, u32, data);
             },
-            .commit => |_| {
-                // TODO: Implement commit serialization when needed
-                return error.NotImplemented;
+            .commit => |data| {
+                // For now, commit content is raw bytes
+                try mls_zig.tls_encode.encodeVarBytes(&content_buffer, u32, data);
             },
         }
         
@@ -468,13 +469,13 @@ pub fn serializeMLSMessageForEncryption(allocator: Allocator, message: MLSMessag
             // Application data with length prefix (u32)
             try mls_zig.tls_encode.encodeVarBytes(&buffer, u32, app_data.data);
         },
-        .proposal => |_| {
-            // TODO: Implement proposal serialization when needed
-            return error.NotImplemented;
+        .proposal => |data| {
+            // For now, proposal content is raw bytes
+            try mls_zig.tls_encode.encodeVarBytes(&buffer, u32, data);
         },
-        .commit => |_| {
-            // TODO: Implement commit serialization when needed
-            return error.NotImplemented;
+        .commit => |data| {
+            // For now, commit content is raw bytes  
+            try mls_zig.tls_encode.encodeVarBytes(&buffer, u32, data);
         },
     }
     

@@ -57,7 +57,11 @@ pub fn readVarBytes(decoder: *tls.Decoder, comptime LenType: type, allocator: st
     const len = switch (LenType) {
         u8 => @as(usize, decoder.decode(u8)),
         u16 => @as(usize, decoder.decode(u16)),
-        // u32 is not supported by std.crypto.tls.Decoder
+        u32 => blk: {
+            // Manual u32 decoding since std.crypto.tls doesn't support it
+            const bytes = decoder.slice(4);
+            break :blk @as(usize, std.mem.readInt(u32, bytes[0..4], .big));
+        },
         else => @compileError("Unsupported length type for TLS decoder: " ++ @typeName(LenType)),
     };
     // Ensure we have enough bytes for the data
@@ -167,6 +171,99 @@ pub fn readInt(decoder: *tls.Decoder, comptime T: type) !T {
     }
 }
 
+// ============================================================================
+// Reader-based decoding functions - More idiomatic Zig approach
+// ============================================================================
+
+/// Read an integer directly from a reader
+pub fn readIntFromReader(reader: anytype, comptime T: type) !T {
+    var buf: [@sizeOf(T)]u8 = undefined;
+    _ = try reader.readAll(&buf);
+    
+    if (T == u64) {
+        return std.mem.readInt(u64, &buf, .big);
+    } else if (T == u32) {
+        return std.mem.readInt(u32, &buf, .big);
+    } else if (T == u16) {
+        return std.mem.readInt(u16, &buf, .big);
+    } else if (T == u8) {
+        return buf[0];
+    } else {
+        @compileError("Unsupported integer type for readIntFromReader: " ++ @typeName(T));
+    }
+}
+
+/// Read variable-length bytes directly from a reader
+pub fn readVarBytesReader(reader: anytype, comptime LenType: type, allocator: std.mem.Allocator) ![]u8 {
+    const len = try readIntFromReader(reader, LenType);
+    const data = try allocator.alloc(u8, len);
+    errdefer allocator.free(data);
+    _ = try reader.readAll(data);
+    return data;
+}
+
+/// Read TLS opaque directly from a reader
+pub fn readTlsOpaqueFromReader(reader: anytype, allocator: std.mem.Allocator, max_len: u32) ![]u8 {
+    const len = if (max_len < 256) blk: {
+        break :blk @as(u32, try readIntFromReader(reader, u8));
+    } else if (max_len < 65536) blk: {
+        break :blk @as(u32, try readIntFromReader(reader, u16));
+    } else blk: {
+        // Three byte length (u24)
+        const b1 = @as(u32, try readIntFromReader(reader, u8));
+        const b2 = @as(u32, try readIntFromReader(reader, u8));
+        const b3 = @as(u32, try readIntFromReader(reader, u8));
+        break :blk (b1 << 16) | (b2 << 8) | b3;
+    };
+    
+    if (len > max_len) {
+        return error.DataTooLarge;
+    }
+    
+    const data = try allocator.alloc(u8, len);
+    errdefer allocator.free(data);
+    _ = try reader.readAll(data);
+    return data;
+}
+
+/// Create a reader from const data without copying
+pub fn readerFromConst(data: []const u8) std.io.FixedBufferStream([]const u8) {
+    return std.io.fixedBufferStream(data);
+}
+
+/// Helper struct for reading from const data
+pub const ConstReader = struct {
+    stream: std.io.FixedBufferStream([]const u8),
+    
+    pub fn init(data: []const u8) ConstReader {
+        return .{ .stream = std.io.fixedBufferStream(data) };
+    }
+    
+    pub fn reader(self: *ConstReader) std.io.FixedBufferStream([]const u8).Reader {
+        return self.stream.reader();
+    }
+    
+    pub fn readInt(self: *ConstReader, comptime T: type) !T {
+        return readIntFromReader(self.stream.reader(), T);
+    }
+    
+    pub fn readVarBytes(self: *ConstReader, comptime LenType: type, allocator: std.mem.Allocator) ![]u8 {
+        return readVarBytesReader(self.stream.reader(), LenType, allocator);
+    }
+    
+    pub fn readTlsOpaque(self: *ConstReader, allocator: std.mem.Allocator, max_len: u32) ![]u8 {
+        return readTlsOpaqueFromReader(self.stream.reader(), allocator, max_len);
+    }
+    
+    pub fn readAll(self: *ConstReader, buffer: []u8) !usize {
+        return self.stream.reader().readAll(buffer);
+    }
+    
+    pub fn skip(self: *ConstReader, num_bytes: usize) !void {
+        try self.stream.seekBy(@intCast(num_bytes));
+    }
+};
+
 // Tests
 const testing = std.testing;
 
@@ -231,4 +328,57 @@ test "encode and decode TLS opaque" {
     const read2 = try readTlsOpaque(&decoder, allocator, 65535);
     defer allocator.free(read2);
     try testing.expectEqualSlices(u8, &data2, read2);
+}
+
+test "reader-based decoding" {
+    const allocator = testing.allocator;
+    var list = std.ArrayList(u8).init(allocator);
+    defer list.deinit();
+
+    // Encode some test data
+    try encodeInt(&list, u8, 0x42);
+    try encodeInt(&list, u16, 0x1234);
+    try encodeInt(&list, u32, 0xDEADBEEF);
+    try encodeVarBytes(&list, u8, "hello");
+    try encodeVarBytes(&list, u16, "world!");
+    try encodeTlsOpaque(&list, "test", 255);
+
+    // Read using ConstReader
+    var reader = ConstReader.init(list.items);
+    
+    try testing.expectEqual(@as(u8, 0x42), try reader.readInt(u8));
+    try testing.expectEqual(@as(u16, 0x1234), try reader.readInt(u16));
+    try testing.expectEqual(@as(u32, 0xDEADBEEF), try reader.readInt(u32));
+    
+    const data1 = try reader.readVarBytes(u8, allocator);
+    defer allocator.free(data1);
+    try testing.expectEqualSlices(u8, "hello", data1);
+    
+    const data2 = try reader.readVarBytes(u16, allocator);
+    defer allocator.free(data2);
+    try testing.expectEqualSlices(u8, "world!", data2);
+    
+    const data3 = try reader.readTlsOpaque(allocator, 255);
+    defer allocator.free(data3);
+    try testing.expectEqualSlices(u8, "test", data3);
+}
+
+test "reader from const data stream" {
+    const allocator = testing.allocator;
+    var list = std.ArrayList(u8).init(allocator);
+    defer list.deinit();
+
+    try encodeInt(&list, u32, 0xCAFEBABE);
+    try encodeVarBytes(&list, u16, "reader test");
+
+    // Use plain reader functions
+    var stream = readerFromConst(list.items);
+    const reader = stream.reader();
+    
+    const value = try readIntFromReader(reader, u32);
+    try testing.expectEqual(@as(u32, 0xCAFEBABE), value);
+    
+    const data = try readVarBytesReader(reader, u16, allocator);
+    defer allocator.free(data);
+    try testing.expectEqualSlices(u8, "reader test", data);
 }

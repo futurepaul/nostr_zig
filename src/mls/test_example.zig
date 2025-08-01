@@ -247,6 +247,7 @@ fn freeGroupCreationResult(allocator: std.mem.Allocator, result: mls.GroupCreati
         allocator.free(kp.signature);
         // Note: We don't free kp.leaf_node.credential because it's shared with group members
     }
+    allocator.free(result.used_key_packages);
 }
 
 test "MLS workflow example" {

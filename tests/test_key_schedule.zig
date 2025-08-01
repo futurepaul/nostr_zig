@@ -55,28 +55,28 @@ test "key schedule derivation follows RFC 9420" {
     var joiner_secret = try key_schedule.deriveJoinerSecret(&commit_secret, null);
     defer joiner_secret.deinit();
     
-    try testing.expect(joiner_secret.len() == 32); // SHA256 output
+    try testing.expect(joiner_secret.items.len == 32); // SHA256 output
     
     // Derive member secret
-    var member_secret = try key_schedule.deriveMemberSecret(joiner_secret.asSlice(), group_context);
+    var member_secret = try key_schedule.deriveMemberSecret(joiner_secret.items, group_context);
     defer member_secret.deinit();
     
-    try testing.expect(member_secret.len() == 32);
+    try testing.expect(member_secret.items.len == 32);
     
     // Derive welcome secret
-    var welcome_secret = try key_schedule.deriveWelcomeSecret(joiner_secret.asSlice(), group_context);
+    var welcome_secret = try key_schedule.deriveWelcomeSecret(joiner_secret.items, group_context);
     defer welcome_secret.deinit();
     
-    try testing.expect(welcome_secret.len() == 32);
+    try testing.expect(welcome_secret.items.len == 32);
     
     // Derive epoch secret
-    var epoch_secret = try key_schedule.deriveEpochSecret(member_secret.asSlice(), group_context);
+    var epoch_secret = try key_schedule.deriveEpochSecret(member_secret.items, group_context);
     defer epoch_secret.deinit();
     
-    try testing.expect(epoch_secret.len() == 32);
+    try testing.expect(epoch_secret.items.len == 32);
     
     // Derive application secrets
-    const app_secrets = try key_schedule.deriveApplicationSecrets(epoch_secret.asSlice(), group_context);
+    const app_secrets = try key_schedule.deriveApplicationSecrets(epoch_secret.items, group_context);
     defer {
         var mut_app_secrets = app_secrets;
         mut_app_secrets.sender_data_secret.deinit();
@@ -90,8 +90,8 @@ test "key schedule derivation follows RFC 9420" {
     }
     
     // Verify all secrets are derived
-    try testing.expect(app_secrets.exporter_secret.len() == 32);
-    try testing.expect(app_secrets.encryption_secret.len() == 32);
+    try testing.expect(app_secrets.exporter_secret.items.len == 32);
+    try testing.expect(app_secrets.encryption_secret.items.len == 32);
     
     std.log.info("✅ Key schedule follows RFC 9420 derivation chain", .{});
 }
@@ -114,8 +114,8 @@ test "epoch secrets change with different commit secrets" {
     defer epoch_secrets2.deinit();
     
     // Verify secrets are different
-    try testing.expect(!std.mem.eql(u8, epoch_secrets1.joiner_secret.asSlice(), epoch_secrets2.joiner_secret.asSlice()));
-    try testing.expect(!std.mem.eql(u8, epoch_secrets1.exporter_secret.asSlice(), epoch_secrets2.exporter_secret.asSlice()));
+    try testing.expect(!std.mem.eql(u8, epoch_secrets1.joiner_secret.items, epoch_secrets2.joiner_secret.items));
+    try testing.expect(!std.mem.eql(u8, epoch_secrets1.exporter_secret.items, epoch_secrets2.exporter_secret.items));
     
     std.log.info("✅ Epoch secrets properly change with different commit secrets", .{});
 }

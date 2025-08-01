@@ -7,6 +7,7 @@ const mls = @import("mls.zig");
 const groups = @import("groups.zig");
 const key_packages = @import("key_packages.zig");
 const mls_zig = @import("mls_zig");
+const tls_encode = mls_zig.tls_encode;
 
 /// Welcome processing result
 pub const WelcomeProcessingResult = struct {
@@ -36,8 +37,10 @@ pub fn previewWelcome(
         return error.SecretsNotFound;
     }
     
-    // Decrypt group info (but not the actual group secrets yet)
-    const group_info = try decryptGroupInfo(allocator, welcome.encrypted_group_info, our_secrets.?);
+    // For metadata extraction, we use a placeholder welcome_secret
+    // since we're not decrypting the actual secrets yet
+    const placeholder_secret = [_]u8{0} ** 32;
+    const group_info = try decryptGroupInfo(allocator, welcome.encrypted_group_info, placeholder_secret);
     defer freeGroupInfo(allocator, group_info);
     
     // Extract group metadata from extensions
@@ -102,8 +105,11 @@ pub fn joinFromWelcome(
     const decrypted_secrets = try decryptSecrets(allocator, mls_provider, our_secrets.?, private_key);
     defer allocator.free(decrypted_secrets);
     
-    // Decrypt and parse group info
-    const group_info = try decryptGroupInfo(allocator, welcome.encrypted_group_info, our_secrets.?);
+    // Reconstruct epoch secrets to get the welcome_secret
+    const epoch_secrets = try reconstructEpochSecrets(allocator, decrypted_secrets);
+    
+    // Decrypt and parse group info using the welcome_secret
+    const group_info = try decryptGroupInfo(allocator, welcome.encrypted_group_info, epoch_secrets.welcome_secret);
     defer freeGroupInfo(allocator, group_info);
     
     // Extract group data
@@ -118,9 +124,6 @@ pub fn joinFromWelcome(
     if (group_data == null) {
         return error.NoGroupDataFound;
     }
-    
-    // Reconstruct epoch secrets from decrypted data
-    const epoch_secrets = try reconstructEpochSecrets(allocator, decrypted_secrets);
     
     // Build initial group state
     const state = mls.MlsGroupState{
@@ -181,7 +184,7 @@ pub fn createWelcome(
     
     // Encrypt secrets to recipient using HPKE
     const info = "MLS 1.0 Welcome";
-    const aad = &group_state.group_id;
+    const aad = ""; // AAD should be empty for Welcome messages
     
     const encrypted = try mls_provider.crypto.hpkeSealFn(
         allocator,
@@ -249,7 +252,8 @@ pub fn createWelcome(
 /// Parse a serialized welcome message
 pub fn parseWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welcome {
     // Use TLS 1.3 wire format as per RFC 9420
-    var decoder = tls.Decoder.fromTheirSlice(data);
+    // Use reader-based approach to avoid copying const data
+    var reader = tls_encode.ConstReader.init(data);
     
     // Welcome message format:
     // struct {
@@ -259,21 +263,19 @@ pub fn parseWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welco
     // } Welcome;
     
     // Cipher suite (u16)
-    try decoder.ensure(2);
-    const cipher_suite_raw = decoder.decode(u16);
+    const cipher_suite_raw = try reader.readInt(u16);
     const cipher_suite: types.Ciphersuite = @enumFromInt(cipher_suite_raw);
     
     // Secrets array (variable length with u16 count prefix)
-    try decoder.ensure(2);
-    const secrets_count = decoder.decode(u16);
+    const secrets_count = try reader.readInt(u16);
     const secrets = try allocator.alloc(types.EncryptedGroupSecrets, secrets_count);
     
     for (secrets) |*secret| {
         // new_member (variable length with u16 length prefix)
-        const new_member = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+        const new_member = try reader.readVarBytes(u16, allocator);
         
         // encrypted_group_secrets (variable length with u16 length prefix)
-        const encrypted_secrets = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+        const encrypted_secrets = try reader.readVarBytes(u16, allocator);
         
         secret.* = types.EncryptedGroupSecrets{
             .new_member = new_member,
@@ -282,7 +284,7 @@ pub fn parseWelcome(allocator: std.mem.Allocator, data: []const u8) !types.Welco
     }
     
     // Encrypted group info (variable length with u16 length prefix)
-    const encrypted_group_info = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+    const encrypted_group_info = try reader.readVarBytes(u16, allocator);
     
     return types.Welcome{
         .cipher_suite = cipher_suite,
@@ -372,8 +374,8 @@ fn decryptSecrets(
         .ciphertext = ciphertext,
     };
     
-    // Prepare the info field for HPKE - MLS uses "mls 1.0 group_secrets" as the info
-    const info = "mls 1.0 group_secrets";
+    // Prepare the info field for HPKE - must match the info used during encryption
+    const info = "MLS 1.0 Welcome";
     
     // AAD (additional authenticated data) is typically empty for group secrets
     const aad = "";
@@ -391,9 +393,8 @@ fn decryptSecrets(
 fn decryptGroupInfo(
     allocator: std.mem.Allocator,
     encrypted_data: []const u8,
-    secrets: types.EncryptedGroupSecrets,
+    welcome_secret: [32]u8,
 ) !types.GroupInfo {
-    _ = secrets; // The decrypted secrets from the previous step would be used here
     
     // In MLS, the GroupInfo is encrypted using a key derived from the joiner_secret
     // For now, we need to parse the encrypted data which should have been decrypted
@@ -409,26 +410,184 @@ fn decryptGroupInfo(
         return error.InvalidEncryptedGroupInfo;
     }
     
-    // Note: In a full implementation, we would:
-    // 1. Derive group_info_key from joiner_secret using expandWithLabel
-    // 2. Use HPKE to decrypt the ciphertext using the group_info_key
-    // 3. Parse the decrypted data as a GroupInfo structure
+    // Full GroupInfo decryption implementation
+    // The encrypted_data format from groups.zig is:
+    // - 12 bytes: nonce
+    // - N bytes: ciphertext  
+    // - 16 bytes: authentication tag
     
-    // For now, return a minimal valid GroupInfo structure
-    // This will be replaced when we have the full MLS key schedule implementation
+    const nonce_size = 12;
+    const tag_size = 16;
+    
+    if (encrypted_data.len < nonce_size + tag_size) {
+        return error.InvalidEncryptedGroupInfo;
+    }
+    
+    // Check if we have a zero welcome_secret (placeholder for metadata extraction)
+    var is_placeholder = true;
+    for (welcome_secret) |byte| {
+        if (byte != 0) {
+            is_placeholder = false;
+            break;
+        }
+    }
+    
+    if (is_placeholder) {
+        // Return minimal GroupInfo for metadata extraction
+        return types.GroupInfo{
+            .group_context = types.GroupContext{
+                .version = .mls10,
+                .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+                .group_id = types.GroupId.init([_]u8{0} ** 32),
+                .epoch = 0,
+                .tree_hash = [_]u8{0} ** 32,
+                .confirmed_transcript_hash = [_]u8{0} ** 32,
+                .extensions = try allocator.alloc(types.Extension, 0),
+            },
+            .members = try allocator.alloc(types.MemberInfo, 0),
+            .ratchet_tree = try allocator.alloc(u8, 0),
+        };
+    }
+    
+    // Extract components
+    const nonce = encrypted_data[0..nonce_size];
+    const ciphertext_with_tag = encrypted_data[nonce_size..];
+    const ciphertext = ciphertext_with_tag[0..ciphertext_with_tag.len - tag_size];
+    const tag = ciphertext_with_tag[ciphertext_with_tag.len - tag_size..];
+    
+    // Use the first 16 bytes of welcome_secret as the AES key (matching encryption)
+    const aes_key = welcome_secret[0..16].*;
+    
+    // Decrypt using AES-128-GCM
+    const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
+    
+    const plaintext = try allocator.alloc(u8, ciphertext.len);
+    defer allocator.free(plaintext);
+    
+    // Decrypt with empty additional authenticated data
+    Aes128Gcm.decrypt(
+        plaintext,
+        ciphertext,
+        tag[0..16].*,
+        &.{},
+        nonce[0..12].*,
+        aes_key,
+    ) catch return error.GroupInfoDecryptionFailed;
+    
+    // Now parse the decrypted GroupInfo
+    return try parseGroupInfo(allocator, plaintext);
+}
+
+fn parseGroupInfo(allocator: std.mem.Allocator, data: []const u8) !types.GroupInfo {
+    var reader = tls_encode.ConstReader.init(data);
+    
+    // Parse group context
+    const group_context = try parseGroupContext(allocator, &reader);
+    errdefer freeGroupContext(allocator, group_context);
+    
+    // Parse members count (u32)
+    const members_count = try reader.readInt(u32);
+    
+    // For now, skip parsing individual members (would need full LeafNode parsing)
+    const members = try allocator.alloc(types.MemberInfo, 0);
+    errdefer allocator.free(members);
+    
+    // Skip member data if present
+    _ = members_count;
+    
+    // Parse ratchet tree
+    const tree_data = try reader.readVarBytes(u32, allocator);
+    defer allocator.free(tree_data);
+    
+    // Copy tree data
+    const ratchet_tree = try allocator.dupe(u8, tree_data);
+    errdefer allocator.free(ratchet_tree);
+    
     return types.GroupInfo{
-        .group_context = types.GroupContext{
-            .version = .mls10,
-            .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
-            .group_id = types.GroupId.init([_]u8{0} ** 32),
-            .epoch = 0,
-            .tree_hash = [_]u8{0} ** 32,
-            .confirmed_transcript_hash = [_]u8{0} ** 32,
-            .extensions = try allocator.alloc(types.Extension, 0),
-        },
-        .members = try allocator.alloc(types.MemberInfo, 0),
-        .ratchet_tree = try allocator.alloc(u8, 0),
+        .group_context = group_context,
+        .members = members,
+        .ratchet_tree = ratchet_tree,
     };
+}
+
+fn parseGroupContext(allocator: std.mem.Allocator, reader: *tls_encode.ConstReader) !types.GroupContext {
+    // Parse protocol version (u16)
+    const version_int = try reader.readInt(u16);
+    const version = switch (version_int) {
+        0x0100 => types.ProtocolVersion.mls10,
+        else => return error.UnsupportedProtocolVersion,
+    };
+    
+    // Parse cipher suite (u16)
+    const suite_int = try reader.readInt(u16);
+    const cipher_suite = switch (suite_int) {
+        0x0001 => types.Ciphersuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+        0x0002 => types.Ciphersuite.MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+        0x0003 => types.Ciphersuite.MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+        else => return error.UnsupportedCipherSuite,
+    };
+    
+    // Parse group ID
+    const group_id_data = try reader.readVarBytes(u8, allocator);
+    defer allocator.free(group_id_data);
+    if (group_id_data.len != 32) return error.InvalidGroupId;
+    var group_id = types.GroupId.init([_]u8{0} ** 32);
+    @memcpy(&group_id.data, group_id_data);
+    
+    // Parse epoch (u64)
+    const epoch = try reader.readInt(u64);
+    
+    // Parse tree hash (var bytes with u16 length)
+    const tree_hash_data = try reader.readVarBytes(u16, allocator);
+    defer allocator.free(tree_hash_data);
+    var tree_hash: [32]u8 = [_]u8{0} ** 32;
+    if (tree_hash_data.len > 0) {
+        const copy_len = @min(tree_hash_data.len, 32);
+        @memcpy(tree_hash[0..copy_len], tree_hash_data[0..copy_len]);
+    }
+    
+    // Parse confirmed transcript hash (var bytes with u16 length)
+    const transcript_data = try reader.readVarBytes(u16, allocator);
+    defer allocator.free(transcript_data);
+    var confirmed_transcript_hash: [32]u8 = [_]u8{0} ** 32;
+    if (transcript_data.len > 0) {
+        const copy_len = @min(transcript_data.len, 32);
+        @memcpy(confirmed_transcript_hash[0..copy_len], transcript_data[0..copy_len]);
+    }
+    
+    // Parse extensions (var bytes with u16 length)
+    const extensions_data = try reader.readVarBytes(u16, allocator);
+    defer allocator.free(extensions_data);
+    
+    // For now, parse extensions as a single blob
+    // In full implementation, would parse individual extensions
+    var extensions = try allocator.alloc(types.Extension, 0);
+    if (extensions_data.len > 0) {
+        // TODO: Parse individual extensions
+        allocator.free(extensions);
+        extensions = try allocator.alloc(types.Extension, 1);
+        extensions[0] = types.Extension{
+            .extension_type = .nostr_group_data,
+            .extension_data = try allocator.dupe(u8, extensions_data),
+        };
+    }
+    
+    return types.GroupContext{
+        .version = version,
+        .cipher_suite = cipher_suite,
+        .group_id = group_id,
+        .epoch = epoch,
+        .tree_hash = tree_hash,
+        .confirmed_transcript_hash = confirmed_transcript_hash,
+        .extensions = extensions,
+    };
+}
+
+fn freeGroupContext(allocator: std.mem.Allocator, context: types.GroupContext) void {
+    for (context.extensions) |ext| {
+        allocator.free(ext.extension_data);
+    }
+    allocator.free(context.extensions);
 }
 
 pub fn freeWelcome(allocator: std.mem.Allocator, welcome: types.Welcome) void {

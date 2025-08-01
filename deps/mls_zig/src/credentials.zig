@@ -46,7 +46,7 @@ pub const CredentialType = enum(u16) {
         // Read enough bytes for u16
         var buf: [2]u8 = undefined;
         _ = try reader.readAll(&buf);
-        var decoder = tls.Decoder.init(&buf);
+        var decoder = tls.Decoder.fromTheirSlice(&buf);
         const value = decoder.decode(u16);
         return try CredentialType.fromU16(value);
     }

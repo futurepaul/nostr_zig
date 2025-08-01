@@ -506,7 +506,7 @@ pub const KeyPackageBundle = struct {
         var cloned_cred = try credentials.Credential.init(
             allocator,
             credential.credential_type,
-            credential.serialized_content.asSlice()
+            credential.serialized_content
         );
         errdefer cloned_cred.deinit();
 
@@ -1040,7 +1040,7 @@ test "KeyPackageBundle with multiple cipher suites" {
 
         // Create KeyPackageBundle
         var bundle = try KeyPackageBundle.init(allocator, cs, credential, null);
-        defer bundle.deinit();
+        defer bundle.deinit(allocator);
 
         // Basic validation
         try testing.expectEqual(cs, bundle.key_package.cipherSuite());

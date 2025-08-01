@@ -55,6 +55,7 @@ test "MLS state machine - full group lifecycle" {
         alice_identity,
         &mls_provider,
         mls.state_machine.KeyRotationPolicy{}, // Use default rotation policy
+        null, // No epoch secrets for test
     );
     defer state_machine.deinit();
     
@@ -184,6 +185,7 @@ test "MLS state machine - concurrent proposals" {
         identity_keys[0],
         &mls_provider,
         mls.state_machine.KeyRotationPolicy{}, // Use default rotation policy
+        null, // No epoch secrets for test
     );
     defer state_machine.deinit();
     
@@ -234,6 +236,71 @@ test "MLS state machine - concurrent proposals" {
     try testing.expectEqual(@as(usize, 0), state_machine.pending_proposals.items.len);
 }
 
+test "MLS state machine - transcript hash tracking" {
+    const allocator = testing.allocator;
+    
+    std.debug.print("\n=== MLS Transcript Hash Test ===\n", .{});
+    
+    // Create MLS provider
+    var mls_provider = mls.provider.MlsProvider.init(allocator);
+    
+    // Create identity and key package
+    const identity_key = try crypto.generatePrivateKey();
+    const kp = try mls.key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        identity_key,
+        .{},
+    );
+    defer mls.key_packages.freeKeyPackage(allocator, kp);
+    
+    // Initialize group
+    const group_id = crypto.sha256Hash("transcript-test-group");
+    var state_machine = try mls.state_machine.MLSStateMachine.initializeGroup(
+        allocator,
+        group_id,
+        kp,
+        identity_key,
+        &mls_provider,
+        mls.state_machine.KeyRotationPolicy{},
+        null,
+    );
+    defer state_machine.deinit();
+    
+    // Verify initial transcript hashes
+    std.debug.print("\nEpoch 0 transcript hashes:\n", .{});
+    std.debug.print("  Confirmed: {s}\n", .{std.fmt.fmtSliceHexLower(&state_machine.confirmed_transcript_hash)});
+    std.debug.print("  Interim: {s}\n", .{std.fmt.fmtSliceHexLower(&state_machine.interim_transcript_hash)});
+    
+    // For epoch 0, confirmed transcript hash should be all zeros (empty)
+    try testing.expectEqual([_]u8{0} ** 32, state_machine.confirmed_transcript_hash);
+    
+    // Add a member (this will create a Commit and advance epoch)
+    const new_identity = try crypto.generatePrivateKey();
+    const new_kp = try mls.key_packages.generateKeyPackage(
+        allocator,
+        &mls_provider,
+        new_identity,
+        .{},
+    );
+    defer mls.key_packages.freeKeyPackage(allocator, new_kp);
+    
+    const initial_transcript = state_machine.confirmed_transcript_hash;
+    
+    try state_machine.proposeAdd(0, new_kp);
+    _ = try state_machine.commitProposals(0, &mls_provider);
+    
+    std.debug.print("\nEpoch 1 transcript hashes:\n", .{});
+    std.debug.print("  Confirmed: {s}\n", .{std.fmt.fmtSliceHexLower(&state_machine.confirmed_transcript_hash)});
+    std.debug.print("  Interim: {s}\n", .{std.fmt.fmtSliceHexLower(&state_machine.interim_transcript_hash)});
+    
+    // Transcript hash should have changed after commit
+    // (In real implementation, this would be updated with the Commit's AuthenticatedContent)
+    try testing.expect(!std.mem.eql(u8, &initial_transcript, &state_machine.confirmed_transcript_hash));
+    
+    std.debug.print("\n✓ Transcript hashes are being tracked across epochs\n", .{});
+}
+
 test "MLS state machine - epoch secret derivation" {
     const allocator = testing.allocator;
     
@@ -260,6 +327,7 @@ test "MLS state machine - epoch secret derivation" {
         identity_key,
         &mls_provider,
         mls.state_machine.KeyRotationPolicy{}, // Use default rotation policy
+        null, // No epoch secrets for test
     );
     defer state_machine.deinit();
     

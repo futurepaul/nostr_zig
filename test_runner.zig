@@ -6,6 +6,7 @@ test {
     _ = @import("tests/test_nip_ee_real.zig");
     _ = @import("tests/test_welcome_events.zig");
     _ = @import("tests/test_key_schedule.zig");
+    _ = @import("tests/test_mls_roundtrip.zig");
     
     // KeyPackage compatibility tests
     _ = @import("tests/test_keypackage_vectors.zig");

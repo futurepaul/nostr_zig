@@ -3,6 +3,7 @@ const tls = std.crypto.tls;
 const types = @import("types.zig");
 const provider = @import("provider.zig");
 const mls_zig = @import("mls_zig");
+const tls_encode = mls_zig.tls_encode;
 const constants = @import("constants.zig");
 const crypto = @import("../crypto.zig");
 const crypto_utils = @import("crypto_utils.zig");
@@ -170,7 +171,8 @@ pub fn parseKeyPackage(
     data: []const u8,
 ) types.KeyPackageError!types.KeyPackage {
     // Use TLS 1.3 wire format as per RFC 9420
-    var decoder = tls.Decoder.fromTheirSlice(data);
+    // Use reader-based approach for const data
+    var reader = tls_encode.ConstReader.init(data);
     
     // Parse according to MLS KeyPackage format:
     // struct {
@@ -183,17 +185,15 @@ pub fn parseKeyPackage(
     // } KeyPackage;
     
     // Version (u16)
-    try decoder.ensure(2);
-    const version_raw = decoder.decode(u16);
+    const version_raw = try reader.readInt(u16);
     const version = types.ProtocolVersion.fromInt(version_raw);
     
     // Cipher suite (u16)
-    try decoder.ensure(2);
-    const cipher_suite_raw = decoder.decode(u16);
+    const cipher_suite_raw = try reader.readInt(u16);
     const cipher_suite = types.Ciphersuite.fromInt(cipher_suite_raw);
     
     // Init key (variable length with u16 length prefix)
-    const init_key = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
+    const init_key = reader.readVarBytes(u16, allocator) catch return error.UnexpectedEndOfStream;
     std.log.debug("Init key length: {}", .{init_key.len});
     if (init_key.len > 256) {
         allocator.free(init_key);
@@ -201,17 +201,17 @@ pub fn parseKeyPackage(
     }
     
     // Leaf node (variable length)
-    const leaf_node_data = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
+    const leaf_node_data = reader.readVarBytes(u16, allocator) catch return error.UnexpectedEndOfStream;
     defer allocator.free(leaf_node_data);
     const leaf_node = parseLeafNode(allocator, leaf_node_data) catch return error.InvalidLeafNode;
     
     // Extensions (variable length)
-    const extensions_data = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
+    const extensions_data = reader.readVarBytes(u16, allocator) catch return error.UnexpectedEndOfStream;
     defer allocator.free(extensions_data);
     const extensions = parseExtensions(allocator, extensions_data) catch return error.MalformedExtensions;
     
     // Signature (variable length with u16 length prefix)
-    const signature = mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator) catch return error.UnexpectedEndOfStream;
+    const signature = reader.readVarBytes(u16, allocator) catch return error.UnexpectedEndOfStream;
     if (signature.len > 512) {
         allocator.free(signature);
         return error.InvalidSignature; // Sanity check
@@ -560,37 +560,31 @@ fn serializeLeafNode(allocator: std.mem.Allocator, leaf_node: types.LeafNode) ![
 
 /// Helper function to parse a leaf node
 fn parseLeafNode(allocator: std.mem.Allocator, data: []const u8) !types.LeafNode {
-    var decoder = tls.Decoder.fromTheirSlice(data);
+    var reader = tls_encode.ConstReader.init(data);
     
     // Encryption key
-    const enc_key_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+    const enc_key_data = try reader.readVarBytes(u16, allocator);
     
     // Signature key
-    const sig_key_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+    const sig_key_data = try reader.readVarBytes(u16, allocator);
     
     // Credential
-    try decoder.ensure(1);
-    _ = decoder.decode(u8); // credential type (ignore for now)
-    const identity = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+    _ = try reader.readInt(u8); // credential type (ignore for now)
+    const identity = try reader.readVarBytes(u16, allocator);
     
     // Skip capabilities for now
-    try decoder.ensure(2);
-    const cap_len = decoder.decode(u16);
-    try decoder.ensure(cap_len);
-    _ = decoder.slice(cap_len);
+    const cap_len = try reader.readInt(u16);
+    try reader.skip(cap_len);
     
     // Leaf node source
-    try decoder.ensure(1);
-    const source = decoder.decode(u8);
+    const source = try reader.readInt(u8);
     
     // Extensions
-    try decoder.ensure(2);
-    const ext_count = decoder.decode(u16);
+    const ext_count = try reader.readInt(u16);
     const extensions = try allocator.alloc(types.Extension, ext_count);
     for (extensions) |*ext| {
-        try decoder.ensure(2);
-        const ext_type = decoder.decode(u16);
-        const ext_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+        const ext_type = try reader.readInt(u16);
+        const ext_data = try reader.readVarBytes(u16, allocator);
         
         ext.* = types.Extension{
             .extension_type = types.ExtensionType.fromInt(ext_type),
@@ -600,7 +594,7 @@ fn parseLeafNode(allocator: std.mem.Allocator, data: []const u8) !types.LeafNode
     }
     
     // Signature
-    const signature = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+    const signature = try reader.readVarBytes(u16, allocator);
     
     return types.LeafNode{
         .encryption_key = .{ .data = enc_key_data },
@@ -645,19 +639,21 @@ fn serializeExtensions(allocator: std.mem.Allocator, extensions: []const types.E
 fn parseExtensions(allocator: std.mem.Allocator, data: []const u8) ![]types.Extension {
     if (data.len == 0) return &.{};
     
-    var decoder = tls.Decoder.fromTheirSlice(data);
+    var reader = tls_encode.ConstReader.init(data);
     
     var extensions = std.ArrayList(types.Extension).init(allocator);
     defer extensions.deinit();
     
-    while (decoder.eof() == false) {
-        if (decoder.rest().len < 3) break; // Need at least ext_type(2) + critical(1)
+    // Read until we've consumed all data
+    var bytes_read: usize = 0;
+    while (bytes_read < data.len) {
+        if (data.len - bytes_read < 3) break; // Need at least ext_type(2) + critical(1)
         
-        try decoder.ensure(2);
-        const ext_type = decoder.decode(u16);
-        try decoder.ensure(1);
-        const critical = decoder.decode(u8) != 0;
-        const ext_data = try mls_zig.tls_encode.readVarBytes(&decoder, u16, allocator);
+        const ext_type = try reader.readInt(u16);
+        const critical = (try reader.readInt(u8)) != 0;
+        const ext_data = try reader.readVarBytes(u16, allocator);
+        
+        bytes_read += 2 + 1 + 2 + ext_data.len; // ext_type + critical + length prefix + data
         
         try extensions.append(types.Extension{
             .extension_type = types.ExtensionType.fromInt(ext_type),
