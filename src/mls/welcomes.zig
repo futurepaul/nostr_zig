@@ -334,15 +334,34 @@ fn findOurSecrets(
     welcome: types.Welcome,
     private_key: [32]u8,
 ) !?types.EncryptedGroupSecrets {
-    _ = allocator;
-    _ = private_key;
+    // Get our Nostr public key to look up stored HPKE keys
+    const crypto = @import("../crypto.zig");
+    const our_nostr_pubkey = try crypto.getPublicKey(private_key);
+    const our_nostr_pubkey_hex = try crypto.bytesToHex(allocator, &our_nostr_pubkey);
+    defer allocator.free(our_nostr_pubkey_hex);
     
-    // Find the encrypted secrets for our key
+    // Get the stored HPKE keys
+    const key_storage = @import("key_storage.zig");
+    const storage = try key_storage.getGlobalStorage(allocator);
+    const stored_bundle = storage.getStoredBundle(our_nostr_pubkey_hex) orelse {
+        std.log.err("No stored HPKE keys found for {s}", .{our_nostr_pubkey_hex});
+        return null;
+    };
+    
+    // Derive the HPKE public key from the stored private key
+    // For X25519, we use the standard library
+    const X25519 = std.crypto.dh.X25519;
+    const our_hpke_public_key = try X25519.recoverPublicKey(stored_bundle.init_private_key);
+    
+    // Find the encrypted secrets for our HPKE public key
     for (welcome.secrets) |secrets| {
-        // In real implementation, we'd match against the HPKE public key
-        // derived from the private key
-        // For now, we'll just return the first one
-        return secrets;
+        // Check if this secret is for us by comparing the HPKE public key
+        if (secrets.new_member.len == 32) {
+            const matches = std.mem.eql(u8, secrets.new_member, &our_hpke_public_key);
+            if (matches) {
+                return secrets;
+            }
+        }
     }
     
     return null;
@@ -352,7 +371,7 @@ fn decryptSecrets(
     allocator: std.mem.Allocator,
     mls_provider: *provider.MlsProvider,
     encrypted_secrets: types.EncryptedGroupSecrets,
-    private_key: [32]u8,
+    nostr_private_key: [32]u8,
 ) ![]u8 {
     // The encrypted_group_secrets field contains KEM output + ciphertext concatenated
     // We need to parse it to extract both parts
@@ -374,16 +393,28 @@ fn decryptSecrets(
         .ciphertext = ciphertext,
     };
     
+    // Get the stored HPKE private key
+    const crypto = @import("../crypto.zig");
+    const our_nostr_pubkey = try crypto.getPublicKey(nostr_private_key);
+    const our_nostr_pubkey_hex = try crypto.bytesToHex(allocator, &our_nostr_pubkey);
+    defer allocator.free(our_nostr_pubkey_hex);
+    
+    const key_storage = @import("key_storage.zig");
+    const storage = try key_storage.getGlobalStorage(allocator);
+    const stored_bundle = storage.getStoredBundle(our_nostr_pubkey_hex) orelse {
+        return error.NoStoredHpkeKeys;
+    };
+    
     // Prepare the info field for HPKE - must match the info used during encryption
     const info = "MLS 1.0 Welcome";
     
     // AAD (additional authenticated data) is typically empty for group secrets
     const aad = "";
     
-    // Use the MLS provider's HPKE open function to decrypt
+    // Use the MLS provider's HPKE open function to decrypt with the stored HPKE private key
     return mls_provider.crypto.hpkeOpenFn(
         allocator,
-        &private_key,
+        &stored_bundle.init_private_key,
         info,
         aad,
         hpke_ciphertext,

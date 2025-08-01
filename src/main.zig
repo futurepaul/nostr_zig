@@ -482,6 +482,11 @@ fn handlePublishKeyPackageCommand(allocator: std.mem.Allocator, args: *CliArgs, 
     );
     defer event.deinit(allocator);
     
+    // Store the HPKE private keys for later use
+    const storage = try lib.mls.key_storage.getGlobalStorage(allocator);
+    try storage.storeBundle(public_hex, bundle, event.id);
+    try writer.print("✅ Stored HPKE private keys for future use\n", .{});
+    
     // Display the event
     const json = try event.toJson(allocator);
     defer allocator.free(json);
