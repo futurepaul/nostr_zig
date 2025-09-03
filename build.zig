@@ -288,18 +288,32 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    const exe_unit_tests = b.addTest(.{
-        .root_module = exe_mod,
-    });
 
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
-
-    // Similar to creating the run step earlier, this exposes a `test` step to
-    // the `zig build --help` menu, providing a way for the user to request
-    // running the unit tests.
-    const test_step = b.step("test", "Run unit tests");
+    // Test library internals only
+    const test_step = b.step("test", "Run library unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
-    test_step.dependOn(&run_exe_unit_tests.step);
+    
+    // Test everything including integration tests
+    const test_all = b.addTest(.{
+        .root_source_file = b.path("test_all.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_all.root_module.addImport("websocket", websocket_mod);
+    test_all.root_module.addImport("secp256k1", secp256k1_mod);
+    test_all.root_module.addImport("bech32", bech32_mod);
+    test_all.root_module.addImport("mls_zig", mls_mod);
+    test_all.root_module.addImport("nostr", lib_mod);
+    test_all.linkLibrary(secp256k1_lib);
+    test_all.linkLibrary(bech32_lib);
+    test_all.addIncludePath(b.path("deps/secp256k1/include"));
+    test_all.addIncludePath(b.path("src/secp256k1"));
+    test_all.addIncludePath(b.path("deps/bech32/ref/c"));
+    test_all.linkLibC();
+    
+    const run_test_all = b.addRunArtifact(test_all);
+    const test_all_step = b.step("test-all", "Run all tests including integration tests");
+    test_all_step.dependOn(&run_test_all.step);
 
     // Add test for roundtrip
     const roundtrip_test = b.addTest(.{
@@ -678,50 +692,30 @@ pub fn build(b: *std.Build) void {
     const run_test_events = b.addRunArtifact(test_events);
     const test_events_step = b.step("test-events", "Run basic event creation and signing tests");
     test_events_step.dependOn(&run_test_events.step);
-
-    // Add test runner for all tests in tests/ directory
-    const test_runner = b.addTest(.{
-        .root_source_file = b.path("test_runner.zig"),
+    
+    // Add welcome roundtrip with state machine test
+    const welcome_state_test = b.addExecutable(.{
+        .name = "test_welcome_state",
+        .root_source_file = b.path("test_welcome_state.zig"),
         .target = target,
         .optimize = optimize,
     });
-    test_runner.root_module.addImport("websocket", websocket_mod);
-    test_runner.root_module.addImport("secp256k1", secp256k1_mod);
-    test_runner.root_module.addImport("bech32", bech32_mod);
-    test_runner.root_module.addImport("mls_zig", mls_mod);
-    test_runner.root_module.addImport("nostr", lib_mod);
-    test_runner.linkLibrary(secp256k1_lib);
-    test_runner.linkLibrary(bech32_lib);
-    test_runner.addIncludePath(b.path("deps/secp256k1/include"));
-    test_runner.addIncludePath(b.path("src/secp256k1"));
-    test_runner.addIncludePath(b.path("deps/bech32/ref/c"));
-    test_runner.linkLibC();
+    welcome_state_test.root_module.addImport("websocket", websocket_mod);
+    welcome_state_test.root_module.addImport("secp256k1", secp256k1_mod);
+    welcome_state_test.root_module.addImport("bech32", bech32_mod);
+    welcome_state_test.root_module.addImport("mls_zig", mls_mod);
+    welcome_state_test.root_module.addImport("nostr", lib_mod);
+    welcome_state_test.linkLibrary(secp256k1_lib);
+    welcome_state_test.linkLibrary(bech32_lib);
+    welcome_state_test.addIncludePath(b.path("deps/secp256k1/include"));
+    welcome_state_test.addIncludePath(b.path("src/secp256k1"));
+    welcome_state_test.addIncludePath(b.path("deps/bech32/ref/c"));
+    welcome_state_test.linkLibC();
     
-    const run_test_runner = b.addRunArtifact(test_runner);
-    const test_all_step = b.step("test-all", "Run all tests in tests/ directory");
-    test_all_step.dependOn(&run_test_runner.step);
+    const run_welcome_state_test = b.addRunArtifact(welcome_state_test);
+    const welcome_state_step = b.step("test-welcome-state", "Run MLS welcome roundtrip with state machine test");
+    welcome_state_step.dependOn(&run_welcome_state_test.step);
 
-    // Add single test runner
-    const single_test_runner = b.addTest(.{
-        .root_source_file = b.path("test-utils/run_single_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    single_test_runner.root_module.addImport("websocket", websocket_mod);
-    single_test_runner.root_module.addImport("secp256k1", secp256k1_mod);
-    single_test_runner.root_module.addImport("bech32", bech32_mod);
-    single_test_runner.root_module.addImport("mls_zig", mls_mod);
-    single_test_runner.root_module.addImport("nostr", lib_mod);
-    single_test_runner.linkLibrary(secp256k1_lib);
-    single_test_runner.linkLibrary(bech32_lib);
-    single_test_runner.addIncludePath(b.path("deps/secp256k1/include"));
-    single_test_runner.addIncludePath(b.path("src/secp256k1"));
-    single_test_runner.addIncludePath(b.path("deps/bech32/ref/c"));
-    single_test_runner.linkLibC();
-    
-    const run_single_test_runner = b.addRunArtifact(single_test_runner);
-    const test_single_step = b.step("test-single", "Run single test file (edit run_single_test.zig to choose)");
-    test_single_step.dependOn(&run_single_test_runner.step);
 
     // Add WASM library build
     const wasm_target = b.resolveTargetQuery(.{

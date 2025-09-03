@@ -105,11 +105,71 @@ pub fn joinFromWelcome(
     const decrypted_secrets = try decryptSecrets(allocator, mls_provider, our_secrets.?, private_key);
     defer allocator.free(decrypted_secrets);
     
-    // Reconstruct epoch secrets to get the welcome_secret
-    const epoch_secrets = try reconstructEpochSecrets(allocator, decrypted_secrets);
+    // Parse the decrypted secrets - now contains ALL epoch secrets for epoch 0
+    var all_secrets: mls.EpochSecrets = undefined;
+    var joiner_secret: [32]u8 = undefined;
+    
+    if (decrypted_secrets.len >= 416) {
+        // New format: all epoch secrets (13 * 32 = 416 bytes)
+        @memcpy(&all_secrets.joiner_secret, decrypted_secrets[0..32]);
+        @memcpy(&all_secrets.member_secret, decrypted_secrets[32..64]);
+        @memcpy(&all_secrets.welcome_secret, decrypted_secrets[64..96]);
+        @memcpy(&all_secrets.epoch_secret, decrypted_secrets[96..128]);
+        @memcpy(&all_secrets.sender_data_secret, decrypted_secrets[128..160]);
+        @memcpy(&all_secrets.encryption_secret, decrypted_secrets[160..192]);
+        @memcpy(&all_secrets.exporter_secret, decrypted_secrets[192..224]);
+        @memcpy(&all_secrets.epoch_authenticator, decrypted_secrets[224..256]);
+        @memcpy(&all_secrets.external_secret, decrypted_secrets[256..288]);
+        @memcpy(&all_secrets.confirmation_key, decrypted_secrets[288..320]);
+        @memcpy(&all_secrets.membership_key, decrypted_secrets[320..352]);
+        @memcpy(&all_secrets.resumption_psk, decrypted_secrets[352..384]);
+        @memcpy(&all_secrets.init_secret, decrypted_secrets[384..416]);
+        joiner_secret = all_secrets.joiner_secret;
+    } else if (decrypted_secrets.len >= 32) {
+        // Old format: just joiner_secret
+        @memcpy(&joiner_secret, decrypted_secrets[0..32]);
+        // We'll derive the rest later
+    } else {
+        return error.InvalidSecrets;
+    }
+    
+    // Parse optional path_secret (var bytes with u8 length) if present
+    if (decrypted_secrets.len > 416) {
+        var reader = tls_encode.ConstReader.init(decrypted_secrets[416..]);
+        const path_secret_data = reader.readVarBytes(u8, allocator) catch null;
+        if (path_secret_data) |data| {
+            defer allocator.free(data);
+            // For now we don't use path_secret
+        }
+    } else if (decrypted_secrets.len > 32 and decrypted_secrets.len < 416) {
+        var reader = tls_encode.ConstReader.init(decrypted_secrets[32..]);
+        const path_secret_data = reader.readVarBytes(u8, allocator) catch null;
+        if (path_secret_data) |data| {
+            defer allocator.free(data);
+            // For now we don't use path_secret
+        }
+    }
+    
+    // Derive welcome_secret from joiner_secret using empty context
+    // Per MLS spec, the welcome_secret is derived with an empty context to break
+    // the circular dependency (group_context is in encrypted_group_info)
+    const key_schedule = mls_zig.KeySchedule.init(allocator, .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519);
+    
+    // Use empty context for welcome_secret derivation when processing Welcome messages
+    const empty_context = &[_]u8{};
+    var welcome_secret_list = try key_schedule.deriveWelcomeSecret(&joiner_secret, empty_context);
+    defer welcome_secret_list.deinit();
+    
+    // Copy derived welcome_secret for decryption (should be exactly 32 bytes for SHA256)
+    if (welcome_secret_list.items.len != 32) {
+        std.debug.print("[ERROR] Unexpected welcome_secret length: {} bytes\n", .{welcome_secret_list.items.len});
+        return error.InvalidWelcomeSecretLength;
+    }
+    var welcome_secret: [32]u8 = undefined;
+    @memcpy(&welcome_secret, welcome_secret_list.items[0..32]);
     
     // Decrypt and parse group info using the welcome_secret
-    const group_info = try decryptGroupInfo(allocator, welcome.encrypted_group_info, epoch_secrets.welcome_secret);
+    const group_info = try decryptGroupInfo(allocator, welcome.encrypted_group_info, welcome_secret);
     defer freeGroupInfo(allocator, group_info);
     
     // Extract group data
@@ -124,6 +184,60 @@ pub fn joinFromWelcome(
     if (group_data == null) {
         return error.NoGroupDataFound;
     }
+    
+    // Now derive full epoch secrets using the group context
+    // This follows the MLS key schedule
+    var group_context_buf = std.ArrayList(u8).init(allocator);
+    defer group_context_buf.deinit();
+    
+    // For epoch 0, use the same context serialization as Alice (just group_id)
+    // This ensures both parties derive the same epoch secrets
+    if (group_info.group_context.epoch == 0) {
+        try mls_zig.tls_encode.encodeVarBytes(&group_context_buf, u8, &group_info.group_context.group_id.data);
+    } else {
+        // For later epochs, include epoch in context
+        try mls_zig.tls_encode.encodeVarBytes(&group_context_buf, u8, &group_info.group_context.group_id.data);
+        try mls_zig.tls_encode.encodeInt(&group_context_buf, u64, group_info.group_context.epoch);
+    }
+    
+    // Use the epoch secrets we received (or derive them if we only got joiner_secret)
+    const epoch_secrets = if (decrypted_secrets.len >= 416) blk: {
+        // We received all epoch secrets - use them directly
+        break :blk all_secrets;
+    } else blk: {
+        // Old format - we need to derive epoch secrets from joiner_secret
+        // This won't match Alice's secrets perfectly but is here for compatibility
+        var context_buf_compat = std.ArrayList(u8).init(allocator);
+        defer context_buf_compat.deinit();
+        try mls_zig.tls_encode.encodeVarBytes(&context_buf_compat, u8, &group_info.group_context.group_id.data);
+        
+        const cipher_suite = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        var epoch_key_schedule = mls_zig.KeySchedule.init(allocator, cipher_suite);
+        
+        var epoch_secrets_var = try epoch_key_schedule.deriveEpochSecrets(
+            &joiner_secret,
+            null,
+            context_buf_compat.items,
+        );
+        defer epoch_secrets_var.deinit();
+        
+        const fixed = epoch_secrets_var.toFixed();
+        break :blk mls.EpochSecrets{
+            .joiner_secret = fixed.joiner_secret,
+            .member_secret = fixed.member_secret,
+            .welcome_secret = fixed.welcome_secret,
+            .epoch_secret = fixed.epoch_secret,
+            .sender_data_secret = fixed.sender_data_secret,
+            .encryption_secret = fixed.encryption_secret,
+            .exporter_secret = fixed.exporter_secret,
+            .epoch_authenticator = fixed.epoch_authenticator,
+            .external_secret = fixed.external_secret,
+            .confirmation_key = fixed.confirmation_key,
+            .membership_key = fixed.membership_key,
+            .resumption_psk = fixed.resumption_psk,
+            .init_secret = fixed.init_secret,
+        };
+    };
     
     // Build initial group state
     const state = mls.MlsGroupState{
@@ -334,6 +448,7 @@ fn findOurSecrets(
     welcome: types.Welcome,
     private_key: [32]u8,
 ) !?types.EncryptedGroupSecrets {
+    std.debug.print("[DEBUG] findOurSecrets called with {} secrets\n", .{welcome.secrets.len});
     // Get our Nostr public key to look up stored HPKE keys
     const crypto = @import("../crypto.zig");
     const our_nostr_pubkey = try crypto.getPublicKey(private_key);
@@ -349,21 +464,30 @@ fn findOurSecrets(
     };
     
     // Derive the HPKE public key from the stored private key
-    // For X25519, we use the standard library
-    const X25519 = std.crypto.dh.X25519;
-    const our_hpke_public_key = try X25519.recoverPublicKey(stored_bundle.init_private_key);
+    // Use the same method as KeyPackageBundle.init to ensure consistency
+    const init_keypair = try std.crypto.dh.X25519.KeyPair.generateDeterministic(stored_bundle.init_private_key);
+    const our_hpke_public_key = init_keypair.public_key;
+    
+    std.debug.print("[DEBUG] Looking for our secrets. Our HPKE public key: {s}\n", .{std.fmt.fmtSliceHexLower(&our_hpke_public_key)});
     
     // Find the encrypted secrets for our HPKE public key
-    for (welcome.secrets) |secrets| {
+    for (welcome.secrets, 0..) |secrets, i| {
         // Check if this secret is for us by comparing the HPKE public key
         if (secrets.new_member.len == 32) {
+            std.debug.print("[DEBUG] Checking secret {}: new_member = {s}\n", .{i, std.fmt.fmtSliceHexLower(secrets.new_member)});
             const matches = std.mem.eql(u8, secrets.new_member, &our_hpke_public_key);
             if (matches) {
+                std.debug.print("[DEBUG] Found our secrets at index {}\n", .{i});
                 return secrets;
+            } else {
+                std.debug.print("[DEBUG] No match for secret {}\n", .{i});
             }
+        } else {
+            std.debug.print("[DEBUG] Secret {} has wrong length: {}\n", .{i, secrets.new_member.len});
         }
     }
     
+    std.debug.print("[ERROR] No matching secrets found!\n", .{});
     return null;
 }
 
@@ -401,15 +525,29 @@ fn decryptSecrets(
     
     const key_storage = @import("key_storage.zig");
     const storage = try key_storage.getGlobalStorage(allocator);
+    
+    std.debug.print("[DEBUG] Looking for HPKE keys with pubkey: {s}\n", .{our_nostr_pubkey_hex});
+    
     const stored_bundle = storage.getStoredBundle(our_nostr_pubkey_hex) orelse {
+        std.debug.print("[ERROR] No stored HPKE keys found for pubkey: {s}\n", .{our_nostr_pubkey_hex});
         return error.NoStoredHpkeKeys;
     };
+    
+    std.debug.print("[DEBUG] Found stored HPKE keys, init_private_key len: {}\n", .{stored_bundle.init_private_key.len});
     
     // Prepare the info field for HPKE - must match the info used during encryption
     const info = "MLS 1.0 Welcome";
     
     // AAD (additional authenticated data) is typically empty for group secrets
     const aad = "";
+    
+    std.debug.print("[DEBUG] HPKE decryption params:\n", .{});
+    std.debug.print("  KEM output: {s}\n", .{std.fmt.fmtSliceHexLower(kem_output)});
+    std.debug.print("  Ciphertext len: {}\n", .{ciphertext.len});
+    std.debug.print("  Info: {s}\n", .{info});
+    std.debug.print("  Init private key: {s}\n", .{std.fmt.fmtSliceHexLower(&stored_bundle.init_private_key)});
+    std.debug.print("  AAD: {s}\n", .{aad});
+    std.debug.print("  Encrypted data total len: {}\n", .{encrypted_data.len});
     
     // Use the MLS provider's HPKE open function to decrypt with the stored HPKE private key
     return mls_provider.crypto.hpkeOpenFn(
@@ -418,7 +556,10 @@ fn decryptSecrets(
         info,
         aad,
         hpke_ciphertext,
-    );
+    ) catch |err| {
+        std.debug.print("[ERROR] HPKE decryption failed: {}\n", .{err});
+        return err;
+    };
 }
 
 fn decryptGroupInfo(
@@ -454,30 +595,18 @@ fn decryptGroupInfo(
         return error.InvalidEncryptedGroupInfo;
     }
     
-    // Check if we have a zero welcome_secret (placeholder for metadata extraction)
-    var is_placeholder = true;
+    // NO FAKE CRYPTO: Zero welcome_secret is an error, not a special case
+    // Check if we have an invalid zero welcome_secret
+    var all_zeros = true;
     for (welcome_secret) |byte| {
         if (byte != 0) {
-            is_placeholder = false;
+            all_zeros = false;
             break;
         }
     }
     
-    if (is_placeholder) {
-        // Return minimal GroupInfo for metadata extraction
-        return types.GroupInfo{
-            .group_context = types.GroupContext{
-                .version = .mls10,
-                .cipher_suite = .MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
-                .group_id = types.GroupId.init([_]u8{0} ** 32),
-                .epoch = 0,
-                .tree_hash = [_]u8{0} ** 32,
-                .confirmed_transcript_hash = [_]u8{0} ** 32,
-                .extensions = try allocator.alloc(types.Extension, 0),
-            },
-            .members = try allocator.alloc(types.MemberInfo, 0),
-            .ratchet_tree = try allocator.alloc(u8, 0),
-        };
+    if (all_zeros) {
+        return error.InvalidWelcomeSecret;
     }
     
     // Extract components
@@ -568,38 +697,41 @@ fn parseGroupContext(allocator: std.mem.Allocator, reader: *tls_encode.ConstRead
     // Parse epoch (u64)
     const epoch = try reader.readInt(u64);
     
-    // Parse tree hash (var bytes with u16 length)
-    const tree_hash_data = try reader.readVarBytes(u16, allocator);
-    defer allocator.free(tree_hash_data);
-    var tree_hash: [32]u8 = [_]u8{0} ** 32;
-    if (tree_hash_data.len > 0) {
-        const copy_len = @min(tree_hash_data.len, 32);
-        @memcpy(tree_hash[0..copy_len], tree_hash_data[0..copy_len]);
+    // Parse tree hash (fixed 32 bytes)
+    var tree_hash: [32]u8 = undefined;
+    for (&tree_hash) |*byte| {
+        byte.* = try reader.readInt(u8);
     }
     
-    // Parse confirmed transcript hash (var bytes with u16 length)
-    const transcript_data = try reader.readVarBytes(u16, allocator);
-    defer allocator.free(transcript_data);
-    var confirmed_transcript_hash: [32]u8 = [_]u8{0} ** 32;
-    if (transcript_data.len > 0) {
-        const copy_len = @min(transcript_data.len, 32);
-        @memcpy(confirmed_transcript_hash[0..copy_len], transcript_data[0..copy_len]);
+    // Parse confirmed transcript hash (fixed 32 bytes)
+    var confirmed_transcript_hash: [32]u8 = undefined;
+    for (&confirmed_transcript_hash) |*byte| {
+        byte.* = try reader.readInt(u8);
     }
     
-    // Parse extensions (var bytes with u16 length)
-    const extensions_data = try reader.readVarBytes(u16, allocator);
-    defer allocator.free(extensions_data);
+    // Parse extensions count (u16)
+    const extensions_count = try reader.readInt(u16);
     
-    // For now, parse extensions as a single blob
-    // In full implementation, would parse individual extensions
-    var extensions = try allocator.alloc(types.Extension, 0);
-    if (extensions_data.len > 0) {
-        // TODO: Parse individual extensions
+    // Parse individual extensions
+    var extensions = try allocator.alloc(types.Extension, extensions_count);
+    errdefer {
+        for (extensions) |ext| {
+            allocator.free(ext.extension_data);
+        }
         allocator.free(extensions);
-        extensions = try allocator.alloc(types.Extension, 1);
-        extensions[0] = types.Extension{
-            .extension_type = .nostr_group_data,
-            .extension_data = try allocator.dupe(u8, extensions_data),
+    }
+    
+    for (0..extensions_count) |i| {
+        // Parse extension type (u16)
+        const ext_type_int = try reader.readInt(u16);
+        const ext_type = @as(types.ExtensionType, @enumFromInt(ext_type_int));
+        
+        // Parse extension data (var bytes with u16 length)
+        const ext_data = try reader.readVarBytes(u16, allocator);
+        
+        extensions[i] = types.Extension{
+            .extension_type = ext_type,
+            .extension_data = ext_data, // Ownership transfers to extensions array
         };
     }
     

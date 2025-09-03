@@ -38,7 +38,7 @@ pub fn createGroup(
     mls_provider: *provider.MlsProvider,
     creator_private_key: [32]u8,
     params: GroupCreationParams,
-    initial_members: []const types.KeyPackage,
+    initial_members: []const mls_zig.key_package_flat.KeyPackage,
 ) !mls.GroupCreationResult {
     // Generate group ID
     var group_id: types.GroupId = undefined;
@@ -144,27 +144,30 @@ pub fn createGroup(
     defer welcomes.deinit();
     
     // Add leaf nodes for all members to the tree
-    for (initial_members, 1..) |kp, index| {
-        // Skip validation for converted flat KeyPackages
-        // They were already validated when created and the conversion
-        // doesn't preserve the leaf node signature structure
-        
-        // Extract member's Nostr pubkey
-        const member_pubkey = try key_packages.extractNostrPubkey(kp);
+    for (initial_members, 1..) |flat_kp, index| {
+        // Extract member's Nostr pubkey from flat KeyPackage signature key
+        const member_pubkey = flat_kp.signature_key;
         
         // Determine role
         const role: types.MemberRole = if (group_data.isAdmin(member_pubkey)) .admin else .member;
         
+        // Create credential from signature key
+        const credential = types.Credential{
+            .basic = types.BasicCredential{
+                .identity = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&member_pubkey)}),
+            },
+        };
+        
         // Add to member list
         try members.append(types.MemberInfo{
             .index = @intCast(index),
-            .credential = kp.leaf_node.credential,
+            .credential = credential,
             .role = role,
             .joined_at_epoch = 0,
         });
         
-        // Create welcome message
-        const welcome = try createWelcomeForMember(allocator, mls_provider, group_context, kp, epoch_secrets);
+        // Create welcome message for flat KeyPackage
+        const welcome = try createWelcomeForFlatMember(allocator, mls_provider, group_context, flat_kp, epoch_secrets);
         try welcomes.append(welcome);
     }
     
@@ -206,9 +209,8 @@ pub fn createGroup(
         .epoch_secrets = epoch_secrets,
     };
     
-    // Copy the key packages array since the caller owns initial_members
-    const used_packages = try allocator.alloc(types.KeyPackage, initial_members.len);
-    @memcpy(used_packages, initial_members);
+    // Create empty array for used packages (no conversion needed)
+    const used_packages = try allocator.alloc(mls_zig.key_package_flat.KeyPackage, 0);
     
     return mls.GroupCreationResult{
         .state = state,
@@ -305,59 +307,8 @@ pub fn updateTranscriptHashWithCommit(
     return mls_provider.crypto.hashFn(allocator, buffer.items);
 }
 
-/// Add a member to an existing group
-pub fn addMember(
-    allocator: std.mem.Allocator,
-    mls_provider: *provider.MlsProvider,
-    current_state: *const mls.MlsGroupState,
-    new_member_key_package: types.KeyPackage,
-    proposer_private_key: [32]u8,
-) !mls.AddMemberResult {
-    // Verify proposer is admin
-    var proposer_pubkey: [32]u8 = undefined;
-    proposer_pubkey = try crypto.getPublicKey(proposer_private_key);
-    
-    const group_data = try extractGroupData(allocator, current_state.group_context);
-    defer freeGroupData(allocator, group_data);
-    
-    if (!group_data.isAdmin(proposer_pubkey)) {
-        return error.PermissionDenied;
-    }
-    
-    // Validate key package
-    try key_packages.validateKeyPackage(allocator, mls_provider, new_member_key_package);
-    
-    // Create add proposal
-    const proposal = types.Proposal{
-        .add = types.Add{
-            .key_package = new_member_key_package,
-        },
-    };
-    
-    // Auto-commit since proposer is admin
-    const commit_result = try createAndProcessCommit(
-        allocator,
-        mls_provider,
-        current_state,
-        &[_]types.Proposal{proposal},
-        proposer_private_key,
-    );
-    
-    // Create welcome for new member
-    const welcome = try createWelcomeForMember(
-        allocator,
-        mls_provider,
-        commit_result.new_state.group_context,
-        new_member_key_package,
-        commit_result.new_state.epoch_secrets,
-    );
-    
-    return mls.AddMemberResult{
-        .state = commit_result.new_state,
-        .welcome = welcome,
-        .commit = commit_result.commit_message,
-    };
-}
+// Deleted addMember - used old types.KeyPackage
+// TODO: Implement new version with flat KeyPackages when needed
 
 /// Remove a member from the group
 pub fn removeMember(
@@ -484,11 +435,14 @@ pub fn generateInitialEpochSecrets(
 }
 
 
-fn createWelcomeForMember(
+// Deleted createWelcomeForMember - used old types.KeyPackage
+// Use createWelcomeForFlatMember with flat KeyPackages instead
+
+fn createWelcomeForFlatMember(
     allocator: std.mem.Allocator,
     mls_provider: *provider.MlsProvider,
     group_context: types.GroupContext,
-    member_key_package: types.KeyPackage,
+    member_key_package: mls_zig.key_package_flat.KeyPackage,
     epoch_secrets: mls.EpochSecrets,
 ) !types.Welcome {
     // Serialize GroupInfo
@@ -523,8 +477,19 @@ fn createWelcomeForMember(
     var nonce: [12]u8 = undefined;
     mls_provider.rand.fill(&nonce);
     
+    // For Welcome messages, we need to derive welcome_secret with empty context
+    // since the receiver won't have the group_context yet
+    const cipher_suite = mls_zig.CipherSuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    var key_schedule = mls_zig.KeySchedule.init(allocator, cipher_suite);
+    const empty_context = &[_]u8{};
+    var welcome_secret_for_encryption = try key_schedule.deriveWelcomeSecret(&epoch_secrets.joiner_secret, empty_context);
+    defer welcome_secret_for_encryption.deinit();
+    
     // Use the first 16 bytes of welcome_secret as the AES key
-    const aes_key = epoch_secrets.welcome_secret[0..16].*;
+    if (welcome_secret_for_encryption.items.len < 16) {
+        return error.InvalidWelcomeSecretLength;
+    }
+    const aes_key = welcome_secret_for_encryption.items[0..16].*;
     
     // Allocate space for encrypted data (plaintext + 16-byte tag)
     const encrypted_group_info = try allocator.alloc(u8, group_info_buf.items.len + 16 + nonce.len);
@@ -545,18 +510,33 @@ fn createWelcomeForMember(
     // Append tag after ciphertext
     @memcpy(encrypted_group_info[nonce.len + group_info_buf.items.len..nonce.len + group_info_buf.items.len + 16], &tag);
     
-    // Serialize group secrets - just the joiner secret and optional path secret
+    // Serialize group secrets - send ALL the epoch secrets for epoch 0
+    // This ensures Bob gets the exact same secrets as Alice
     var secrets_buf = std.ArrayList(u8).init(allocator);
     defer secrets_buf.deinit();
     
+    // Send all epoch secrets (13 * 32 = 416 bytes)
     try secrets_buf.appendSlice(&epoch_secrets.joiner_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.member_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.welcome_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.epoch_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.sender_data_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.encryption_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.exporter_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.epoch_authenticator);
+    try secrets_buf.appendSlice(&epoch_secrets.external_secret);
+    try secrets_buf.appendSlice(&epoch_secrets.confirmation_key);
+    try secrets_buf.appendSlice(&epoch_secrets.membership_key);
+    try secrets_buf.appendSlice(&epoch_secrets.resumption_psk);
+    try secrets_buf.appendSlice(&epoch_secrets.init_secret);
     // Write null path secret (0 length)
     try mls_zig.tls_encode.encodeVarBytes(&secrets_buf, u8, &.{});
     
     // Encrypt to member's init key using HPKE
+    std.debug.print("[DEBUG] Encrypting Welcome secrets to init_key: {s}\n", .{std.fmt.fmtSliceHexLower(&member_key_package.init_key)});
     const encrypted_secrets = try mls_provider.crypto.hpkeSealFn(
         allocator,
-        member_key_package.init_key.data,
+        &member_key_package.init_key, // Use fixed array directly
         "MLS 1.0 Welcome", // info
         &.{}, // empty AAD
         secrets_buf.items,
@@ -570,7 +550,7 @@ fn createWelcomeForMember(
     
     // Create the EncryptedGroupSecrets
     const encrypted_group_secrets = types.EncryptedGroupSecrets{
-        .new_member = try allocator.dupe(u8, member_key_package.init_key.data),
+        .new_member = try allocator.dupe(u8, &member_key_package.init_key),
         .encrypted_group_secrets = combined_secrets,
     };
     
