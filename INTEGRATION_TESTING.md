@@ -459,6 +459,107 @@ Need to verify:
 - Is the inner Welcome event (kind 444) properly formed?
 - Are event IDs being calculated correctly?
 
+## Plan: Fix test_mls_roundtrip.zig (Feb 2025)
+
+### Overview
+Now that we have simplified testing infrastructure (`zig build test-all`), we can properly fix and complete the `test_mls_roundtrip.zig` test. This test is crucial for verifying MLS functionality without relay dependencies.
+
+### Current Test Status
+The test currently:
+- ✅ Generates keypairs for Alice and Bob
+- ✅ Creates Bob's KeyPackage using flat implementation
+- ✅ Serializes and deserializes KeyPackage
+- ✅ Converts flat KeyPackage to legacy format (using keypackage_converter)
+- ✅ Creates MLS group with Bob as member
+- ✅ Generates Welcome message
+- ❌ Cannot process Welcome (not implemented)
+- ❌ Has outdated memory cleanup code (freeGroupCreationResult)
+
+### Immediate Fixes Needed
+
+#### 1. Complete KeyPackage Unification (Priority: HIGH)
+- **Problem**: Still using keypackage_converter.zig to bridge flat and legacy KeyPackage types
+- **Solution**: Update test to use `groups.createGroupFlat` that we already implemented
+- **Tasks**:
+  - [ ] Test that `createGroupFlat` works properly
+  - [ ] Update test to use `createGroupFlat` instead of `createGroup`
+  - [ ] Remove keypackage_converter usage from test
+  - [ ] Eventually deprecate the legacy KeyPackage type entirely
+
+#### 2. Fix Memory Management (Priority: MEDIUM)
+- **Problem**: `freeGroupCreationResult` references outdated fields that no longer exist
+- **Solution**: Update or remove the cleanup function
+- **Tasks**:
+  - [ ] Audit what actually needs to be freed in current data structures
+  - [ ] Update `freeGroupCreationResult` to match current types
+  - [ ] Or use defer statements inline for simpler cleanup
+
+#### 3. Implement Welcome Processing (Priority: HIGH)
+- **Problem**: Test stops at "TODO: Implement Welcome processing"
+- **Solution**: Add Bob's side of the protocol
+- **Tasks**:
+  - [ ] Store Bob's HPKE private keys (like we do in key_storage)
+  - [ ] Serialize Welcome message
+  - [ ] Call `welcomes.joinFromWelcome` with Bob's private key
+  - [ ] Verify Bob joins with same group ID and epoch
+
+### Test Completion Plan
+
+```zig
+// Step 7: Bob processes the Welcome (NEW)
+std.debug.print("\n7. Bob processes Welcome...\n", .{});
+
+// Serialize the Welcome for processing
+const welcome_bytes = try nostr.mls.welcomes.serializeWelcome(allocator, welcome);
+defer allocator.free(welcome_bytes);
+
+// Bob needs his HPKE private keys stored (like in real usage)
+// This would normally be done when Bob created his KeyPackage
+const key_storage = nostr.mls.key_storage;
+const storage = try key_storage.getGlobalStorage(allocator);
+const bob_pubkey_hex = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&bob_pubkey)});
+defer allocator.free(bob_pubkey_hex);
+try storage.storeBundle(bob_pubkey_hex, bob_kp_bundle, "test_event_id");
+
+// Bob joins using the Welcome
+const join_result = try nostr.mls.welcomes.joinFromWelcome(
+    allocator,
+    &mls_provider,
+    welcome_bytes,
+    bob_privkey,
+);
+
+// Verify Bob joined the same group
+try testing.expectEqualSlices(u8, &creation_result.state.group_id.data, &join_result.state.group_id.data);
+try testing.expectEqual(creation_result.state.epoch, join_result.state.epoch);
+
+std.debug.print("  ✅ Bob successfully joined the group!\n", .{});
+std.debug.print("  Bob's view - Group ID: {s}\n", .{std.fmt.fmtSliceHexLower(&join_result.state.group_id.data)});
+std.debug.print("  Bob's view - Epoch: {}\n", .{join_result.state.epoch});
+```
+
+### Benefits of Fixing This Test
+1. **No Relay Dependency**: Pure MLS testing without network complexity
+2. **Fast Iteration**: Can debug MLS issues quickly
+3. **Foundation for More Tests**: Once working, can add:
+   - Message encryption/decryption roundtrip
+   - Epoch updates and key rotation
+   - Member addition/removal
+   - Forward secrecy verification
+
+### Success Criteria
+- [ ] Test runs without compilation errors
+- [ ] No memory leaks reported
+- [ ] Bob successfully joins Alice's group
+- [ ] Both have identical group state (ID, epoch, members)
+- [ ] Test can run repeatedly without issues
+
+### Timeline
+- **Week 1**: Fix KeyPackage unification and memory management
+- **Week 2**: Implement Welcome processing
+- **Week 3**: Add additional test cases for message exchange
+- **Week 4**: Document findings and update integration guide
+
 ## References
 
 - [NIP-EE Specification](../EE.md)

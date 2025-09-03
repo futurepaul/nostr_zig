@@ -61,11 +61,8 @@ pub fn main() !void {
     std.debug.print("  Protocol version: 0x{x:0>4}\n", .{parsed_bob_kp.protocol_version});
     std.debug.print("  Cipher suite: {}\n", .{@intFromEnum(parsed_bob_kp.cipher_suite)});
     
-    // Step 4: Convert flat KeyPackage to legacy format for createGroup
-    std.debug.print("\n4. Converting KeyPackage format for group creation...\n", .{});
-    
-    const bob_legacy_kp = try lib.mls.keypackage_converter.flatToLegacy(allocator, parsed_bob_kp);
-    defer lib.mls.keypackage_converter.freeLegacyKeyPackage(allocator, bob_legacy_kp);
+    // Step 4: Use flat KeyPackage directly for createGroup
+    std.debug.print("\n4. Using flat KeyPackage for group creation...\n", .{});
     
     // Step 5: Alice creates a group with Bob as initial member
     std.debug.print("\n5. Alice creates MLS group with Bob as member...\n", .{});
@@ -83,7 +80,7 @@ pub fn main() !void {
         &mls_provider,
         alice_privkey,
         group_params,
-        &[_]lib.mls.types.KeyPackage{bob_legacy_kp},
+        &[_]mls_zig.key_package_flat.KeyPackage{parsed_bob_kp},
     );
     defer freeGroupCreationResult(allocator, creation_result);
     

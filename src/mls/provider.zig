@@ -182,8 +182,15 @@ fn defaultHpkeOpen(allocator: std.mem.Allocator, private_key: []const u8, info: 
         return error.InvalidKeyLength;
     }
     
-    // Create server key pair from private key
-    const server_kp = try SuiteType.deterministicKeyPair(private_key);
+    // Create server key pair using same method as KeyPackage generation
+    // This ensures compatibility with KeyPackages generated using std.crypto.dh.X25519
+    const x25519_keypair = try std.crypto.dh.X25519.KeyPair.generateDeterministic(private_key[0..32].*);
+    
+    // Convert to HPKE key pair format - using the correct HPKE library API
+    const server_kp = hpke.KeyPair{
+        .secret_key = try std.BoundedArray(u8, hpke.max_secret_key_length).fromSlice(private_key[0..32]),
+        .public_key = try std.BoundedArray(u8, hpke.max_public_key_length).fromSlice(&x25519_keypair.public_key),
+    };
     
     // Create server context from encapsulated secret
     var server_ctx = try SuiteType.createServerContext(ciphertext.kem_output, server_kp, info, null);

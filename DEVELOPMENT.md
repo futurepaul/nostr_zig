@@ -233,112 +233,95 @@ A Nostr event contains these fields:
 
 ## Testing Strategy
 
-The project has a comprehensive test suite organized into several categories:
+### 🎯 Simple Testing - Two Commands Only!
 
-### 🏗️ Build Commands for Testing
-
-**Quick Reference:**
 ```bash
-# Run all working tests (recommended for regular development)
+# Run library unit tests only
+zig build test
+
+# Run ALL tests (unit + integration)
 zig build test-all
-
-# Run specific test suites  
-zig build test-events        # Core Nostr event functionality
-zig build test-nip-ee-real   # NIP-EE MLS protocol tests
-zig build test               # Basic library tests
-
-# Run single test file (edit test-utils/run_single_test.zig first)
-zig build test-single
-
-# List all available test commands
-zig build --help | grep test
 ```
+
+That's it. No confusion. No guessing which command to use.
 
 ### 📁 Test Organization
 
 ```
-tests/                          # Pure Zig integration tests
+src/                            # Library code with embedded unit tests
+├── crypto.zig                 # Has test blocks inside
+├── nostr/event.zig           # Has test blocks inside
+└── nip44/test_vectors.zig    # Test vectors
+
+tests/                          # Integration tests
 ├── test_events.zig            # ✅ Core Nostr events + publish/subscribe
 ├── test_nip_ee_real.zig       # ✅ NIP-EE protocol implementation  
 ├── test_welcome_events.zig    # ✅ MLS welcome message handling
-└── test_mls_state_machine.zig # ⚠️ MLS state management (disabled)
+└── test_welcome_roundtrip.zig # ✅ Full MLS roundtrip
 
-wasm_tests/                     # TypeScript tests for WASM functionality
-├── test_state_machine.ts      # Main WASM integration tests
-├── test_crypto_functions.ts   # Cryptographic operations
-└── [various other test files] # Specific feature tests
-
-test-utils/                     # Test utilities and helpers  
-├── run_single_test.zig        # Single test runner
-├── run_test.sh               # Helper script
-└── [development test files]   # Temporary test files
-
-test_runner.zig                # Master test file (imports all tests)
+test_all.zig                    # Single entry point that imports all tests
 ```
 
-### ✅ Core Test Suites
+### 🔧 How It Works
 
-#### `test-events` - Event Creation and Publishing
-**What it tests:**
-- Event creation with proper ID calculation and signing
-- BIP340 Schnorr signature generation and verification
-- JSON serialization/deserialization round-trips
-- Tag handling and validation
-- **NEW: Publish-subscribe roundtrip testing**
-  - Publishes events to relay via WebSocket
-  - Sets up subscriptions to query for specific events
-  - Validates received events match published data
-  - Tests complete relay integration workflow
-
-**Example Output:**
-```
-✅ Event created successfully
-✅ Event signature verified successfully  
-✅ All validations passed!
-```
-
-#### `test-nip-ee-real` - NIP-EE Protocol
-**What it tests:**
-- MLS KeyPackage generation and parsing
-- Group creation and member management
-- Welcome event handling with NIP-59 gift wrapping
-- NIP-44 encryption integration
-- Real cryptographic operations (no placeholders)
-
-#### `test-welcome-events` - MLS Welcome Messages
-**What it tests:**
-- Welcome message creation and processing
-- Ephemeral key generation for privacy
-- HPKE encryption/decryption operations
-- Group state initialization from welcome
-
-### 🌐 WASM Tests (`wasm_tests/`)
-- TypeScript integration tests for browser functionality
-- WASM-specific memory management verification
-- Cross-platform compatibility testing
-- Performance benchmarks
-
-### 🔧 Test Configuration
-
-#### Master Test Runner (`test_runner.zig`)
+**`zig build test`** runs tests from `src/root.zig`:
 ```zig
 test {
-    // Core Nostr functionality tests
+    std.testing.refAllDecls(@This());
+    _ = @import("nostr/event.zig");
+    _ = @import("nip44/test_vectors.zig");
+    // ... other internal modules
+}
+```
+
+**`zig build test-all`** runs tests from `test_all.zig`:
+```zig
+test {
     _ = @import("tests/test_events.zig");
-    
-    // MLS/NIP-EE protocol tests  
     _ = @import("tests/test_nip_ee_real.zig");
-    _ = @import("tests/test_welcome_events.zig");
-    // _ = @import("tests/test_mls_state_machine.zig"); // Disabled: compilation errors
+    // ... all test files
+    std.testing.refAllDecls(nostr); // Also runs unit tests
 }
 ```
 
-#### Single Test Runner (`test-utils/run_single_test.zig`)
-Edit this file to test individual test files:
+### ✍️ Writing Tests
+
 ```zig
-test {
-    _ = @import("tests/test_events.zig"); // Change this line
+const std = @import("std");
+const testing = std.testing;
+const nostr = @import("nostr");  // Works because build.zig sets it up
+
+test "my feature works" {
+    const result = try nostr.someFunction();
+    try testing.expect(result == expected);
 }
+```
+
+### ➕ Adding New Tests
+
+1. Create `tests/test_my_feature.zig`
+2. Add to `test_all.zig`:
+   ```zig
+   test {
+       // ... existing imports ...
+       _ = @import("tests/test_my_feature.zig");
+   }
+   ```
+3. Run with `zig build test-all`
+
+### 🐛 Running Individual Tests
+
+For debugging a specific test file:
+```bash
+# Quick one-liner
+echo 'test { _ = @import("tests/test_welcome_roundtrip.zig"); }' > test_one.zig && \
+zig test test_one.zig \
+    -I deps/secp256k1/include \
+    -L .zig-cache/o/*/ \
+    -lsecp256k1 -lbech32 -lc \
+    --dep nostr -Mnostr=src/root.zig \
+    --dep mls_zig -Mmls_zig=deps/mls_zig/src/root.zig && \
+rm test_one.zig
 ```
 
 ### 🚨 Relay Testing Requirements

@@ -24,8 +24,12 @@ pub const RelayMessage = client.RelayMessage;
 pub const TagBuilder = nostr.TagBuilder;
 
 test {
-    // Reference all tests
+    // Reference all internal module tests
     std.testing.refAllDecls(@This());
     _ = @import("nostr/event.zig");
     _ = @import("nip44/test_vectors.zig");
+    _ = @import("crypto.zig");
+    _ = @import("client.zig");
+    _ = @import("nip_ee.zig");
+    _ = @import("mls/mls.zig");
 }

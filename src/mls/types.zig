@@ -228,16 +228,6 @@ pub const LeafNodeSource = union(enum) {
     commit: []const u8,
 };
 
-/// Key package
-pub const KeyPackage = struct {
-    version: ProtocolVersion,
-    cipher_suite: Ciphersuite,
-    init_key: HPKEPublicKey,
-    leaf_node: LeafNode,
-    extensions: []const Extension,
-    signature: []const u8,
-};
-
 /// Group context
 pub const GroupContext = struct {
     version: ProtocolVersion,
@@ -291,7 +281,8 @@ pub const Proposal = union(ProposalType) {
 
 /// Add proposal
 pub const Add = struct {
-    key_package: KeyPackage,
+    // TODO: Replace with flat KeyPackage
+    key_package: void, // KeyPackage removed - use mls_zig.key_package_flat.KeyPackage
 };
 
 /// Update proposal
@@ -459,7 +450,8 @@ pub const MLSMessage = union(WireFormat) {
     mls_ciphertext: MLSCiphertext,
     mls_welcome: Welcome,
     mls_group_info: GroupInfo,
-    mls_key_package: KeyPackage,
+    // TODO: Replace with flat KeyPackage
+    mls_key_package: void, // KeyPackage removed - use mls_zig.key_package_flat.KeyPackage
 };
 
 /// Common MLS errors

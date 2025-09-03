@@ -687,9 +687,8 @@ fn handleCreateWelcomeCommand(allocator: std.mem.Allocator, args: *CliArgs, writ
     try writer.print("  Protocol Version: 0x{x:0>4} (MLS 1.0)\n", .{flat_keypackage.protocol_version});
     try writer.print("  Cipher Suite: {} (X25519/AES128-GCM/Ed25519)\n", .{@intFromEnum(flat_keypackage.cipher_suite)});
     
-    // Convert flat KeyPackage to legacy format for createGroup
-    const target_keypackage = try lib.mls.keypackage_converter.flatToLegacy(allocator, flat_keypackage);
-    // Note: We can't free target_keypackage here because createGroup copies references to its fields
+    // Use the flat KeyPackage directly with createGroup
+    const target_keypackage = flat_keypackage;
     // We'll handle cleanup differently below
     
     // 2. Create MLS provider
@@ -724,8 +723,8 @@ fn handleCreateWelcomeCommand(allocator: std.mem.Allocator, args: *CliArgs, writ
         .extensions = &.{},
     };
     
-    // Use the parsed KeyPackage directly
-    const initial_members = [_]lib.mls.types.KeyPackage{target_keypackage};
+    // Use the flat KeyPackage directly
+    const initial_members = [_]mls_zig.key_package_flat.KeyPackage{target_keypackage};
     
     // Create the group
     const group_result = try lib.mls.groups.createGroup(
@@ -765,20 +764,7 @@ fn handleCreateWelcomeCommand(allocator: std.mem.Allocator, args: *CliArgs, writ
         allocator.free(group_result.welcomes);
         allocator.free(group_result.used_key_packages);
         
-        // Free parts of target_keypackage that aren't shared with group result
-        // The credential identity is shared, but these are not:
-        allocator.free(target_keypackage.init_key.data);
-        allocator.free(target_keypackage.leaf_node.encryption_key.data);
-        allocator.free(target_keypackage.leaf_node.signature_key.data);
-        allocator.free(target_keypackage.leaf_node.capabilities.versions);
-        allocator.free(target_keypackage.leaf_node.capabilities.ciphersuites);
-        allocator.free(target_keypackage.leaf_node.capabilities.extensions);
-        allocator.free(target_keypackage.leaf_node.capabilities.proposals);
-        allocator.free(target_keypackage.leaf_node.capabilities.credentials);
-        allocator.free(target_keypackage.leaf_node.extensions);
-        allocator.free(target_keypackage.leaf_node.signature);
-        allocator.free(target_keypackage.extensions);
-        allocator.free(target_keypackage.signature);
+        // Flat KeyPackage doesn't need manual memory cleanup as it uses fixed arrays
     }
     
     try writer.print("\n✅ MLS group created!\n", .{});
@@ -867,17 +853,11 @@ fn handleTestMLSRoundtripCommand(allocator: std.mem.Allocator, writer: anytype) 
     try writer.print("  Protocol version: 0x{x:0>4}\n", .{parsed_bob_kp.protocol_version});
     try writer.print("  Cipher suite: {}\n", .{@intFromEnum(parsed_bob_kp.cipher_suite)});
     
-    // Step 4: Convert to legacy format
-    try writer.print("\n4. Converting KeyPackage format...\n", .{});
+    // Step 4: Use flat KeyPackage directly
+    try writer.print("\n4. Using flat KeyPackage directly...\n", .{});
     
-    const bob_legacy_kp = try lib.mls.keypackage_converter.flatToLegacy(allocator, parsed_bob_kp);
-    // We need to free parts of bob_legacy_kp that aren't taken by createGroup
-    defer {
-        allocator.free(bob_legacy_kp.init_key.data);
-        allocator.free(bob_legacy_kp.leaf_node.encryption_key.data);
-        allocator.free(bob_legacy_kp.leaf_node.signature_key.data);
-        allocator.free(bob_legacy_kp.signature);
-    }
+    const bob_flat_kp = parsed_bob_kp;
+    // Flat KeyPackage doesn't need manual memory cleanup
     
     // Step 5: Alice creates group
     try writer.print("\n5. Alice creates MLS group with Bob...\n", .{});
@@ -895,7 +875,7 @@ fn handleTestMLSRoundtripCommand(allocator: std.mem.Allocator, writer: anytype) 
         &mls_provider,
         alice_privkey,
         group_params,
-        &[_]lib.mls.types.KeyPackage{bob_legacy_kp},
+        &[_]mls_zig.key_package_flat.KeyPackage{bob_flat_kp},
     );
     defer {
         // Clean up group result
