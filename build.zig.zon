@@ -37,8 +37,8 @@
     // internet connectivity.
     .dependencies = .{
         .websocket = .{
-            .url = "https://github.com/karlseguin/websocket.zig/archive/refs/heads/master.tar.gz",
-            .hash = "websocket-0.1.0-ZPISdbZVAwAgDzIxt0cpiG4hjPVq92ALsEPLSCPbMQqv",
+            .url = "https://github.com/karlseguin/websocket.zig/archive/refs/heads/zig-0.14.tar.gz",
+            .hash = "websocket-0.1.0-ZPISdRJ0AwBHOWGe9mnKAUU2hXEXhfdbsW3smK4zpY97",
         },
         .mls_zig = .{
             .path = "deps/mls_zig",
